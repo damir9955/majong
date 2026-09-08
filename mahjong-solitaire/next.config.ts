@@ -1,8 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
-  /* config options here */
+  // БЕЗ output: "standalone" — Vercel собирает свой выпуск, а
+  // standalone-копирование node_modules (платформенные optional-зависимости
+  // sharp/@img) падало на свежем bun install с ENOENT.
   typescript: {
     ignoreBuildErrors: true,
   },
