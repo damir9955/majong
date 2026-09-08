@@ -146,6 +146,8 @@ interface GameState {
   settings: { sound: boolean };
   tutorialSeen: boolean;
   session: Session | null;
+  /** меню открыто, но партия СОХРАНЕНА — продолжится по кнопке */
+  showMenu: boolean;
   /** начисленные, но ещё не потраченные бонусы */
   bank: { hints: number; shuffles: number };
   /** лига: трофеи и статистика */
@@ -156,6 +158,8 @@ interface GameState {
   lastMode: GameMode;
   startMode: (mode: GameMode) => void;
   exitToMenu: () => void;
+  /** подготовить сохранённую партию к продолжению после загрузки */
+  resumeAfterHydration: () => void;
   beginBattle: () => void;
   tick: () => void;
   tapTile: (id: number) => void;
@@ -209,6 +213,25 @@ function rollBonuses(): BonusItem[] {
 /** ориентация экрана в момент старта партии — под неё подбирается раскладка */
 function isLandscape(): boolean {
   return typeof window !== 'undefined' && window.innerWidth > window.innerHeight;
+}
+
+/** подготовка партии к продолжению: «время» партии привязано
+ *  к странице (performance.now), после перезагрузки окна комбо и
+ *  челленджи сбрасываем, тику бота ставим «сейчас» */
+function normalizeForResume(s: Session): Session {
+  if (!s.battle) return s;
+  const now = performance.now();
+  return {
+    ...s,
+    battle: {
+      ...s.battle,
+      lastTickAt: now,
+      botPhaseUntil: now,
+      myComboUntil: 0,
+      lastChallengeAt: 0,
+      challenge: null,
+    },
+  };
 }
 
 function createSession(
@@ -294,9 +317,12 @@ function later(ms: number, fn: (sid: number) => void) {
 
 const byId = (s: Session, id: number) => s.tiles.find((t) => t.id === id);
 
-/** плитка лежит рубашкой вверх и ещё не открыта */
+/** плитка лежит рубашкой вверх и ещё не открыта
+ *  (летящая в лоток кость ОТКРЫТА — она попадает в revealedIds) */
 const isConcealed = (s: Session, id: number) =>
-  (s.faceDownIds.includes(id) && s.peekId !== id) ||
+  (s.faceDownIds.includes(id) &&
+    s.peekId !== id &&
+    !s.revealedIds.includes(id)) ||
   (s.buriedIds.includes(id) && !s.revealedIds.includes(id));
 
 /** найти перевёрнутую рубашку с той же гранью (кроме excludeId) */
@@ -385,6 +411,10 @@ function unstuckSession(s: Session): Session | null {
  * Убрать пару: обе плитки покидают доску и улетают в лоток,
  * где соединяются и взрываются. Жителем может быть как плитка
  * лотка, так и перевёрнутая рубашка на доске (peek-пара).
+ *
+ * Летящая пара ВСЕГДА летит лицом вверх: закрытые кости
+ * переворачиваются ДО полёта (костяшка разворачивается —
+ * и только потом улетает и взрывается, а не рубашкой).
  */
 function removePair(
   set: (p: Partial<GameState>) => void,
@@ -392,6 +422,14 @@ function removePair(
   residentId: number,
   arrivingId: number,
 ) {
+  // страховка от гонки быстрых тапов: прилетевшая уже удалена или
+  // «житель» уже взорвался — пару не собираем (иначе кость улетала
+  // бы одна и взрывалась в одиночку)
+  const resTile = byId(s, residentId);
+  const arrTile = byId(s, arrivingId);
+  if (!resTile || !arrTile || arrTile.removed) return;
+  if (resTile.removed && !s.tray.includes(residentId)) return;
+
   const tray = s.tray.filter((tid) => tid !== residentId);
   const tiles = s.tiles.map((t) =>
     t.id === arrivingId || t.id === residentId ? { ...t, removed: true } : t,
@@ -432,10 +470,19 @@ function removePair(
   const seq = s.matchedSeq + 1;
   // снятие костей могло открыть рубашки ПОД ними — переворачиваем
   const newlyRevealed = autoRevealFrom(tiles, s);
-  const revealedIds = newlyRevealed.length
-    ? [...s.revealedIds, ...newlyRevealed]
-    : s.revealedIds;
-  if (newlyRevealed.length > 0) playReveal();
+  // ЛЕТЯЩАЯ ПАРА — ЛИЦОМ ВВЕРХ: переворачиваем закрытые кости
+  // (счастливое открытие: тап по «слепой» рубашке, совпавшей парой)
+  const flyReveal = [residentId, arrivingId].filter(
+    (id) =>
+      (s.faceDownIds.includes(id) || s.buriedIds.includes(id)) &&
+      !s.revealedIds.includes(id),
+  );
+  const revealedIds = [
+    ...s.revealedIds,
+    ...newlyRevealed,
+    ...flyReveal,
+  ].filter((id, i, arr) => arr.indexOf(id) === i);
+  if (flyReveal.length > 0 || newlyRevealed.length > 0) playReveal();
   playSelect();
   set({
     session: {
@@ -597,33 +644,78 @@ export const useGame = create<GameState>()(
       settings: { sound: true },
       tutorialSeen: false,
       session: null,
+      showMenu: false,
       lastMode: 'classic',
       bank: { hints: 0, shuffles: 0 },
       league: { points: 0, wins: 0, losses: 0, streak: 0 },
 
       setHydrated: (v) => set({ hydrated: v }),
 
-      /** начать партию в выбранном режиме (с экрана режимов) */
+      /** начать — или ПРОДОЛЖИТЬ — партию в выбранном режиме.
+       *  Выход в меню партию не сбрасывает: та же игра и тот же
+       *  уровень продолжаются с места остановки */
       startMode: (mode) => {
         const st = get();
-        if (st.session) return;
+        const cur = st.session;
+        if (cur && cur.mode === mode && cur.status === 'play') {
+          // продолжение сохранённой партии
+          set({
+            showMenu: false,
+            lastMode: mode,
+            session: normalizeForResume(cur),
+          });
+          return;
+        }
+        // новая партия (прежняя завершена или выбран другой режим)
         const bank = st.bank;
         if (bank.hints > 0 || bank.shuffles > 0) {
           set({
             session: createSession(st.level, st.league.points, bank, mode),
             bank: { hints: 0, shuffles: 0 },
             lastMode: mode,
+            showMenu: false,
           });
         } else {
           set({
             session: createSession(st.level, st.league.points, undefined, mode),
             lastMode: mode,
+            showMenu: false,
           });
         }
       },
 
-      /** вернуться на экран выбора режима */
-      exitToMenu: () => set({ session: null }),
+      /** вернуться в меню — партия СОХРАНЯЕТСЯ (продолжится
+       *  по кнопке); победный уровень сразу поднимает лестницу */
+      exitToMenu: () => {
+        const s = get().session;
+        if (s && s.status === 'won') {
+          get().nextLevel();
+          set({ showMenu: true });
+          return;
+        }
+        set({ showMenu: true });
+      },
+
+      /** возобновление сохранённой партии после загрузки страницы:
+       *  нормализуем время боя, гасим признак летящей пары и
+       *  перезапускаем защитный таймер «четырёх разных» */
+      resumeAfterHydration: () => {
+        const s = get().session;
+        if (!s) return;
+        // счётчик партий должен жить выше восстановленного sid —
+        // иначе новая партия получит тот же sid и контроллер доски
+        // не заметит смену расклада
+        if (s.sid >= sidCounter) sidCounter = s.sid + 1;
+        let session = normalizeForResume(s);
+        if (session.matchedPair) session = { ...session, matchedPair: null };
+        set({ session });
+        if (session.pendingLose) {
+          later(LOSE_DELAY_MS, () => {
+            const cur = useGame.getState().session;
+            if (cur?.pendingLose) finish(set, 'tray');
+          });
+        }
+      },
 
       /** матчмейкинг завершён — старт отсчёта времени и бота */
       beginBattle: () => {
@@ -640,6 +732,8 @@ export const useGame = create<GameState>()(
 
       /** тик боя (≈5 раз/сек): таймер, соперник, челленджи. В «Классике» — ничего. */
       tick: () => {
+        // в меню матч на паузе: бот и таймер не тикают
+        if (get().showMenu) return;
         const s = get().session;
         if (!s || s.status !== 'play' || !s.battle || !s.battle.started) return;
         const b = s.battle;
@@ -851,10 +945,18 @@ export const useGame = create<GameState>()(
         // тап по другой плитке — подглядка возвращается рубашкой вверх;
         // снятие кости могло открыть рубашку ПОД ней — переворачиваем
         const newlyRevealed = autoRevealFrom(tiles, s);
-        const revealedIds = newlyRevealed.length
-          ? [...s.revealedIds, ...newlyRevealed]
-          : s.revealedIds;
-        if (newlyRevealed.length > 0) playReveal();
+        // подгляданная рубашка, улетающая в лоток, остаётся ЛИЦОМ
+        // ВВЕРХ (не переворачивается обратно в полёте)
+        const flyReveal =
+          s.faceDownIds.includes(id) && !s.revealedIds.includes(id)
+            ? [id]
+            : [];
+        const revealedIds = [
+          ...s.revealedIds,
+          ...newlyRevealed,
+          ...flyReveal,
+        ].filter((x, i, arr) => arr.indexOf(x) === i);
+        if (newlyRevealed.length > 0 || flyReveal.length > 0) playReveal();
         const peekId: number | null = null;
 
         if (tray.length >= TRAY_SIZE) {
@@ -1059,13 +1161,16 @@ export const useGame = create<GameState>()(
     }),
     {
       name: 'mahjong-relax-save',
-      version: 4,
+      version: 5,
       partialize: (state) => ({
         level: state.level,
         settings: state.settings,
         tutorialSeen: state.tutorialSeen,
         bank: state.bank,
         league: state.league,
+        lastMode: state.lastMode,
+        // ПАРТИЯ СОХРАНЯЕТСЯ: выход/закрытие — прогресс не теряется
+        session: state.session,
       }),
       migrate: (persisted, version) => {
         const p = persisted as
@@ -1080,32 +1185,37 @@ export const useGame = create<GameState>()(
                 losses?: number;
                 streak?: number;
               };
+              lastMode?: GameMode;
+              session?: Session | null;
               progress?: { unlockedLevel?: number };
             }
           | undefined;
+        const base = {
+          level: p?.level ?? p?.progress?.unlockedLevel ?? 1,
+          settings: { sound: p?.settings?.sound ?? true },
+          tutorialSeen: p?.tutorialSeen ?? false,
+          bank: {
+            hints: p?.bank?.hints ?? 0,
+            shuffles: p?.bank?.shuffles ?? 0,
+          },
+          league: {
+            points: p?.league?.points ?? 0,
+            wins: p?.league?.wins ?? 0,
+            losses: p?.league?.losses ?? 0,
+            streak: p?.league?.streak ?? 0,
+          },
+        };
         if (version < 4) {
-          return {
-            level: p?.level ?? p?.progress?.unlockedLevel ?? 1,
-            settings: { sound: p?.settings?.sound ?? true },
-            tutorialSeen: p?.tutorialSeen ?? false,
-            bank: {
-              hints: p?.bank?.hints ?? 0,
-              shuffles: p?.bank?.shuffles ?? 0,
-            },
-            league: {
-              points: p?.league?.points ?? 0,
-              wins: p?.league?.wins ?? 0,
-              losses: p?.league?.losses ?? 0,
-              streak: p?.league?.streak ?? 0,
-            },
-          };
+          return base;
         }
-        return p as {
-          level: number;
-          settings: { sound: boolean };
-          tutorialSeen: boolean;
-          bank: { hints: number; shuffles: number };
-          league: { points: number; wins: number; losses: number; streak: number };
+        if (version < 5) {
+          // раньше партия не сохранялась — начинаем с чистого листа
+          return { ...base, lastMode: 'classic', session: null };
+        }
+        return {
+          ...base,
+          lastMode: p?.lastMode ?? 'classic',
+          session: p?.session ?? null,
         };
       },
     },
@@ -1117,6 +1227,11 @@ if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
   (window as unknown as Record<string, unknown>).__mjDebug = {
     getState: () => useGame.getState(),
     menu: () => useGame.setState({ session: null }),
+    /** тесты: сразу партия классики на заданном уровне */
+    setLevel: (n: number) => {
+      useGame.setState({ level: n, session: null, showMenu: false });
+      useGame.getState().startMode('classic');
+    },
     startClassic: () => {
       useGame.setState({ session: null });
       useGame.getState().startMode('classic');

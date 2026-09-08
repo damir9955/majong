@@ -36,6 +36,7 @@ import {
 
 function HomeScreen() {
   const startMode = useGame((s) => s.startMode);
+  const session = useGame((s) => s.session);
   const level = useGame((s) => s.level);
   const sound = useGame((s) => s.settings.sound);
   const setSound = useGame((s) => s.setSound);
@@ -44,6 +45,10 @@ function HomeScreen() {
     buzz(15);
     startMode(mode);
   };
+
+  // партия этого режима сохранена и ещё идёт — кнопка продолжает её
+  const resumable = (mode: GameMode) =>
+    !!session && session.mode === mode && session.status === 'play';
 
   return (
     <div className="mj-table relative flex h-dvh flex-col items-center justify-center gap-7 px-6 sm:gap-10">
@@ -90,10 +95,12 @@ function HomeScreen() {
           </span>
           <span>
             <b className="block text-lg font-black text-stone-800 sm:text-xl lg:text-2xl">
-              Классика
+              {resumable('classic') ? 'Продолжить' : 'Классика'}
             </b>
             <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
-              Спокойная игра без соперника
+              {resumable('classic')
+                ? `Уровень ${session?.level} — партия сохранена`
+                : 'Спокойная игра без соперника'}
             </span>
           </span>
         </button>
@@ -110,10 +117,12 @@ function HomeScreen() {
           </span>
           <span>
             <b className="block text-lg font-black text-stone-800 sm:text-xl lg:text-2xl">
-              1 на 1
+              {resumable('battle') ? 'Продолжить матч' : '1 на 1'}
             </b>
             <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
-              Матч против соперника · трофеи
+              {resumable('battle')
+                ? `Уровень ${session?.level} ждёт тебя`
+                : 'Матч против соперника · трофеи'}
             </span>
           </span>
         </button>
@@ -129,76 +138,36 @@ function HomeScreen() {
 
 /* ---------- Верхняя панель: как на макете ---------- */
 
-/** идёт ли партия — стоит ли беречь прогресс при выходе */
-function hasProgress(): boolean {
-  const s = useGame.getState().session;
-  if (!s || s.status !== 'play') return false;
-  return s.tray.length > 0 || s.tiles.some((t) => t.removed);
-}
-
 /**
  * [Домой] [лоток] [номер] — одна строка сверху: белая круглая
- * кнопка слева, компактный лоток в центре (он не главная часть
- * игры и занимает мало места), номер уровня справа. Кнопки
- * управления — внизу (HUD).
+ * кнопка слева, компактный лоток в центре, номер уровня справа.
+ * Кнопки управления — внизу (HUD). Выход в меню ПРОГРЕСС НЕ ТЕРЯЕТ:
+ * партия сохраняется и продолжается по кнопке «Продолжить».
  */
 function TopBar() {
   const session = useGame((s) => s.session);
   const exitToMenu = useGame((s) => s.exitToMenu);
-  const [confirmExit, setConfirmExit] = useState(false);
 
   if (!session) return null;
 
-  const onHomeClick = () => {
-    // случайный тап по кнопке не должен сносить партию — спрашиваем
-    if (hasProgress()) setConfirmExit(true);
-    else exitToMenu();
-  };
-
   return (
-    <>
-      <header className="mj-topbar z-20 flex shrink-0 items-center gap-1.5 px-2 pb-1 pt-[max(0.35rem,env(safe-area-inset-top))] sm:gap-3 sm:px-3">
-        <button
-          type="button"
-          className="mj-circle-btn mj-circle-btn-sm shrink-0"
-          onClick={onHomeClick}
-          aria-label="Домой"
-          title="Выйти в меню"
-        >
-          <IconHome className="h-4 w-4 sm:h-5 sm:w-5 lg:h-6 lg:w-6" />
-        </button>
-        <div className="flex min-w-0 flex-1 justify-center">
-          <Tray />
-        </div>
-        <span className="mj-level-chip shrink-0 text-[13px] font-black tabular-nums sm:text-base lg:text-lg">
-          Уровень {session.level}
-        </span>
-      </header>
-      {confirmExit && (
-        <div className="mj-overlay z-50" role="dialog" aria-modal="true">
-          <div className="mj-card">
-            <h2 className="text-2xl font-black text-sky-900 sm:text-3xl">
-              Выйти в меню?
-            </h2>
-            <p className="mt-1 text-sm font-semibold text-stone-500 sm:text-base">
-              Прогресс этой партии будет потерян.
-            </p>
-            <div className="mt-4 flex flex-col gap-2">
-              <button className="mj-btn" onClick={() => exitToMenu()}>
-                <IconHome className="mr-1.5 inline h-4 w-4" />
-                Да, выйти
-              </button>
-              <button
-                className="mj-btn mj-btn-ghost"
-                onClick={() => setConfirmExit(false)}
-              >
-                Отмена
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
+    <header className="mj-topbar z-20 flex shrink-0 items-center gap-1.5 px-2 pb-1 pt-[max(0.35rem,env(safe-area-inset-top))] sm:gap-3 sm:px-3">
+      <button
+        type="button"
+        className="mj-circle-btn mj-circle-btn-sm shrink-0"
+        onClick={exitToMenu}
+        aria-label="Домой"
+        title="В меню (партия сохранится)"
+      >
+        <IconHome className="h-4 w-4 sm:h-5 sm:w-5 lg:h-6 lg:w-6" />
+      </button>
+      <div className="flex min-w-0 flex-1 justify-center">
+        <Tray />
+      </div>
+      <span className="mj-level-chip shrink-0 text-[13px] font-black tabular-nums sm:text-base lg:text-lg">
+        Уровень {session.level}
+      </span>
+    </header>
   );
 }
 
@@ -341,7 +310,7 @@ function Tutorial({ mode, onGo }: { mode: GameMode; onGo: () => void }) {
 
 export function GameScreen() {
   const session = useGame((s) => s.session);
-  const hydrated = useGame((s) => s.hydrated);
+  const showMenu = useGame((s) => s.showMenu);
   const tutorialSeen = useGame((s) => s.tutorialSeen);
   const markTutorialSeen = useGame((s) => s.markTutorialSeen);
 
@@ -373,7 +342,7 @@ export function GameScreen() {
     setSoundEnabled(useGame.getState().settings.sound);
   }, [session?.sid]);
 
-  if (!hydrated || !session) return <HomeScreen />;
+  if (showMenu || !session) return <HomeScreen />;
 
   const mode = session.mode;
   const b = session.battle;

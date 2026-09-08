@@ -382,14 +382,14 @@
    соединяются и взрываются, остаток соскальзывает на их место.
    Ширина подогнана РОВНО под 4 слота — та же формула, что в
    traySlots.ts (2*padX + 4*(h-2*padY)/1.28 + 3*gap): по виду
-   влезает столько, сколько реально принимает игра. Высота
-   заметно УМЕНЬШЕНА (плитки лотка ~ вдвое меньше доски) —
-   всё место отдано доске. Высота ограничена и шириной,
+   влезает столько, сколько реально принимает игра. Зона
+   ЗАМЕТНО КРУПНЕЕ, чем раньше (слоты ~40px на телефоне) —
+   кости в лотке хорошо читаются. Высота ограничена и шириной,
    и ВЫСОТОЙ экрана — в альбомной ориентации лоток не
    съедает доску. */
 .mj-tray-zone {
-  width: min(94vw, calc((clamp(56px, min(12.5vw, 15vh), 104px) - 14px) * 3.125 + 28px));
-  height: clamp(56px, min(12.5vw, 15vh), 104px);
+  width: min(94vw, calc((clamp(62px, min(14vw, 16vh), 118px) - 14px) * 3.125 + 28px));
+  height: clamp(62px, min(14vw, 16vh), 118px);
   border-radius: 14px;
   background: rgba(5, 22, 40, 0.62);
   box-shadow:
@@ -480,8 +480,8 @@
   background: #e8e4da;
 }
 .mj-circle-btn-sm {
-  width: 38px;
-  height: 38px;
+  width: 42px;
+  height: 42px;
 }
 
 /* док нижних кнопок — мягкая тёмная капсула-подставка,
@@ -526,8 +526,8 @@
     height: 54px;
   }
   .mj-circle-btn-sm {
-    width: 46px;
-    height: 46px;
+    width: 48px;
+    height: 48px;
   }
   .mj-mode-card {
     padding: 20px 22px;
@@ -553,8 +553,8 @@
     height: 62px;
   }
   .mj-circle-btn-sm {
-    width: 54px;
-    height: 54px;
+    width: 56px;
+    height: 56px;
   }
 }
 

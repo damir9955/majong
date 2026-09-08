@@ -71,7 +71,7 @@ export function HUD() {
             aria-label="Вернуть плитку"
             title={`Вернуть последнюю плитку из лотка (осталось ${session.undosLeft})`}
           >
-            <Undo2 className="h-4 w-4 text-sky-900 sm:h-5 sm:w-5 lg:h-6 lg:w-6" />
+            <Undo2 className="h-5 w-5 text-sky-900 sm:h-6 sm:w-6 lg:h-7 lg:w-7" />
           </button>
           <CountBadge
             count={session.undosLeft}
@@ -88,7 +88,7 @@ export function HUD() {
             aria-label="Перемешать"
             title="Перемешать плитки"
           >
-            <Shuffle className="h-4 w-4 text-[#b3382c] sm:h-5 sm:w-5 lg:h-6 lg:w-6" />
+            <Shuffle className="h-5 w-5 text-[#b3382c] sm:h-6 sm:w-6 lg:h-7 lg:w-7" />
           </button>
           <CountBadge
             count={session.shufflesLeft}
@@ -105,7 +105,7 @@ export function HUD() {
             aria-label="Подсказка"
             title="Подсказка"
           >
-            <IconHelp className="h-4 w-4 sm:h-5 sm:w-5 lg:h-6 lg:w-6" />
+            <IconHelp className="h-5 w-5 sm:h-6 sm:w-6 lg:h-7 lg:w-7" />
           </button>
           <CountBadge
             count={session.hintsLeft}

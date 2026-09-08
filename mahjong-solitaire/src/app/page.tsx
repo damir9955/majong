@@ -36,9 +36,13 @@ export default function Page() {
   useEffect(() => {
     setSoundEnabled(useGame.getState().settings.sound);
     if (useGame.persist.hasHydrated()) {
+      // сохранённая партия: поднять счётчик sid, нормализовать
+      // время боя, перезапустить защитные таймеры
+      useGame.getState().resumeAfterHydration();
       useGame.getState().setHydrated(true);
     }
     const unsub = useGame.persist.onFinishHydration(() => {
+      useGame.getState().resumeAfterHydration();
       useGame.getState().setHydrated(true);
       setSoundEnabled(useGame.getState().settings.sound);
     });

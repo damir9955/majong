@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { TileFaceDefs } from "@/components/game/TileFace";
 
 export const metadata: Metadata = {
   title: "Маджонг — классика и матчи 1 на 1",
@@ -40,7 +41,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ru" suppressHydrationWarning>
-      <body className="antialiased bg-[#0e3255]">{children}</body>
+      <body className="antialiased bg-[#0e3255]">
+        {/* глобальные SVG-градиенты граней плиток — один раз на страницу */}
+        <TileFaceDefs />
+        {children}
+      </body>
     </html>
   );
 }

@@ -12,15 +12,15 @@
  *    свободны — нигде не подсвечивается, игрок ищет сам.
  *
  * Лоток — одна зона ровно на 4 плитки с виртуальными позициями:
- *  — прилетевшая плитка занимает первую СВОБОДНУЮ позицию
- *    (пары в момент взрыва свою позицию «держат», поэтому
- *    новые плитки не прилетают друг на друга; если все 4
- *    заняты — плитка коротко ждёт НАД рядом и опускается,
- *    когда взрыв освободит слот);
- *  — пара: прилетевшая садится прямо на жителя, вместе
- *    мягко поднимаются над лотком и взрываются там;
- *  — в момент взрыва остаток тихонько соскальзывает на
- *    освободившиеся позиции.
+ *  — ПАРА ДЕРЖИТ ДВЕ СОСЕДНИЕ ЯЧЕЙКИ: житель — в своей, прилетевшая —
+ *    в следующую (классические «1 и 2» или «3 и 4»);
+ *  — обе съезжаются в точку между ячейками — соединяются в одну
+ *    кость и взрываются там;
+ *  — ячейки взрывающейся пары ЗАРЕЗЕРВИРОВАНЫ ДО ПОЛНОГО КОНЦА
+ *    взрыва: новые плитки летят только в СВОБОДНЫЕ ячейки (3 и 4,
+ *    пока 1 и 2 взрываются) и не наезжают на взрыв;
+ *  — когда взрыв полностью закончился, остаток тихонько
+ *    соскальзывает на освободившиеся ячейки.
  *
  * Полёт ОБЫЧНЫЙ: одно плавное скольжение из доски в слот —
  * без подскока, поворотов и следов-фантомов.
@@ -30,7 +30,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useGame } from '@/lib/game/store';
+import { useGame, type Session } from '@/lib/game/store';
 import { layoutBounds } from '@/lib/mahjong/layouts';
 import { isFree, buildOccupancy } from '@/lib/mahjong/engine';
 import { Tile, type TileVisual } from './Tile';
@@ -41,18 +41,31 @@ import { buzz, playBoom, playPeek } from '@/lib/sound';
 const LAYER_OFF_X = 0.08; // доля ширины плитки — едва заметный сдвиг слоя
 const LAYER_OFF_Y = 0.08; // слои стоят почти ровно, стопка читается
 const TILE_RATIO = 1.28; // высота плитки к ширине
-const MAX_TILE_W = 148; // на планшете/десктопе плитки крупнее
+const MAX_TILE_W = 168; // на планшете/десктопе плитки крупнее
+const RESERVE_MS = 160; // страховка после взрыва до освобождения ячеек
 
 const FLIGHT_MS = 420; // обычный полёт доска → лоток одним скольжением
 const TRAY_MS = 300; // спокойные сдвиги внутри лотка
 const JOIN_MS = 260; // соединение пары в лотке
 const BOOM_MS = 520; // взрыв пары
+const FLIP_MS = 460; // переворот рубашки — полёт начинается ПОСЛЕ него
 const PEEK_HOLD_MS = 300; // удержание до поднятия плитки
 const PEEK_MAX_X = 120;
 const PEEK_MIN_Y = -170;
 const PEEK_MAX_Y = 70;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/** была ли плитка рубашкой вверх в ПРЕДЫДУЩЕМ состоянии партии —
+ *  тогда перед полётом ей нужно сначала развернуться (FLIP_MS) */
+function wasConcealed(sess: Session | null | undefined, id: number): boolean {
+  if (!sess) return false;
+  if (sess.faceDownIds.includes(id)) {
+    return sess.peekId !== id && !sess.revealedIds.includes(id);
+  }
+  if (sess.buriedIds.includes(id)) return !sess.revealedIds.includes(id);
+  return false;
+}
 
 type FlightState = 'tray' | 'joining' | 'gone';
 
@@ -65,6 +78,9 @@ interface FlightCtrl {
   matchedSeq: number;
   /** таймеры этапов полёта конкретной плитки */
   flyTimers: Map<number, number[]>;
+  /** плитки, которые сейчас переворачиваются перед полётом
+   *  (чтобы повторный тап не запланировал второй полёт) */
+  pendingFlip: Set<number>;
 }
 
 export function Board() {
@@ -114,10 +130,10 @@ export function Board() {
 
   const geom = useMemo(() => {
     if (!bounds || size.w < 10 || size.h < 10) return null;
-    // БОКОВЫЕ ПОЛЯ как в топовых маджонгах: доска не упирается в
-    // края экрана — 5% с каждой стороны (телефон ~20px, планшет до 36px)
-    const padX = Math.min(36, Math.max(10, size.w * 0.05));
-    const padY = Math.min(14, Math.max(6, size.h * 0.012));
+    // БОКОВЫЕ ПОЛЯ — совсем узкие (расклады не шире 6 плиток,
+    // крупнее сами кости): телефон ~3%, планшет до 24px
+    const padX = Math.min(24, Math.max(6, size.w * 0.03));
+    const padY = Math.min(10, Math.max(4, size.h * 0.008));
     const xSpan = bounds.maxX - bounds.minX; // в юнитах (плитка = 2)
     const ySpan = bounds.maxY - bounds.minY;
     const availW = size.w - padX * 2;
@@ -155,9 +171,11 @@ export function Board() {
   const concealedSet = useMemo(() => {
     const m = new Set<number>();
     // свободные рубашки: закрыты, кроме текущей подглядки (peekId)
+    // и уже открытых навсегда (revealedIds — в т.ч. улетающие в лоток:
+    // кость летит и взрывается ЛИЦОМ ВВЕРХ, не рубашкой)
     if (faceDownIds) {
       for (const id of faceDownIds) {
-        if (id !== peekId) m.add(id);
+        if (id !== peekId && !revealedIds?.includes(id)) m.add(id);
       }
     }
     // закопанные рубашки: закрыты, пока не открылись сами
@@ -169,23 +187,7 @@ export function Board() {
     return m;
   }, [faceDownIds, buriedIds, revealedIds, peekId]);
 
-  const visuals = useMemo<TileVisual[]>(() => {
-    if (!tiles || !bounds || !geom) return [];
-    return tiles.map((t) => ({
-      tile: t,
-      left: t.z * LAYER_OFF_X * geom.tileW + (t.x - bounds.minX) * geom.ux,
-      top: t.z * LAYER_OFF_Y * geom.tileW + (t.y - bounds.minY) * geom.uy,
-      width: geom.tileW,
-      height: geom.tileH,
-      zIndex: t.z * 1000 + (t.y - bounds.minY),
-      invalid: t.id === invalidId,
-      entering,
-      enterDelay: enterOrder.get(`${t.x},${t.y},${t.z}`) ?? 0,
-      concealed: concealedSet.has(t.id),
-    }));
-  }, [tiles, bounds, geom, invalidId, enterOrder, entering, concealedSet]);
-
-  /* ------------------ полёты, соединение и взрывы ------------------ */
+  /* ------------------ контроллер полётов (refs) ------------------ */
 
   const els = useRef(new Map<number, HTMLDivElement>());
   const registerEl = useCallback((id: number, el: HTMLDivElement | null) => {
@@ -200,7 +202,37 @@ export function Board() {
     baseZ: new Map(),
     matchedSeq: 0,
     flyTimers: new Map(),
+    pendingFlip: new Set(),
   });
+
+  const visuals = useMemo<TileVisual[]>(() => {
+    if (!tiles || !bounds || !geom) return [];
+    // «живые» плитки: лоток + ТЕКУЩАЯ взрывающаяся пара + всё, чем
+    // ещё владеет контроллер полётов (пары, взрывающиеся ПОСЛЕ
+    // нового матча, тоже видны до полного конца взрыва)
+    const live = new Set(session?.tray ?? []);
+    const mp = session?.matchedPair;
+    if (mp) {
+      live.add(mp[0]);
+      live.add(mp[1]);
+    }
+    const animating = fl.current.state;
+    return tiles.map((t) => ({
+      tile: t,
+      left: t.z * LAYER_OFF_X * geom.tileW + (t.x - bounds.minX) * geom.ux,
+      top: t.z * LAYER_OFF_Y * geom.tileW + (t.y - bounds.minY) * geom.uy,
+      width: geom.tileW,
+      height: geom.tileH,
+      zIndex: t.z * 1000 + (t.y - bounds.minY),
+      invalid: t.id === invalidId,
+      entering,
+      enterDelay: enterOrder.get(`${t.x},${t.y},${t.z}`) ?? 0,
+      concealed: concealedSet.has(t.id),
+      gone: t.removed && !live.has(t.id) && !animating.has(t.id),
+    }));
+  }, [tiles, bounds, geom, invalidId, enterOrder, entering, concealedSet, session?.tray, session?.matchedPair]);
+
+  /* ------------------ полёты, соединение и взрывы ------------------ */
 
   const clearFlyTimers = useCallback((id: number) => {
     const F = fl.current;
@@ -305,18 +337,63 @@ export function Board() {
     [placeAt, clearFlyTimers, addFlyTimer],
   );
 
-  /** первая свободная позиция зоны: пары в моменте взрыва свою держат */
+  /** первая свободная позиция зоны: занято всё, что имеет позицию —
+   *  одиночки, соединяющиеся пары и ЯЧЕЙКИ ВЗРЫВАЮЩИХСЯ пар
+   *  (резерв держится до полного конца взрыва) */
   const firstFreePos = useCallback(() => {
-    const F = fl.current;
     const used = new Set<number>();
-    F.posOf.forEach((pos, id) => {
-      const st = F.state.get(id);
-      if (st === 'tray' || st === 'joining') used.add(pos);
-    });
+    fl.current.posOf.forEach((pos) => used.add(pos));
     let i = 0;
     while (used.has(i)) i++;
     return i;
   }, []);
+
+  /** база пары: две СВОБОДНЫЕ соседние ячейки — житель и прилетевшая
+   *  встают рядом, как классические ячейки 1-2 или 3-4 */
+  const pairBasePos = useCallback(() => {
+    const used = new Set<number>();
+    fl.current.posOf.forEach((pos) => used.add(pos));
+    for (let b = 0; b < TRAY_CAP; b++) {
+      if (!used.has(b) && !used.has(b + 1)) return b;
+    }
+    return -1;
+  }, []);
+
+  /** ячейку держит взрывающаяся/соединяющаяся пара (не одиночка)? */
+  const cellBlocked = useCallback((b: number) => {
+    const F = fl.current;
+    let blocked = false;
+    F.posOf.forEach((pos, id) => {
+      if (pos === b && F.state.get(id) !== 'tray') blocked = true;
+    });
+    return blocked;
+  }, []);
+
+  /** пересадить одиночку, занимающую ячейку пары, на свободное место */
+  const makeRoomFor = useCallback(
+    (base: number, a: number, b: number) => {
+      const F = fl.current;
+      const s = useGame.getState().session;
+      if (!s) return;
+      const used = new Set<number>();
+      F.posOf.forEach((pos, id) => {
+        if (id !== a && id !== b) used.add(pos);
+      });
+      used.add(base);
+      used.add(base + 1);
+      for (const id of s.tray) {
+        if (id === a || id === b) continue;
+        const pos = F.posOf.get(id);
+        if (F.state.get(id) === 'tray' && (pos === base || pos === base + 1)) {
+          let np = 0;
+          while (used.has(np)) np++;
+          flyToTray(id, np, true, TRAY_MS);
+          used.add(np);
+        }
+      }
+    },
+    [flyToTray],
+  );
 
   /**
    * ОЧЕРЕДЬ: если все 4 позиции заняты (взрывается пара),
@@ -352,8 +429,9 @@ export function Board() {
 
   /**
    * Остаток лотка тихонько соскальзывает на освободившиеся
-   * позиции (вызывается в момент взрыва пары — пара к этому
-   * моменту поднята над рядом и растворяется выше).
+   * позиции. Вызывается ТОЛЬКО когда взрыв пары полностью
+   * закончился и её ячейки освобождились — никто не наезжает
+   * на взрыв.
    */
   const compactTray = useCallback(() => {
     const F = fl.current;
@@ -361,7 +439,7 @@ export function Board() {
     if (!s) return;
     const used = new Set<number>();
     F.posOf.forEach((pos, id) => {
-      if (F.state.get(id) === 'joining') used.add(pos);
+      if (F.state.get(id) !== 'tray') used.add(pos);
     });
     let next = 0;
     const takePos = () => {
@@ -378,36 +456,39 @@ export function Board() {
   }, [flyToTray]);
 
   /**
-   * Пара: прилетевшая садится прямо на жителя, обе мягко
-   * поднимаются над лотком, тёплое свечение нарастает — и пара
-   * взрывается ВВЕРХУ, над зоной: увеличение, растворение,
-   * волна, вспышка и гало. В момент взрыва остаток ряда
-   * соскальзывает на освободившиеся позиции.
+   * Пара: житель и прилетевшая стоят в СВОИХ ячейках (base и base+1 —
+   * классические «1 и 2»), потом мягко съезжаются в точку между
+   * ячейками — СОЕДИНЯЮТСЯ В ОДНУ кость, светлеют и взрываются там.
+   * Ячейки пары ЗАРЕЗЕРВИРОВАНЫ ДО ПОЛНОГО КОНЦА ВЗРЫВА: новые
+   * плитки летят в свободные ячейки (3 и 4, пока 1 и 2 взрываются)
+   * и не наезжают на взрыв. Освобождение ячеек — только после
+   * полного конца взрыва, затем компакт лотка.
    */
   const pairExplode = useCallback(
-    (resident: number, arriving: number, waitMs: number) => {
+    (resident: number, arriving: number, waitMs: number, base: number) => {
       const F = fl.current;
       window.setTimeout(() => {
         const elR = els.current.get(resident);
         const elA = els.current.get(arriving);
-        if (!elR || !elA) return;
+        const s1 = slotRect(base);
+        const s2 = slotRect(base + 1);
+        if (!elR || !elA || !s1 || !s2) return;
         const rr = elR.getBoundingClientRect();
         const ar = elA.getBoundingClientRect();
         const wR = parseFloat(elR.style.width || '0');
         const wA = parseFloat(elA.style.width || '0');
         const kR = wR ? rr.width / wR : 1;
         const kA = wA ? ar.width / wA : 1;
-        const mx = (rr.left + rr.width / 2 + ar.left + ar.width / 2) / 2;
-        const my = (rr.top + rr.height / 2 + ar.top + ar.height / 2) / 2;
-        const slotH = Math.max(rr.height, ar.height);
+        // точка соединения: середина между ячейками base и base+1
+        const mx = (s1.left + s1.width / 2 + s2.left + s2.width / 2) / 2;
+        const my = (s1.top + s1.height / 2 + s2.top + s2.height / 2) / 2;
+        const slotH = Math.max(s1.height, s2.height);
 
-        // соединение: приподнимаемся НАД рядом (лоток теперь сверху —
-        // «над» значит ВНИЗ, к доске), свечение нарастает
+        // соединение: обе съезжаются в одну точку — «стали в одну кость»
         elR.classList.add('mj-joining');
         elA.classList.add('mj-joining');
-        const lift1 = slotH * 0.45;
-        placeAt(resident, mx, my + lift1, kR * 1.06, JOIN_MS, 'cubic-bezier(.4,.1,.3,1)');
-        placeAt(arriving, mx, my + lift1, kA * 1.06, JOIN_MS, 'cubic-bezier(.4,.1,.3,1)');
+        placeAt(resident, mx, my, kR * 1.06, JOIN_MS, 'cubic-bezier(.4,.1,.3,1)');
+        placeAt(arriving, mx, my, kA * 1.06, JOIN_MS, 'cubic-bezier(.4,.1,.3,1)');
         for (const el of [elR, elA]) {
           el.animate(
             [
@@ -418,20 +499,26 @@ export function Board() {
           );
         }
 
-        // взрыв: пара уходит ещё дальше вниз (к доске) и растворяется
+        // взрыв: соединённая пара мягко оседает чуть ниже ряда
+        // (лоток сверху) и растворяется с увеличением
         window.setTimeout(() => {
-          const lift2 = slotH * 1.15;
+          const lift = slotH * 0.35;
+          const inner = innerRef.current;
           for (const id of [resident, arriving]) {
             const el = els.current.get(id);
-            if (!el) continue;
+            if (!el || !inner) continue;
             clearFlyTimers(id);
-            F.state.set(id, 'gone');
-            F.posOf.delete(id);
+            F.state.set(id, 'gone'); // ячейки ещё ДЕРЖИМ — резерв
             const rect = el.getBoundingClientRect();
             const w = parseFloat(el.style.width || '0');
+            const h = parseFloat(el.style.height || '0');
             const k = w ? rect.width / w : 1;
-            const cx = rect.left + rect.width / 2;
-            const cy = rect.top + rect.height / 2;
+            // КОНЕЧНЫЙ офсет считается от layout-позиции плитки
+            // (style.left/top + inner), а НЕ от текущей точки —
+            // иначе пара «уплывала» обратно к доске во время взрыва
+            const base = inner.getBoundingClientRect();
+            const nx = base.left + parseFloat(el.style.left || '0') + w / 2;
+            const ny = base.top + parseFloat(el.style.top || '0') + h / 2;
             const cur = el.style.transform || 'translate(0px, 0px)';
             el.style.transition = 'none';
             const anim = el.animate(
@@ -442,7 +529,7 @@ export function Board() {
                   filter: 'brightness(1.4)',
                 },
                 {
-                  transform: `translate(${mx - cx}px, ${my + lift2 - cy}px) scale(${k * 1.55})`,
+                  transform: `translate(${mx - nx}px, ${my + lift - ny}px) scale(${k * 1.55})`,
                   opacity: 0,
                   filter: 'brightness(2.1)',
                 },
@@ -466,14 +553,24 @@ export function Board() {
               }, BOOM_MS + 200),
             );
           }
-          ring(mx, my + lift2);
-          flash(mx, my + lift2);
-          glow(mx, my + lift2);
-          sparkle(mx, my + lift2, 20);
+          ring(mx, my + lift);
+          flash(mx, my + lift);
+          glow(mx, my + lift);
+          sparkle(mx, my + lift, 20);
           playBoom();
           buzz(20);
-          // остаток тихонько соскальзывает на место взорвавшихся
-          compactTray();
+          // ПОЛНЫЙ конец взрыва: только теперь ячейки пары
+          // освобождаются — и остаток соскальзывает на них
+          addFlyTimer(
+            resident,
+            window.setTimeout(() => {
+              F.posOf.delete(resident);
+              F.posOf.delete(arriving);
+              F.state.delete(resident);
+              F.state.delete(arriving);
+              compactTray();
+            }, BOOM_MS + RESERVE_MS),
+          );
         }, JOIN_MS + 60);
       }, waitMs + 60);
     },
@@ -527,29 +624,34 @@ export function Board() {
         F.state.clear();
         F.baseZ.clear();
         F.flyTimers.clear();
+        F.pendingFlip.clear();
         F.matchedSeq = s.matchedSeq;
         return;
       }
 
-      // ПАРА: житель остаётся на своей позиции, прилетевшая
-      // садится прямо на него (житель может прилететь и с доски —
-      // peek-пара из рубашки), обе поднимаются и взрываются вверх;
-      // в момент взрыва остаток соскальзывает на свободные позиции
+      // ПАРА: житель — одиночка лотка, прилетевшая — с доски (или
+      // peek-пара с доски). Обе встают в СВОИ соседние ячейки
+      // (житель — в своей, прилетевшая — в следующую), потом
+      // съезжаются, соединяются и взрываются; ячейки держатся
+      // до ПОЛНОГО конца взрыва — новые плитки идут в ячейки 3-4
+      //
+      // ПЕРЕВЁРНУТАЯ кость СНАЧАЛА РАЗВОРАЧИВАЕТСЯ на своём месте
+      // (3D-флип) и только ПОТОМ улетает — не рубашкой вверх.
       const newMatch = s.matchedSeq !== F.matchedSeq ? s.matchedPair : null;
       if (newMatch) {
         F.matchedSeq = s.matchedSeq;
         const [resident, arriving] = newMatch;
-        // позиция пары: житель из лотка — его текущая позиция;
-        // житель с доски — первая свободная позиция зоны
         const residentFlying =
           F.state.has(resident) && F.state.get(resident) === 'tray';
-        // запуск пары в лоток (пара «держит» позицию до конца взрыва —
-        // новички её обходят; прилетевшая садится поверх жителя)
-        const beginPair = (pos: number) => {
-          flyToTray(resident, pos, true, residentFlying ? TRAY_MS : FLIGHT_MS);
-          flyToTray(arriving, pos, true, FLIGHT_MS);
-          F.posOf.set(resident, pos);
-          F.posOf.set(arriving, pos);
+        // сразу помечаем пару «владением контроллера»: плитки не
+        // исчезнут с экрана, пока идёт переворот-задержка или очередь
+        F.state.set(resident, 'joining');
+        F.state.set(arriving, 'joining');
+        const beginPair = (base: number) => {
+          // одиночку из ячейки base+1 тихонько пересаживаем
+          makeRoomFor(base, resident, arriving);
+          flyToTray(resident, base, true, residentFlying ? TRAY_MS : FLIGHT_MS);
+          flyToTray(arriving, base + 1, true, FLIGHT_MS);
           F.state.set(resident, 'joining');
           F.state.set(arriving, 'joining');
           const elA = els.current.get(arriving);
@@ -557,38 +659,80 @@ export function Board() {
           const waitMs = residentFlying
             ? Math.max(FLIGHT_MS, TRAY_MS)
             : FLIGHT_MS + 80;
-          pairExplode(resident, arriving, waitMs);
+          pairExplode(resident, arriving, waitMs, base);
         };
-        let pos = residentFlying
-          ? (F.posOf.get(resident) ?? firstFreePos())
-          : firstFreePos();
-        if (pos >= TRAY_CAP) {
-          // все позиции заняты взрывами — пару тоже запускаем в очереди:
-          // подождём, пока освободится слот (не перекрываем взрыв)
+        // база: житель лотка остаётся в СВОЕЙ ячейке, прилетевшая —
+        // в следующую; из доски — первая пара свободных соседних ячеек
+        const pickBase = () =>
+          residentFlying
+            ? (F.posOf.get(resident) ?? pairBasePos())
+            : pairBasePos();
+        const baseOk = (b: number) =>
+          b >= 0 && b < TRAY_CAP && !cellBlocked(b + 1);
+        const launch = () => {
+          const base = pickBase();
+          if (!baseOk(base)) {
+            // соседних свободных ячеек нет (взрывы держат ряд) —
+            // пару тоже отправляем в очередь: не наезжаем на взрыв
+            const sid0 = s.sid;
+            const t0 = performance.now();
+            const tick = () => {
+              if (fl.current.sid !== sid0) return;
+              const b = pickBase();
+              if (baseOk(b) || performance.now() - t0 > 2500) {
+                beginPair(baseOk(b) ? b : Math.max(0, firstFreePos() - 1));
+              } else {
+                window.setTimeout(tick, 140);
+              }
+            };
+            window.setTimeout(tick, 170);
+          } else {
+            beginPair(base);
+          }
+        };
+        // рубашка в паре? даём ей развернуться (FLIP_MS), потом полёт
+        const needFlip =
+          wasConcealed(p, resident) || wasConcealed(p, arriving);
+        if (needFlip) {
           const sid0 = s.sid;
-          const t0 = performance.now();
-          const tick = () => {
-            if (fl.current.sid !== sid0) return;
-            const p = residentFlying
-              ? (fl.current.posOf.get(resident) ?? firstFreePos())
-              : firstFreePos();
-            if (p < TRAY_CAP || performance.now() - t0 > 2500) beginPair(p);
-            else window.setTimeout(tick, 140);
-          };
-          window.setTimeout(tick, 170);
+          window.setTimeout(() => {
+            if (fl.current.sid === sid0) launch();
+          }, FLIP_MS);
         } else {
-          beginPair(pos);
+          launch();
         }
       }
 
       // новые плитки в лотке — первая СВОБОДНАЯ позиция;
       // если все 4 заняты взрывами — летим ПО ОЧЕРЕДИ, когда
-      // освободится (перезаписи: очередь ждёт на доске)
+      // освободится (перезаписи: очередь ждёт на доске).
+      // Перевёрнутая кость сначала разворачивается на месте —
+      // и только потом улетает в лоток лицом вверх.
       s.tray.forEach((id) => {
-        if (!F.state.has(id)) {
-          const free = firstFreePos();
-          if (free < TRAY_CAP) flyToTray(id, free, true, FLIGHT_MS);
-          else queueFlight(id, s.sid);
+        if (!F.state.has(id) && !F.pendingFlip.has(id)) {
+          const go = () => {
+            F.pendingFlip.delete(id);
+            const cur = useGame.getState().session;
+            // плитку вернули на доску (отмена) или её уже забрала
+            // пара — полёт не нужен
+            if (
+              F.state.has(id) ||
+              !cur ||
+              cur.sid !== s.sid ||
+              !cur.tray.includes(id)
+            ) {
+              return;
+            }
+            const free = firstFreePos();
+            if (free < TRAY_CAP) flyToTray(id, free, true, FLIGHT_MS);
+            else queueFlight(id, s.sid);
+          };
+          if (wasConcealed(p, id)) {
+            F.pendingFlip.add(id);
+            window.setTimeout(go, FLIP_MS);
+          } else {
+            go();
+          }
         }
       });
 
@@ -621,7 +765,7 @@ export function Board() {
       }
     });
     return unsub;
-  }, [flyToTray, pairExplode, returnHome, firstFreePos, queueFlight]);
+  }, [flyToTray, pairExplode, returnHome, firstFreePos, pairBasePos, cellBlocked, makeRoomFor, queueFlight]);
 
   // подсветка пары-подсказки (золотое свечение двух плиток)
   useEffect(() => {
@@ -639,6 +783,9 @@ export function Board() {
   // Важно: зависимость только от size — bounds/geom пересчитываются
   // после каждого тапа (новый массив tiles), и тогда мгновенная
   // пересадка «телепортировала» бы летящую плитку в слот.
+  // При ПЕРВОМ монтировании (size 0 → измерили) этот же эффект
+  // восстанавливает лоток сохранённой партии: плитки мгновенно
+  // расставляются по своим ячейкам, взорвавшиеся скрыты рендером.
   const flyRef = useRef(flyToTray);
   useEffect(() => {
     flyRef.current = flyToTray;
@@ -649,9 +796,13 @@ export function Board() {
     const s = useGame.getState().session;
     if (!s) return;
     requestAnimationFrame(() => {
-      s.tray.forEach((id) => {
-        if (F.state.get(id) === 'tray') {
+      s.tray.forEach((id, i) => {
+        const st = F.state.get(id);
+        if (st === 'tray') {
           flyRef.current(id, F.posOf.get(id) ?? 0, false);
+        } else if (!st && i < TRAY_CAP) {
+          // восстановление сохранённой партии: мгновенная расстановка
+          flyRef.current(id, i, false);
         }
       });
     });
