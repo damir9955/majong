@@ -1,11 +1,14 @@
 'use client';
 
 /**
- * Лоток сверху: 4 места для плиток. Парные плитки взрываются,
- * четыре разные — проигрыш. Плитки прилетают сюда с доски.
+ * Лоток сверху: ОДНА широкая прямоугольная зона вместо четырёх
+ * отдельных ячеек. Плитки прилетают с доски и встают в ряд;
+ * парные соединяются, поднимаются и взрываются, а оставшиеся
+ * мягко соскальзывают на освободившееся место. Три плитки —
+ * мягкое золотое свечение зоны, четыре — красная тревога.
  */
 
-import { slotEls } from '@/lib/game/traySlots';
+import { registerTrayZone } from '@/lib/game/traySlots';
 import { useGame } from '@/lib/game/store';
 
 export function Tray() {
@@ -19,15 +22,7 @@ export function Tray() {
       className={`mj-tray z-20 shrink-0${full ? ' full' : warn ? ' warn' : ''}`}
       aria-label="Лоток для плиток"
     >
-      {[0, 1, 2, 3].map((i) => (
-        <div
-          key={i}
-          className="mj-slot"
-          ref={(el) => {
-            slotEls[i] = el;
-          }}
-        />
-      ))}
+      <div className="mj-tray-zone" ref={registerTrayZone} />
     </div>
   );
 }

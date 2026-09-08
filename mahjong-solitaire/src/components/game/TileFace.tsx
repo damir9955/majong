@@ -1,23 +1,66 @@
 'use client';
 
 /**
- * SVG-грани плиток: кружки, бамбук, знаки, ветры, драконы, цветы, сезоны.
- * Всё рисуется векторно — никаких внешних картинок.
- * Картинки простые и контрастные: легко отличить даже на маленькой плитке.
+ * SVG-грани плиток в классическом стиле (референс пользователя):
+ *  — тонкая тёмно-зелёная рамка по периметру грани, как у настоящих
+ *    костяшек, и пастельный фон СВОЙ у каждой масти — группы
+ *    различаются с первого взгляда;
+ *  — все иероглифы — ЗАЛИТЫЕ КОНТУРЫ (пути) из glyphs.ts: никаких
+ *    <text>/шрифтов, значки видны на любом устройстве сразу;
+ *  — кружки/бамбук — крупные простые знаки, цветы и сезоны —
+ *    простые пиктограммы. Всё векторное, без внешних картинок.
  */
 
 import { memo } from 'react';
-import { CN_CHARS, getTileDef } from '@/lib/mahjong/tiles';
+import { getTileDef } from '@/lib/mahjong/tiles';
+import { GLYPHS, WAN } from './glyphs';
 
-const CJK_FONT =
-  "'Noto Sans SC','Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanYi Zen Hei',sans-serif";
-const BLUE = '#2e6ca8';
-const RED = '#cf4030';
-const GREEN = '#2e8b57';
-const DARK = '#26324a';
-const AMBER = '#c9862d';
+/* классическая палитра знаков */
+const BLUE = '#2b5d9e';
+const RED = '#bf3a30';
+const GREEN = '#2f7d4f';
+const INK = '#2e3f51';
+const IVORY = '#fbf7ec';
 
-/* ---------- Кружки (dots) ---------- */
+/* пастельные фоны мастей + рамка */
+const FRAME = '#2c6a4e';
+const BG: Record<string, string> = {
+  dots: '#d7e7f5',
+  bamboo: '#dcefdd',
+  chars: '#f8f2e0',
+  wind: '#f6ecc4',
+  flower: '#f7dfe9',
+  season: '#e5e0f5',
+};
+const DRAGON_BG = ['#f8dee1', '#ddf0e2', '#eef0f3'];
+
+/** фон грани: пастель по масти + зелёная рамка по периметру */
+function FaceBase({ bg }: { bg: string }) {
+  return (
+    <>
+      <rect x="2.5" y="2.5" width="95" height="125" rx="7.5" fill={bg} />
+      <rect
+        x="2.5"
+        y="2.5"
+        width="95"
+        height="125"
+        rx="7.5"
+        fill="none"
+        stroke={FRAME}
+        strokeWidth="2.6"
+      />
+    </>
+  );
+}
+
+/** иероглиф-контур из glyphs.ts (трансформация уже внутри) */
+function Glyph({ ch, fill }: { ch: string; fill: string }) {
+  const g = GLYPHS[ch];
+  if (!g) return null;
+  return <path d={g.d} transform={g.t} fill={fill} />;
+}
+
+/* ---------- Кружки: просто цветные кружки ---------- */
 
 const DOT_COLS = [26, 50, 74];
 const R3 = [32, 65, 98];
@@ -50,53 +93,53 @@ const DOT_PATTERNS: Record<number, [number, number][]> = {
 };
 
 function DotsFace({ n }: { n: number }) {
+  // единица — один большой красный кружок, остальные — синие
+  if (n === 1) {
+    return (
+      <g transform="translate(50 65) scale(1.28) translate(-50 -65)">
+        <circle cx={50} cy={65} r={26} fill={RED} stroke={IVORY} strokeWidth={4} />
+        <circle cx={50} cy={65} r={12} fill={IVORY} />
+      </g>
+    );
+  }
   const pts = DOT_PATTERNS[n];
-  const r = n === 1 ? 15 : n <= 4 ? 10.5 : n === 5 ? 9.5 : 8.5;
+  const r = n <= 4 ? 12 : n === 5 ? 11 : 10;
   return (
-    <g transform="translate(50 65) scale(1.16) translate(-50 -65)">
+    <g transform="translate(50 65) scale(1.2) translate(-50 -65)">
       {pts.map(([cx, cy], i) => {
         const isAccent =
           (n === 5 && i === 2) ||
           (n === 7 && i === 0) ||
           (n === 9 && cx === 50 && cy === 65);
         return (
-          <g key={`${cx}-${cy}-${i}`}>
-            <circle cx={cx} cy={cy} r={r} fill={isAccent ? RED : BLUE} />
-            <circle cx={cx} cy={cy} r={r * 0.55} fill="#f8f3e0" />
-            <circle cx={cx} cy={cy} r={r * 0.22} fill={isAccent ? RED : BLUE} />
-          </g>
+          <circle
+            key={`${cx}-${cy}-${i}`}
+            cx={cx}
+            cy={cy}
+            r={r}
+            fill={isAccent ? RED : BLUE}
+            stroke={IVORY}
+            strokeWidth={3}
+          />
         );
       })}
     </g>
   );
 }
 
-/* ---------- Бамбук ---------- */
+/* ---------- Бамбук: простые палочки ---------- */
 
 function Stick({ cx, cy, h, color }: { cx: number; cy: number; h: number; color: string }) {
-  const w = h > 30 ? 13 : 12;
+  const w = 15;
   return (
-    <g>
-      <rect
-        x={cx - w / 2}
-        y={cy - h / 2}
-        width={w}
-        height={h}
-        rx={w * 0.3}
-        fill={color}
-      />
-      <rect
-        x={cx - w / 2 + 2.5}
-        y={cy - h / 2 + 2.5}
-        width={w - 5}
-        height={h - 5}
-        rx={w * 0.22}
-        fill="#ffffff"
-        opacity={0.28}
-      />
-      <circle cx={cx} cy={cy - h / 2 + w * 0.6} r={w * 0.3} fill="#f8f3e0" opacity={0.9} />
-      <circle cx={cx} cy={cy + h / 2 - w * 0.6} r={w * 0.3} fill="#f8f3e0" opacity={0.9} />
-    </g>
+    <rect
+      x={cx - w / 2}
+      y={cy - h / 2}
+      width={w}
+      height={h}
+      rx={w * 0.35}
+      fill={color}
+    />
   );
 }
 
@@ -131,15 +174,15 @@ function BambooFace({ n }: { n: number }) {
   if (n === 1) {
     // бамбук-единица: одна простая жирная палочка с листиком
     return (
-      <g transform="translate(50 65) scale(1.14) translate(-50 -65)">
-        <Stick cx={50} cy={64} h={84} color={GREEN} />
+      <g transform="translate(50 65) scale(1.24) translate(-50 -65)">
+        <Stick cx={50} cy={64} h={86} color={GREEN} />
         <path
-          d="M56 44 Q 72 36 78 22 Q 60 26 54 40 Z"
+          d="M58 44 Q 76 34 82 18 Q 60 24 55 40 Z"
           fill={GREEN}
           opacity={0.85}
         />
         <path
-          d="M56 78 Q 72 86 78 100 Q 60 96 54 82 Z"
+          d="M58 80 Q 76 90 82 106 Q 60 100 55 84 Z"
           fill={GREEN}
           opacity={0.6}
         />
@@ -149,7 +192,7 @@ function BambooFace({ n }: { n: number }) {
   const pts = BAM_PATTERNS[n];
   const h = n === 9 || n === 8 ? 26 : n === 7 || n === 6 ? 30 : 34;
   return (
-    <g transform="translate(50 65) scale(1.13) translate(-50 -65)">
+    <g transform="translate(50 65) scale(1.2) translate(-50 -65)">
       {pts.map(([cx, cy], i) => {
         const isAccent =
           (n === 5 && i === 2) || (n === 7 && i === 0) || (n === 6 && cy > 60);
@@ -160,90 +203,38 @@ function BambooFace({ n }: { n: number }) {
   );
 }
 
-/* ---------- Знаки (китайские цифры + 萬) ---------- */
+/* ---------- Знаки: крупная цифра-контур + маленькая 萬 ---------- */
+
+const NUM_GLYPHS = ['一', '二', '三', '四', '五', '六', '七', '八', '九'];
 
 function CharsFace({ n }: { n: number }) {
   return (
     <g>
-      <text
-        x={50}
-        y={52}
-        textAnchor="middle"
-        fontFamily={CJK_FONT}
-        fontSize={56}
-        fontWeight={700}
-        fill={DARK}
-      >
-        {CN_CHARS.num[n - 1]}
-      </text>
-      <text
-        x={50}
-        y={116}
-        textAnchor="middle"
-        fontFamily={CJK_FONT}
-        fontSize={52}
-        fontWeight={700}
-        fill={RED}
-      >
-        万
-      </text>
+      <Glyph ch={NUM_GLYPHS[n - 1]} fill={INK} />
+      <path d={WAN.d} transform={WAN.t} fill={RED} />
     </g>
   );
 }
 
-/* ---------- Ветры ---------- */
+/* ---------- Драконы: 中 / 發 / рамка ---------- */
 
-function WindFace({ n }: { n: number }) {
-  return (
-    <text
-      x={50}
-      y={94}
-      textAnchor="middle"
-      fontFamily={CJK_FONT}
-      fontSize={76}
-      fontWeight={700}
-      fill={DARK}
-    >
-      {CN_CHARS.winds[n - 1].char}
-    </text>
-  );
-}
-
-/* ---------- Драконы ---------- */
+const DRAGON_GLYPHS = ['中', '發'];
+const WIND_GLYPHS = ['東', '南', '西', '北'];
 
 function DragonFace({ n }: { n: number }) {
   if (n === 3) {
-    // Белый дракон — традиционно простая синяя рамка
+    // Белый дракон — двойная синяя рамка
     return (
-      <rect
-        x={21}
-        y={19}
-        width={58}
-        height={94}
-        rx={8}
-        fill="none"
-        stroke={BLUE}
-        strokeWidth={7}
-      />
+      <g fill="none" stroke="#3a6b9a">
+        <rect x={16} y={14} width={68} height={102} rx={9} strokeWidth={8} />
+        <rect x={27} y={25} width={46} height={80} rx={6} strokeWidth={5} />
+      </g>
     );
   }
-  const d = CN_CHARS.dragons[n - 1];
-  return (
-    <text
-      x={50}
-      y={98}
-      textAnchor="middle"
-      fontFamily={CJK_FONT}
-      fontSize={76}
-      fontWeight={700}
-      fill={d.color}
-    >
-      {d.char}
-    </text>
-  );
+  return <Glyph ch={DRAGON_GLYPHS[n - 1]} fill={n === 1 ? RED : GREEN} />;
 }
 
-/* ---------- Цветы: крупные простые пиктограммы ---------- */
+/* ---------- Цветы: простые крупные пиктограммы ---------- */
 
 function petals(
   cx: number,
@@ -271,73 +262,69 @@ function FlowerFace({ n }: { n: number }) {
   if (n === 1) {
     // слива — пять розовых лепестков
     return (
-      <g transform="translate(50 65) scale(1.18) translate(-50 -65)">
-        {petals(50, 63, 5, 17, 12, '#d2547f')}
-        <circle cx={50} cy={63} r={8} fill={AMBER} />
+      <g transform="translate(50 65) scale(1.34) translate(-50 -65)">
+        {petals(50, 63, 5, 20, 13, '#c94f7d')}
+        <circle cx={50} cy={63} r={9} fill="#c9862d" />
       </g>
     );
   }
   if (n === 2) {
     // орхидея — три фиолетовых лепестка
     return (
-      <g transform="translate(50 65) scale(1.18) translate(-50 -65)">
-        {petals(50, 63, 3, 15, 14, '#8e6cc7')}
-        <circle cx={50} cy={63} r={7} fill="#f8f3e0" />
-        <circle cx={50} cy={63} r={3} fill={AMBER} />
+      <g transform="translate(50 65) scale(1.34) translate(-50 -65)">
+        {petals(50, 63, 3, 18, 15, '#8e6cc7')}
+        <circle cx={50} cy={63} r={8} fill="#c9862d" />
       </g>
     );
   }
   if (n === 3) {
-    // хризантема — восемь оранжевых лепестков
+    // хризантема — шесть оранжевых лепестков
     return (
-      <g transform="translate(50 65) scale(1.18) translate(-50 -65)">
-        {petals(50, 63, 8, 17, 8.5, '#d98a2b')}
-        <circle cx={50} cy={63} r={8} fill="#a85f1c" />
-        <circle cx={50} cy={63} r={4} fill="#f8b53e" />
+      <g transform="translate(50 65) scale(1.34) translate(-50 -65)">
+        {petals(50, 63, 6, 20, 11, '#d98a2b')}
+        <circle cx={50} cy={63} r={9} fill="#a85f1c" />
       </g>
     );
   }
   // бамбуковый цветок — две зелёные палочки
   return (
-    <g transform="translate(50 65) scale(1.18) translate(-50 -65)">
-      <Stick cx={41} cy={63} h={72} color={GREEN} />
-      <Stick cx={59} cy={63} h={72} color={GREEN} />
+    <g transform="translate(50 65) scale(1.34) translate(-50 -65)">
+      <Stick cx={41} cy={63} h={78} color={GREEN} />
+      <Stick cx={59} cy={63} h={78} color={GREEN} />
     </g>
   );
 }
 
-/* ---------- Сезоны: крупные простые иконки ---------- */
+/* ---------- Сезоны: простые крупные иконки ---------- */
 
 function SeasonFace({ n }: { n: number }) {
   if (n === 1) {
     // весна — росток с двумя листками
     return (
-      <g transform="translate(50 65) scale(1.16) translate(-50 -65)">
-        <g stroke="#4c9a2f" strokeWidth={5} strokeLinecap="round" fill="none">
-          <path d="M50 96 L50 46" />
-          <path d="M50 62 Q 30 58 24 38 Q 44 38 50 56" fill="#4c9a2f" stroke="none" />
-          <path d="M50 52 Q 70 48 76 28 Q 56 28 50 46" fill="#6db54a" stroke="none" />
-        </g>
+      <g transform="translate(50 65) scale(1.32) translate(-50 -65)">
+        <path d="M50 98 L50 44" stroke="#4c9a2f" strokeWidth={7} strokeLinecap="round" fill="none" />
+        <path d="M50 64 Q 28 58 22 36 Q 46 36 50 58" fill="#4c9a2f" />
+        <path d="M50 52 Q 72 46 78 24 Q 54 24 50 46" fill="#6db54a" />
       </g>
     );
   }
   if (n === 2) {
-    // лето — солнце
+    // лето — солнце: кружок и лучи
     return (
-      <g transform="translate(50 65) scale(1.16) translate(-50 -65)">
-        <circle cx={50} cy={65} r={22} fill="#e8a13a" />
-        <circle cx={50} cy={65} r={14} fill="#f6c968" />
+      <g transform="translate(50 65) scale(1.32) translate(-50 -65)">
+        <circle cx={50} cy={65} r={26} fill="#e8a13a" />
+        <circle cx={50} cy={65} r={15} fill="#f6c968" />
         {Array.from({ length: 8 }).map((_, i) => {
           const a = (i * Math.PI) / 4;
           return (
             <line
               key={i}
-              x1={50 + Math.cos(a) * 28}
-              y1={65 + Math.sin(a) * 28}
-              x2={50 + Math.cos(a) * 38}
-              y2={65 + Math.sin(a) * 38}
+              x1={50 + Math.cos(a) * 32}
+              y1={65 + Math.sin(a) * 32}
+              x2={50 + Math.cos(a) * 42}
+              y2={65 + Math.sin(a) * 42}
               stroke="#e8a13a"
-              strokeWidth={5}
+              strokeWidth={6}
               strokeLinecap="round"
             />
           );
@@ -348,43 +335,33 @@ function SeasonFace({ n }: { n: number }) {
   if (n === 3) {
     // осень — простой лист
     return (
-      <g transform="translate(50 65) scale(1.16) translate(-50 -65)">
+      <g transform="translate(50 65) scale(1.32) translate(-50 -65)">
         <path
-          d="M50 22 C 76 34 82 62 54 86 C 50 89 46 89 42 86 C 18 62 26 34 50 22 Z"
+          d="M50 22 C 78 34 84 62 54 88 C 50 91 46 91 42 88 C 16 62 24 34 50 22 Z"
           fill="#d07030"
         />
-        <path d="M50 30 L50 82" stroke="#a8541c" strokeWidth={4} strokeLinecap="round" />
-        <path d="M50 82 L40 96" stroke="#a8541c" strokeWidth={5} strokeLinecap="round" />
+        <path d="M50 32 L50 82" stroke="#a8541c" strokeWidth={5} strokeLinecap="round" />
+        <path d="M50 84 L40 98" stroke="#a8541c" strokeWidth={6} strokeLinecap="round" />
       </g>
     );
   }
-  // зима — снежинка
+  // зима — простая снежинка: 6 лучей
   return (
-    <g transform="translate(50 65) scale(1.16) translate(-50 -65)">
-      <g stroke="#4a80b8" strokeWidth={5} strokeLinecap="round">
+    <g transform="translate(50 65) scale(1.32) translate(-50 -65)">
+      <g stroke="#4a80b8" strokeWidth={6} strokeLinecap="round">
         {Array.from({ length: 6 }).map((_, i) => {
           const a = (i * Math.PI) / 3;
-          const x2 = 50 + Math.cos(a) * 34;
-          const y2 = 65 + Math.sin(a) * 34;
           return (
-            <g key={i}>
-              <line x1={50} y1={65} x2={x2} y2={y2} />
-              <line
-                x1={x2}
-                y1={y2}
-                x2={x2 - Math.cos(a - 0.6) * 11}
-                y2={y2 - Math.sin(a - 0.6) * 11}
-              />
-              <line
-                x1={x2}
-                y1={y2}
-                x2={x2 - Math.cos(a + 0.6) * 11}
-                y2={y2 - Math.sin(a + 0.6) * 11}
-              />
-            </g>
+            <line
+              key={i}
+              x1={50}
+              y1={65}
+              x2={50 + Math.cos(a) * 38}
+              y2={65 + Math.sin(a) * 38}
+            />
           );
         })}
-        <circle cx={50} cy={65} r={5.5} fill="#4a80b8" stroke="none" />
+        <circle cx={50} cy={65} r={7} fill="#4a80b8" stroke="none" />
       </g>
     </g>
   );
@@ -394,16 +371,19 @@ function SeasonFace({ n }: { n: number }) {
 
 function TileFaceInner({ defId }: { defId: string }) {
   const def = getTileDef(defId);
+  const bg =
+    def.suit === 'dragon' ? DRAGON_BG[def.value - 1] : (BG[def.suit] ?? '#f8f2e0');
   return (
     <svg
       viewBox="0 0 100 130"
       className="h-full w-full select-none"
       aria-hidden="true"
     >
+      <FaceBase bg={bg} />
       {def.suit === 'dots' && <DotsFace n={def.value} />}
       {def.suit === 'bamboo' && <BambooFace n={def.value} />}
       {def.suit === 'chars' && <CharsFace n={def.value} />}
-      {def.suit === 'wind' && <WindFace n={def.value} />}
+      {def.suit === 'wind' && <Glyph ch={WIND_GLYPHS[def.value - 1]} fill={INK} />}
       {def.suit === 'dragon' && <DragonFace n={def.value} />}
       {def.suit === 'flower' && <FlowerFace n={def.value} />}
       {def.suit === 'season' && <SeasonFace n={def.value} />}

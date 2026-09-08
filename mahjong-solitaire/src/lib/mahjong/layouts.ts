@@ -213,16 +213,36 @@ export const LAYOUTS: BoardLayout[] = [
   fortress,
 ];
 
+/** Ландшафтная версия расклада: координаты x↔y — фигура «ложится на бок».
+ *  Чётность и симметрия сохраняются, число плиток то же. */
+function rotateForLandscape(l: BoardLayout): BoardLayout {
+  return {
+    id: `${l.id}-ls`,
+    name: l.name,
+    difficulty: l.difficulty,
+    positions: l.positions.map((p) => ({ x: p.y, y: p.x, z: p.z })),
+  };
+}
+
+/** ландшафтные варианты (по одному на каждую схему) */
+const LAYOUTS_LANDSCAPE: BoardLayout[] = LAYOUTS.map(rotateForLandscape);
+
 /**
  * Детерминированный выбор схемы для уровня: внутри пятёрок уровней
  * идут пять разных сложностей, а следующая пятёрка берёт вторые
  * схемы тех же сложностей — 10 уровней подряд без повторов.
+ * Уровни БЕСКОНЕЧНЫ, но сложность зациклена на 1..5 и никогда
+ * не растёт дальше — как и число плиток (максимум 144).
  * Перезапуск уровня даёт ту же доску.
+ *
+ * landscape: true — повёрнутая версия той же схемы (для планшета
+ * в альбомной ориентации, чтобы плитки оставались крупными).
  */
-export function getLayoutForLevel(level: number): BoardLayout {
+export function getLayoutForLevel(level: number, landscape = false): BoardLayout {
   const d = Math.min(5, Math.max(1, ((level - 1) % 5) + 1));
-  const bucket = LAYOUTS.filter((l) => l.difficulty === d);
-  if (bucket.length === 0) return LAYOUTS[0];
+  const pool = landscape ? LAYOUTS_LANDSCAPE : LAYOUTS;
+  const bucket = pool.filter((l) => l.difficulty === d);
+  if (bucket.length === 0) return pool[0];
   const cycle = Math.floor((level - 1) / 5);
   return bucket[cycle % bucket.length];
 }

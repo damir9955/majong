@@ -175,6 +175,83 @@ export function generateBoard(positions: Pos[]): TileInstance[] {
 }
 
 /**
+ * Сколько плиток лежат рубашкой вверх (СВОБОДНЫХ, тапабельных):
+ * 2 на маленькой доске, до 8 на большой. Сложность цикла
+ * ограничена (1..5), поэтому число рубашек не растёт бесконечно.
+ */
+export function faceDownCountFor(tileCount: number): number {
+  if (tileCount <= 40) return 2;
+  if (tileCount <= 64) return 3;
+  if (tileCount <= 96) return 4;
+  if (tileCount <= 120) return 6;
+  return 8;
+}
+
+/**
+ * Сколько рубашек спрятано ПОД другими костями: они лежат лицом
+ * вниз, пока верхняя кость не снята — как только сверху пусто,
+ * рубашка сама переворачивается. Примерно половина от свободных.
+ */
+export function buriedFaceDownCountFor(tileCount: number): number {
+  return Math.ceil(faceDownCountFor(tileCount) / 2);
+}
+
+/** равномерный шаг по списку — детерминирован самой доской */
+function stridePick<T>(arr: T[], count: number): T[] {
+  if (arr.length <= count) return [...arr];
+  const picked: T[] = [];
+  const stride = arr.length / count;
+  for (let i = 0; i < count; i++) {
+    // (i + 0.5): берём середины равных отрезков — ровнее распределение
+    picked.push(arr[Math.floor(i * stride + stride / 2)]);
+  }
+  return picked;
+}
+
+/**
+ * Выбрать плитки-рубашки. ДВЕ группы:
+ *  — free: СВОБОДНЫЕ стартовые (тап — переворот-подглядывание);
+ *  — buried: ЗАКРЫТЫЕ сверху другими костями — лежат лицом вниз,
+ *    пока верхняя кость не снята; как только сверху пусто,
+ *    рубашка сама переворачивается (авто-открытие).
+ * Выбор детерминирован доской: равномерный шаг по отсортированным
+ * спискам, чтобы рубашки не сгруживались в один угол. Решаемость
+ * не меняется: под рубашкой лежит обычная плитка, порядок
+ * разборов остаётся валидным.
+ */
+export function pickShirts(
+  tiles: TileInstance[],
+): { freeIds: number[]; buriedIds: number[] } {
+  const free = freeTiles(tiles);
+  const occupied = buildOccupancy(tiles);
+  // закрытые сверху: на позиции (x, y, z+1) стоит живая кость.
+  // Отсортированы по id — детерминизм от самой доски.
+  const covered = tiles
+    .filter((t) => occupied.has(`${t.x},${t.y},${t.z + 1}`))
+    .sort((a, b) => a.id - b.id);
+
+  const freeCount = Math.min(faceDownCountFor(tiles.length), free.length);
+  const coveredCount = Math.min(
+    buriedFaceDownCountFor(tiles.length),
+    covered.length,
+  );
+
+  const freeIds = stridePick(
+    [...free].sort((a, b) => a.id - b.id),
+    freeCount,
+  ).map((t) => t.id);
+  const buriedIds = stridePick(covered, coveredCount).map((t) => t.id);
+
+  return { freeIds, buriedIds };
+}
+
+/** прежнее имя (совместимость): все рубашки одним списком */
+export function pickFaceDownTiles(tiles: TileInstance[]): number[] {
+  const { freeIds, buriedIds } = pickShirts(tiles);
+  return [...freeIds, ...buriedIds].sort((a, b) => a - b);
+}
+
+/**
  * Перемешивание оставшихся плиток: переставляем виды плиток
  * по оставшимся позициям так, что доска остаётся решаемой
  * (та же симуляция, но с уже имеющимся набором плиток).

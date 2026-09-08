@@ -11,7 +11,7 @@ export function sparkle(x: number, y: number, n = 14) {
   for (let i = 0; i < n; i++) {
     const d = document.createElement('div');
     d.className = 'mj-spark';
-    const size = 5 + Math.random() * 9;
+    const size = 4.5 + Math.random() * 10;
     const color = SPARK_COLORS[i % SPARK_COLORS.length];
     const round = Math.random() > 0.4 ? '50%' : '2px';
     d.style.cssText = [
@@ -20,24 +20,24 @@ export function sparkle(x: number, y: number, n = 14) {
       `width:${size}px`,
       `height:${size}px`,
       `background:${color}`,
-      `box-shadow:0 0 ${size * 2.2}px ${color}`,
+      `box-shadow:0 0 ${size * 2.4}px ${color}`,
       `border-radius:${round}`,
     ].join(';');
     document.body.appendChild(d);
     const ang = Math.random() * Math.PI * 2;
-    const dist = 30 + Math.random() * 78;
+    const dist = 36 + Math.random() * 96;
     const anim = d.animate(
       [
         { transform: 'translate(0,0) scale(1) rotate(0deg)', opacity: 1 },
         {
           transform: `translate(${Math.cos(ang) * dist}px, ${
-            Math.sin(ang) * dist - 30
+            Math.sin(ang) * dist - 34
           }px) scale(.15) rotate(${Math.random() > 0.5 ? 160 : -160}deg)`,
           opacity: 0,
         },
       ],
       {
-        duration: 560 + Math.random() * 420,
+        duration: 640 + Math.random() * 460,
         easing: 'cubic-bezier(.2,.7,.3,1)',
       },
     );
@@ -45,7 +45,9 @@ export function sparkle(x: number, y: number, n = 14) {
   }
 }
 
-/** ударная волна — расширяющееся кольцо взрыва пары */
+/** ударная волна — расширяющееся кольцо взрыва пары.
+ *  Иначе важно: анимируем и margin, чтобы кольцо росло строго
+ *  из центра ( раньше оно «уезжало» вниз-вправо от угла ). */
 export function ring(x: number, y: number) {
   if (typeof document === 'undefined') return;
   const d = document.createElement('div');
@@ -54,10 +56,24 @@ export function ring(x: number, y: number) {
   document.body.appendChild(d);
   const anim = d.animate(
     [
-      { width: '12px', height: '12px', opacity: 0.95, borderWidth: '5px' },
-      { width: '150px', height: '150px', opacity: 0, borderWidth: '1px' },
+      {
+        width: '14px',
+        height: '14px',
+        marginLeft: '-7px',
+        marginTop: '-7px',
+        opacity: 0.9,
+        borderWidth: '6px',
+      },
+      {
+        width: '210px',
+        height: '210px',
+        marginLeft: '-105px',
+        marginTop: '-105px',
+        opacity: 0,
+        borderWidth: '1px',
+      },
     ],
-    { duration: 480, easing: 'cubic-bezier(.2,.7,.3,1)' },
+    { duration: 620, easing: 'cubic-bezier(.16,.62,.28,1)' },
   );
   anim.onfinish = () => d.remove();
 }
@@ -71,10 +87,27 @@ export function flash(x: number, y: number) {
   document.body.appendChild(d);
   const anim = d.animate(
     [
-      { transform: 'scale(.2)', opacity: 0.95 },
-      { transform: 'scale(1.5)', opacity: 0 },
+      { transform: 'scale(.25)', opacity: 0.9 },
+      { transform: 'scale(1.85)', opacity: 0 },
     ],
-    { duration: 360, easing: 'cubic-bezier(.2,.7,.3,1)' },
+    { duration: 460, easing: 'cubic-bezier(.18,.6,.3,1)' },
+  );
+  anim.onfinish = () => d.remove();
+}
+
+/** мягкое золотое гало, догорающее после взрыва */
+export function glow(x: number, y: number) {
+  if (typeof document === 'undefined') return;
+  const d = document.createElement('div');
+  d.className = 'mj-glow';
+  d.style.cssText = `left:${x}px;top:${y}px;`;
+  document.body.appendChild(d);
+  const anim = d.animate(
+    [
+      { transform: 'scale(.4)', opacity: 0.85 },
+      { transform: 'scale(1.35)', opacity: 0 },
+    ],
+    { duration: 680, easing: 'cubic-bezier(.15,.6,.3,1)' },
   );
   anim.onfinish = () => d.remove();
 }
@@ -96,6 +129,27 @@ export function showToast(text: string) {
       { transform: 'translate(-50%, -10px)', opacity: 0 },
     ],
     { duration: 2100, easing: 'ease-out' },
+  );
+  anim.onfinish = () => d.remove();
+}
+
+/** всплывающие очки «+125» над лотком при собранной паре */
+export function floatScore(text: string, tone: 'normal' | 'gold' = 'normal') {
+  if (typeof window === 'undefined') return;
+  const d = document.createElement('div');
+  d.className = tone === 'gold' ? 'mj-float mj-float-gold' : 'mj-float';
+  d.textContent = text;
+  const x = window.innerWidth / 2 + (Math.random() * 80 - 40);
+  d.style.cssText = `left:${x}px;top:170px;`;
+  document.body.appendChild(d);
+  const anim = d.animate(
+    [
+      { transform: 'translate(-50%, 12px) scale(.8)', opacity: 0 },
+      { transform: 'translate(-50%, -6px) scale(1.18)', opacity: 1, offset: 0.22 },
+      { transform: 'translate(-50%, -22px) scale(1)', opacity: 1, offset: 0.6 },
+      { transform: 'translate(-50%, -64px) scale(.9)', opacity: 0 },
+    ],
+    { duration: 1150, easing: 'cubic-bezier(.2,.7,.3,1)' },
   );
   anim.onfinish = () => d.remove();
 }

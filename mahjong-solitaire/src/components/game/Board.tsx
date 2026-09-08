@@ -7,17 +7,23 @@
  *  — короткий тап по свободной плитке — она улетает в лоток;
  *  — удержание (300 мс) или сдвиг пальцем — плитка поднимается
  *    и следует за пальцем: можно отодвинуть и посмотреть,
- *    что под ней;
+ *    что под ней (только СВОБОДНЫЕ плитки — зажатые не поддаются);
  *  — тап по занятой плитке — «занято» (тряска). Какие плитки
  *    свободны — нигде не подсвечивается, игрок ищет сам.
  *
- * Пара в лотке: прилетевшая плитка встаёт РЯДОМ с парной,
- * затем анимация соединяет их и взрывает.
+ * Лоток — одна зона ровно на 4 плитки с виртуальными позициями:
+ *  — прилетевшая плитка занимает первую СВОБОДНУЮ позицию
+ *    (пары в момент взрыва свою позицию «держат», поэтому
+ *    новые плитки не прилетают друг на друга; если все 4
+ *    заняты — плитка коротко ждёт НАД рядом и опускается,
+ *    когда взрыв освободит слот);
+ *  — пара: прилетевшая садится прямо на жителя, вместе
+ *    мягко поднимаются над лотком и взрываются там;
+ *  — в момент взрыва остаток тихонько соскальзывает на
+ *    освободившиеся позиции.
  *
- * Полёт в лоток двухэтапный: подскок (плитка приподнимается
- * и чуть разворачивается) → плавное скольжение в слот с мягким
- * прилётом. Слои доски почти не смещены друг относительно друга —
- * стопки выглядят ровно.
+ * Полёт ОБЫЧНЫЙ: одно плавное скольжение из доски в слот —
+ * без подскока, поворотов и следов-фантомов.
  *
  * Полёты и взрывы реализованы напрямую через DOM
  * (transform/transition/display), React не трогает эти свойства.
@@ -26,20 +32,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGame } from '@/lib/game/store';
 import { layoutBounds } from '@/lib/mahjong/layouts';
+import { isFree, buildOccupancy } from '@/lib/mahjong/engine';
 import { Tile, type TileVisual } from './Tile';
-import { slotRect } from '@/lib/game/traySlots';
-import { sparkle, ring, flash } from '@/lib/game/fx';
+import { slotRect, TRAY_CAP } from '@/lib/game/traySlots';
+import { sparkle, ring, flash, glow } from '@/lib/game/fx';
 import { buzz, playBoom, playPeek } from '@/lib/sound';
 
 const LAYER_OFF_X = 0.08; // доля ширины плитки — едва заметный сдвиг слоя
 const LAYER_OFF_Y = 0.08; // слои стоят почти ровно, стопка читается
 const TILE_RATIO = 1.28; // высота плитки к ширине
-const MAX_TILE_W = 78;
+const MAX_TILE_W = 148; // на планшете/десктопе плитки крупнее
 
-const HOP_MS = 160; // этап 1: подскок плитки
-const GLIDE_MS = 480; // этап 2: скольжение в слот
-const FLIGHT_MS = HOP_MS + GLIDE_MS;
-const JOIN_MS = 300; // соединение пары в лотке
+const FLIGHT_MS = 420; // обычный полёт доска → лоток одним скольжением
+const TRAY_MS = 300; // спокойные сдвиги внутри лотка
+const JOIN_MS = 260; // соединение пары в лотке
+const BOOM_MS = 520; // взрыв пары
 const PEEK_HOLD_MS = 300; // удержание до поднятия плитки
 const PEEK_MAX_X = 120;
 const PEEK_MIN_Y = -170;
@@ -51,7 +58,8 @@ type FlightState = 'tray' | 'joining' | 'gone';
 
 interface FlightCtrl {
   sid: number;
-  slotOf: Map<number, number>;
+  /** виртуальная позиция плитки в зоне лотка */
+  posOf: Map<number, number>;
   state: Map<number, FlightState>;
   baseZ: Map<number, string>;
   matchedSeq: number;
@@ -65,6 +73,10 @@ export function Board() {
   const sid = session?.sid ?? -1;
   const tiles = session?.tiles;
   const invalidId = session?.invalidId;
+  const faceDownIds = session?.faceDownIds;
+  const buriedIds = session?.buriedIds;
+  const revealedIds = session?.revealedIds;
+  const peekId = session?.peekId;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -102,10 +114,14 @@ export function Board() {
 
   const geom = useMemo(() => {
     if (!bounds || size.w < 10 || size.h < 10) return null;
+    // БОКОВЫЕ ПОЛЯ как в топовых маджонгах: доска не упирается в
+    // края экрана — 5% с каждой стороны (телефон ~20px, планшет до 36px)
+    const padX = Math.min(36, Math.max(10, size.w * 0.05));
+    const padY = Math.min(14, Math.max(6, size.h * 0.012));
     const xSpan = bounds.maxX - bounds.minX; // в юнитах (плитка = 2)
     const ySpan = bounds.maxY - bounds.minY;
-    const availW = size.w - 16;
-    const availH = size.h - 16;
+    const availW = size.w - padX * 2;
+    const availH = size.h - padY * 2;
     const tw = Math.min(
       availW / (xSpan / 2 + bounds.maxZ * LAYER_OFF_X),
       availH / (TILE_RATIO * (ySpan / 2) + bounds.maxZ * LAYER_OFF_Y),
@@ -136,6 +152,23 @@ export function Board() {
     return m;
   }, [sid, tiles]);
 
+  const concealedSet = useMemo(() => {
+    const m = new Set<number>();
+    // свободные рубашки: закрыты, кроме текущей подглядки (peekId)
+    if (faceDownIds) {
+      for (const id of faceDownIds) {
+        if (id !== peekId) m.add(id);
+      }
+    }
+    // закопанные рубашки: закрыты, пока не открылись сами
+    if (buriedIds) {
+      for (const id of buriedIds) {
+        if (!revealedIds?.includes(id)) m.add(id);
+      }
+    }
+    return m;
+  }, [faceDownIds, buriedIds, revealedIds, peekId]);
+
   const visuals = useMemo<TileVisual[]>(() => {
     if (!tiles || !bounds || !geom) return [];
     return tiles.map((t) => ({
@@ -148,8 +181,9 @@ export function Board() {
       invalid: t.id === invalidId,
       entering,
       enterDelay: enterOrder.get(`${t.x},${t.y},${t.z}`) ?? 0,
+      concealed: concealedSet.has(t.id),
     }));
-  }, [tiles, bounds, geom, invalidId, enterOrder, entering]);
+  }, [tiles, bounds, geom, invalidId, enterOrder, entering, concealedSet]);
 
   /* ------------------ полёты, соединение и взрывы ------------------ */
 
@@ -161,7 +195,7 @@ export function Board() {
 
   const fl = useRef<FlightCtrl>({
     sid: -1,
-    slotOf: new Map(),
+    posOf: new Map(),
     state: new Map(),
     baseZ: new Map(),
     matchedSeq: 0,
@@ -186,7 +220,14 @@ export function Board() {
 
   /** поставить плитку центром в экранные координаты (cx, cy) */
   const placeAt = useCallback(
-    (id: number, cx: number, cy: number, scale: number, ms: number, ease = 'cubic-bezier(.28,.7,.3,1)') => {
+    (
+      id: number,
+      cx: number,
+      cy: number,
+      scale: number,
+      ms: number,
+      ease = 'cubic-bezier(.3,.75,.35,1)',
+    ) => {
       const el = els.current.get(id);
       const inner = innerRef.current;
       if (!el || !inner) return;
@@ -212,14 +253,14 @@ export function Board() {
   );
 
   /**
-   * Полёт в слот лотка: подскок → скольжение по дуге с мягким
-   * прилётом. CSS-анимации входа/перемешивания заранее гасятся,
-   * иначе они перекрывают transform и плитка «телепортируется».
+   * Полёт в виртуальную позицию зоны лотка: обычное плавное
+   * скольжение одним движением. CSS-анимации входа/перемешивания
+   * заранее гасятся, иначе они перекрывают transform.
    */
-  const flyToSlot = useCallback(
-    (id: number, idx: number, animate = true) => {
+  const flyToTray = useCallback(
+    (id: number, pos: number, animate = true, ms = FLIGHT_MS) => {
       const el = els.current.get(id);
-      const sr = slotRect(idx);
+      const sr = slotRect(pos);
       if (!el || !sr) return;
       const w = parseFloat(el.style.width || '0');
       if (!w) return;
@@ -232,7 +273,7 @@ export function Board() {
 
       if (!animate) {
         placeAt(id, sr.left + sr.width / 2, sr.top + sr.height / 2, k, 0);
-        F.slotOf.set(id, idx);
+        F.posOf.set(id, pos);
         F.state.set(id, 'tray');
         return;
       }
@@ -249,105 +290,194 @@ export function Board() {
       const dx = sr.left + sr.width / 2 - nx;
       const dy = sr.top + sr.height / 2 - ny;
 
-      // этап 1: подскок — плитка приподнимается навстречу лотку
-      const lift = Math.min(64, 24 + Math.abs(dy) * 0.1);
-      el.style.transition = `transform ${HOP_MS}ms cubic-bezier(.3,.6,.45,1)`;
-      el.style.transform = `translate(${dx * 0.12}px, ${
-        dy * 0.12 - lift
-      }px) scale(1.13) rotate(${dx >= 0 ? 2.5 : -2.5}deg)`;
-
-      // этап 2: скольжение в слот, мягкий прилёт с лёгким перелётом
-      addFlyTimer(
-        id,
-        window.setTimeout(() => {
-          const st = F.state.get(id);
-          if (st !== 'tray' && st !== 'joining') return;
-          el.style.transition = `transform ${GLIDE_MS}ms cubic-bezier(.24,.74,.3,1.04)`;
-          el.style.transform = `translate(${dx}px, ${dy}px) scale(${k})`;
-        }, HOP_MS + 10),
-      );
+      // одно спокойное скольжение — без подскока и поворотов
+      el.style.transition = `transform ${ms}ms cubic-bezier(.3,.75,.35,1)`;
+      el.style.transform = `translate(${dx}px, ${dy}px) scale(${k})`;
       addFlyTimer(
         id,
         window.setTimeout(() => {
           if (fl.current.state.get(id) === 'tray') el.style.transition = '';
-        }, FLIGHT_MS + 80),
+        }, ms + 80),
       );
-      F.slotOf.set(id, idx);
+      F.posOf.set(id, pos);
       F.state.set(id, 'tray');
     },
     [placeAt, clearFlyTimers, addFlyTimer],
   );
 
-  /** первый свободный слот с учётом соединяющейся пары */
-  const firstFreeSlot = useCallback(() => {
+  /** первая свободная позиция зоны: пары в моменте взрыва свою держат */
+  const firstFreePos = useCallback(() => {
     const F = fl.current;
     const used = new Set<number>();
-    F.slotOf.forEach((slot, id) => {
+    F.posOf.forEach((pos, id) => {
       const st = F.state.get(id);
-      if (st === 'tray' || st === 'joining') used.add(slot);
+      if (st === 'tray' || st === 'joining') used.add(pos);
     });
-    for (let i = 0; i < 4; i++) if (!used.has(i)) return i;
-    return -1;
+    let i = 0;
+    while (used.has(i)) i++;
+    return i;
   }, []);
 
   /**
-   * Пара в лотке: обе плитки съезжаются к середине, соединяются
-   * и взрываются с волной, вспышкой и искрами.
+   * ОЧЕРЕДЬ: если все 4 позиции заняты (взрывается пара),
+   * новая плитка НЕ лезет наверх и не перекрывает взрыв —
+   * она тихонько ждёт на доске и летит, как только слот
+   * освободится (взрывы проходят «по очереди»).
    */
-  const joinAndExplode = useCallback(
-    (resident: number, arriving: number) => {
+  const queueFlight = useCallback(
+    (id: number, sid: number) => {
+      const started = performance.now();
+      const tick = () => {
+        const F = fl.current;
+        if (F.sid !== sid) return; // партия сменилась
+        if (F.state.has(id)) return; // уже улетела (в паре)
+        const s = useGame.getState().session;
+        if (!s || s.sid !== sid || !s.tray.includes(id)) return; // вернули на доску
+        const free = firstFreePos();
+        if (free < TRAY_CAP) {
+          flyToTray(id, free, true, FLIGHT_MS);
+          return;
+        }
+        // страховка: совсем без свободных — летим сверху (редкий случай)
+        if (performance.now() - started > 3000) {
+          flyToTray(id, firstFreePos(), true, FLIGHT_MS);
+          return;
+        }
+        window.setTimeout(tick, 130);
+      };
+      window.setTimeout(tick, 170);
+    },
+    [flyToTray, firstFreePos],
+  );
+
+  /**
+   * Остаток лотка тихонько соскальзывает на освободившиеся
+   * позиции (вызывается в момент взрыва пары — пара к этому
+   * моменту поднята над рядом и растворяется выше).
+   */
+  const compactTray = useCallback(() => {
+    const F = fl.current;
+    const s = useGame.getState().session;
+    if (!s) return;
+    const used = new Set<number>();
+    F.posOf.forEach((pos, id) => {
+      if (F.state.get(id) === 'joining') used.add(pos);
+    });
+    let next = 0;
+    const takePos = () => {
+      while (used.has(next)) next++;
+      return next++;
+    };
+    s.tray.forEach((id) => {
+      if (F.state.get(id) !== 'tray') return;
+      const target = takePos();
+      if (F.posOf.get(id) !== target) {
+        flyToTray(id, target, true, TRAY_MS);
+      }
+    });
+  }, [flyToTray]);
+
+  /**
+   * Пара: прилетевшая садится прямо на жителя, обе мягко
+   * поднимаются над лотком, тёплое свечение нарастает — и пара
+   * взрывается ВВЕРХУ, над зоной: увеличение, растворение,
+   * волна, вспышка и гало. В момент взрыва остаток ряда
+   * соскальзывает на освободившиеся позиции.
+   */
+  const pairExplode = useCallback(
+    (resident: number, arriving: number, waitMs: number) => {
       const F = fl.current;
-      // ждём прилёта второй плитки
-      setTimeout(() => {
+      window.setTimeout(() => {
         const elR = els.current.get(resident);
         const elA = els.current.get(arriving);
         if (!elR || !elA) return;
         const rr = elR.getBoundingClientRect();
         const ar = elA.getBoundingClientRect();
-        const mx = (rr.left + rr.width / 2 + ar.left + ar.width / 2) / 2;
-        const my = (rr.top + rr.height / 2 + ar.top + ar.height / 2) / 2;
         const wR = parseFloat(elR.style.width || '0');
         const wA = parseFloat(elA.style.width || '0');
         const kR = wR ? rr.width / wR : 1;
         const kA = wA ? ar.width / wA : 1;
+        const mx = (rr.left + rr.width / 2 + ar.left + ar.width / 2) / 2;
+        const my = (rr.top + rr.height / 2 + ar.top + ar.height / 2) / 2;
+        const slotH = Math.max(rr.height, ar.height);
 
-        // соединение: съезжаются к середине
+        // соединение: приподнимаемся НАД рядом (лоток теперь сверху —
+        // «над» значит ВНИЗ, к доске), свечение нарастает
         elR.classList.add('mj-joining');
         elA.classList.add('mj-joining');
-        placeAt(resident, mx, my, kR * 1.12, JOIN_MS, 'cubic-bezier(.45,0,.55,1)');
-        placeAt(arriving, mx, my, kA * 1.12, JOIN_MS, 'cubic-bezier(.45,0,.55,1)');
+        const lift1 = slotH * 0.45;
+        placeAt(resident, mx, my + lift1, kR * 1.06, JOIN_MS, 'cubic-bezier(.4,.1,.3,1)');
+        placeAt(arriving, mx, my + lift1, kA * 1.06, JOIN_MS, 'cubic-bezier(.4,.1,.3,1)');
+        for (const el of [elR, elA]) {
+          el.animate(
+            [
+              { filter: 'brightness(1.05)' },
+              { filter: 'brightness(1.4) saturate(1.1)' },
+            ],
+            { duration: Math.max(JOIN_MS, 260), easing: 'ease-in', fill: 'forwards' },
+          );
+        }
 
-        // взрыв
-        setTimeout(() => {
+        // взрыв: пара уходит ещё дальше вниз (к доске) и растворяется
+        window.setTimeout(() => {
+          const lift2 = slotH * 1.15;
           for (const id of [resident, arriving]) {
             const el = els.current.get(id);
             if (!el) continue;
             clearFlyTimers(id);
             F.state.set(id, 'gone');
-            F.slotOf.delete(id);
+            F.posOf.delete(id);
+            const rect = el.getBoundingClientRect();
+            const w = parseFloat(el.style.width || '0');
+            const k = w ? rect.width / w : 1;
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
             const cur = el.style.transform || 'translate(0px, 0px)';
             el.style.transition = 'none';
             const anim = el.animate(
               [
-                { transform: cur, opacity: 1, filter: 'brightness(1.6)' },
-                { transform: `${cur} scale(1.7)`, opacity: 0, filter: 'brightness(2.2)' },
+                {
+                  transform: cur,
+                  opacity: 1,
+                  filter: 'brightness(1.4)',
+                },
+                {
+                  transform: `translate(${mx - cx}px, ${my + lift2 - cy}px) scale(${k * 1.55})`,
+                  opacity: 0,
+                  filter: 'brightness(2.1)',
+                },
               ],
-              { duration: 400, easing: 'cubic-bezier(.3,.7,.4,1)', fill: 'forwards' },
+              {
+                duration: BOOM_MS,
+                easing: 'cubic-bezier(.2,.6,.3,1)',
+                fill: 'forwards',
+              },
             );
             anim.onfinish = () => {
               el.style.display = 'none';
               el.classList.remove('mj-joining');
             };
+            // страховка от «зависшей» плитки (фоновая вкладка)
+            addFlyTimer(
+              id,
+              window.setTimeout(() => {
+                el.style.display = 'none';
+                el.classList.remove('mj-joining');
+              }, BOOM_MS + 200),
+            );
           }
-          ring(mx, my);
-          flash(mx, my);
-          sparkle(mx, my, 22);
+          ring(mx, my + lift2);
+          flash(mx, my + lift2);
+          glow(mx, my + lift2);
+          sparkle(mx, my + lift2, 20);
           playBoom();
-          buzz(24);
+          buzz(20);
+          // остаток тихонько соскальзывает на место взорвавшихся
+          compactTray();
         }, JOIN_MS + 60);
-      }, FLIGHT_MS + 60);
+      }, waitMs + 60);
     },
-    [placeAt, clearFlyTimers],
+    [placeAt, clearFlyTimers, addFlyTimer, compactTray],
   );
 
   const returnHome = useCallback(
@@ -357,9 +487,9 @@ export function Board() {
       const F = fl.current;
       clearFlyTimers(id);
       F.state.delete(id);
-      F.slotOf.delete(id);
+      F.posOf.delete(id);
       el.classList.remove('mj-joining');
-      el.style.transition = `transform ${FLIGHT_MS}ms cubic-bezier(.25,.8,.3,1.04)`;
+      el.style.transition = `transform ${FLIGHT_MS}ms cubic-bezier(.3,.75,.35,1)`;
       el.style.transform = '';
       const bz = F.baseZ.get(id);
       setTimeout(() => {
@@ -375,6 +505,14 @@ export function Board() {
 
   // реакция на изменения партии
   useEffect(() => {
+    // ВАЖНО: доска монтируется уже ПОСЛЕ создания сессии (экран режимов).
+    // Синхронизируем контроллер с текущей партией при подписке — иначе
+    // первый тап попадёт в ветку «новая доска» и плитка не улетит в лоток.
+    const cur = useGame.getState().session;
+    if (cur && fl.current.sid !== cur.sid) {
+      fl.current.sid = cur.sid;
+      fl.current.matchedSeq = cur.matchedSeq;
+    }
     const unsub = useGame.subscribe((st, prev) => {
       const s = st.session;
       const p = prev.session;
@@ -385,7 +523,7 @@ export function Board() {
         // новая доска — сброс контроллера
         F.flyTimers.forEach((timers) => timers.forEach((t) => window.clearTimeout(t)));
         F.sid = s.sid;
-        F.slotOf.clear();
+        F.posOf.clear();
         F.state.clear();
         F.baseZ.clear();
         F.flyTimers.clear();
@@ -393,30 +531,64 @@ export function Board() {
         return;
       }
 
-      // ПАРА: прилетевшая встаёт рядом с жителем, остальные уплотняются,
-      // затем пара соединяется и взрывается
+      // ПАРА: житель остаётся на своей позиции, прилетевшая
+      // садится прямо на него (житель может прилететь и с доски —
+      // peek-пара из рубашки), обе поднимаются и взрываются вверх;
+      // в момент взрыва остаток соскальзывает на свободные позиции
       const newMatch = s.matchedSeq !== F.matchedSeq ? s.matchedPair : null;
       if (newMatch) {
         F.matchedSeq = s.matchedSeq;
         const [resident, arriving] = newMatch;
-        const L = s.tray.length; // остальные займут слоты 0..L-1
-        // остальные плитки уплотняются к началу лотка
-        s.tray.forEach((id, i) => {
-          if (F.state.get(id) === 'tray') flyToSlot(id, i, true);
-        });
-        // житель съезжает в слот L, прилетевшая — рядом, в L+1
-        flyToSlot(resident, L, true);
-        F.state.set(resident, 'joining');
-        flyToSlot(arriving, Math.min(L + 1, 3), true);
-        F.state.set(arriving, 'joining');
-        joinAndExplode(resident, arriving);
+        // позиция пары: житель из лотка — его текущая позиция;
+        // житель с доски — первая свободная позиция зоны
+        const residentFlying =
+          F.state.has(resident) && F.state.get(resident) === 'tray';
+        // запуск пары в лоток (пара «держит» позицию до конца взрыва —
+        // новички её обходят; прилетевшая садится поверх жителя)
+        const beginPair = (pos: number) => {
+          flyToTray(resident, pos, true, residentFlying ? TRAY_MS : FLIGHT_MS);
+          flyToTray(arriving, pos, true, FLIGHT_MS);
+          F.posOf.set(resident, pos);
+          F.posOf.set(arriving, pos);
+          F.state.set(resident, 'joining');
+          F.state.set(arriving, 'joining');
+          const elA = els.current.get(arriving);
+          if (elA) elA.style.zIndex = '7100';
+          const waitMs = residentFlying
+            ? Math.max(FLIGHT_MS, TRAY_MS)
+            : FLIGHT_MS + 80;
+          pairExplode(resident, arriving, waitMs);
+        };
+        let pos = residentFlying
+          ? (F.posOf.get(resident) ?? firstFreePos())
+          : firstFreePos();
+        if (pos >= TRAY_CAP) {
+          // все позиции заняты взрывами — пару тоже запускаем в очереди:
+          // подождём, пока освободится слот (не перекрываем взрыв)
+          const sid0 = s.sid;
+          const t0 = performance.now();
+          const tick = () => {
+            if (fl.current.sid !== sid0) return;
+            const p = residentFlying
+              ? (fl.current.posOf.get(resident) ?? firstFreePos())
+              : firstFreePos();
+            if (p < TRAY_CAP || performance.now() - t0 > 2500) beginPair(p);
+            else window.setTimeout(tick, 140);
+          };
+          window.setTimeout(tick, 170);
+        } else {
+          beginPair(pos);
+        }
       }
 
-      // новые плитки в лотке
-      s.tray.forEach((id, i) => {
+      // новые плитки в лотке — первая СВОБОДНАЯ позиция;
+      // если все 4 заняты взрывами — летим ПО ОЧЕРЕДИ, когда
+      // освободится (перезаписи: очередь ждёт на доске)
+      s.tray.forEach((id) => {
         if (!F.state.has(id)) {
-          const free = firstFreeSlot();
-          flyToSlot(id, free >= 0 ? free : i, true);
+          const free = firstFreePos();
+          if (free < TRAY_CAP) flyToTray(id, free, true, FLIGHT_MS);
+          else queueFlight(id, s.sid);
         }
       });
 
@@ -428,15 +600,6 @@ export function Board() {
       returned.forEach((id) => {
         if (F.state.get(id) === 'tray') returnHome(id);
       });
-
-      // уплотнение лотка (кроме кадра самого взрыва — там свой сценарий)
-      if (!newMatch) {
-        s.tray.forEach((id, i) => {
-          if (F.state.get(id) === 'tray' && F.slotOf.get(id) !== i) {
-            flyToSlot(id, i, true);
-          }
-        });
-      }
 
       // перемешивание: волна переворотов по оставшимся плиткам
       if (s.shuffleSeq !== p.shuffleSeq) {
@@ -458,7 +621,7 @@ export function Board() {
       }
     });
     return unsub;
-  }, [flyToSlot, joinAndExplode, returnHome, firstFreeSlot]);
+  }, [flyToTray, pairExplode, returnHome, firstFreePos, queueFlight]);
 
   // подсветка пары-подсказки (золотое свечение двух плиток)
   useEffect(() => {
@@ -476,9 +639,9 @@ export function Board() {
   // Важно: зависимость только от size — bounds/geom пересчитываются
   // после каждого тапа (новый массив tiles), и тогда мгновенная
   // пересадка «телепортировала» бы летящую плитку в слот.
-  const flyRef = useRef(flyToSlot);
+  const flyRef = useRef(flyToTray);
   useEffect(() => {
-    flyRef.current = flyToSlot;
+    flyRef.current = flyToTray;
   });
   useEffect(() => {
     if (size.w < 10) return;
@@ -486,8 +649,10 @@ export function Board() {
     const s = useGame.getState().session;
     if (!s) return;
     requestAnimationFrame(() => {
-      s.tray.forEach((id, i) => {
-        if (F.state.get(id) === 'tray') flyRef.current(id, i, false);
+      s.tray.forEach((id) => {
+        if (F.state.get(id) === 'tray') {
+          flyRef.current(id, F.posOf.get(id) ?? 0, false);
+        }
       });
     });
   }, [size]);
@@ -503,6 +668,8 @@ export function Board() {
     id: -1,
     el: null as HTMLDivElement | null,
     peek: false,
+    /** свободную плитку можно поднять пальцем, зажатую — нет */
+    liftable: false,
     timer: 0,
     moved: 0,
     baseZ: '',
@@ -517,7 +684,7 @@ export function Board() {
 
   const beginPeek = () => {
     const g = gs.current;
-    if (g.peek || !g.el) return;
+    if (g.peek || !g.el || !g.liftable) return;
     g.peek = true;
     g.el.classList.add('mj-peek');
     g.el.style.zIndex = '8000';
@@ -530,13 +697,13 @@ export function Board() {
     const el = g.el;
     if (!el) return;
     el.classList.remove('mj-peek');
-    el.style.transition = 'transform .34s cubic-bezier(.2,1.5,.4,1)';
+    el.style.transition = 'transform .32s cubic-bezier(.3,.75,.35,1)';
     el.style.transform = '';
     const bz = g.baseZ;
     setTimeout(() => {
       el.style.transition = '';
       if (el.style.zIndex === '8000') el.style.zIndex = bz;
-    }, 380);
+    }, 360);
   };
 
   const onPointerDown = useCallback(
@@ -565,6 +732,9 @@ export function Board() {
       g.peek = false;
       g.moved = 0;
       g.baseZ = el.style.zIndex || '';
+      // поднять пальцем можно только СВОБОДНУЮ плитку
+      const tile = s.tiles.find((t) => t.id === id);
+      g.liftable = !!tile && isFree(tile, buildOccupancy(s.tiles));
       g.timer = window.setTimeout(beginPeek, PEEK_HOLD_MS);
     },
     [],
@@ -604,6 +774,7 @@ export function Board() {
       g.id = -1;
       g.pid = -1;
       g.peek = false;
+      g.liftable = false;
       g.timer = 0;
     },
     [tapTile],

@@ -8,3 +8,22 @@
 export function difficultyForLevel(level: number): number {
   return ((level - 1) % 5) + 1;
 }
+
+/**
+ * Палитра цветов рубашек: смена НЕ часто — каждые 5 уровней
+ * (в такт циклу сложности), по кругу. Каждая — глубокий
+ * «фетровый» тон, золотой орнамент читается на любом.
+ */
+const BACK_PALETTES: Array<[string, string]> = [
+  ['#2c5a49', '#123127'], // зелёный (классика)
+  ['#2d4f74', '#12283f'], // синий
+  ['#6e3040', '#301219'], // винный
+  ['#4a3468', '#221533'], // аметист
+  ['#6e5327', '#31230d'], // бронза
+];
+
+/** Цвет рубашки для уровня: [светлый тон, тёмный тон] */
+export function backColorsForLevel(level: number): [string, string] {
+  const idx = Math.floor((level - 1) / 5) % BACK_PALETTES.length;
+  return BACK_PALETTES[idx];
+}

@@ -1,10 +1,15 @@
 'use client';
 
 /**
- * Плитка доски: объёмная «костяная» грань + анимации входа,
- * «занято» и подсказка. Позиционированием и полётами управляет
- * Board напрямую через DOM (React не пишет transform/transition/display).
- * Занятые плитки НИЧЕМ не выделены — где ход, игрок ищет сам.
+ * Плитка доски: классическая «костяшка» — мятно-зелёное тело
+ * с заметной толщиной (боковая грань) и светлая грань с тонкой
+ * тёмно-зелёной рамкой (рисуется в TileFace). Позиционированием
+ * и полётами управляет Board напрямую через DOM (React не пишет
+ * transform/transition/display). Занятые плитки НИЧЕМ не выделены.
+ *
+ * Рубашка: concealed=true — плитка лежит лицом вниз (тёмная
+ * «ткань» с золотым орнаментом). Переворот — 3D-поворот
+ * .mj-flipper (грань и рубашка с backface-visibility).
  */
 
 import { memo } from 'react';
@@ -25,6 +30,8 @@ export interface TileVisual {
   entering: boolean;
   /** задержка анимации появления */
   enterDelay: number;
+  /** плитка лежит рубашкой вверх */
+  concealed: boolean;
 }
 
 interface Props {
@@ -40,6 +47,7 @@ function TileInner({ v, registerEl }: Props) {
 
   const cls = [
     'mj-tile',
+    v.concealed ? 'concealed' : '',
     v.entering ? 'mj-enter' : '',
     v.invalid ? 'mj-invalid' : '',
   ]
@@ -53,7 +61,7 @@ function TileInner({ v, registerEl }: Props) {
       }}
       data-tile-id={tile.id}
       role="button"
-      aria-label={def.name}
+      aria-label={v.concealed ? 'Закрытая плитка' : def.name}
       className={cls}
       style={{
         position: 'absolute',
@@ -63,12 +71,17 @@ function TileInner({ v, registerEl }: Props) {
         height: v.height,
         zIndex: v.zIndex,
         borderRadius: radius,
-        boxShadow: `inset 0 1px 0 rgba(255,255,255,.9), inset ${-depth * 0.5}px ${-depth}px 0 rgba(148,128,88,.4), 0 ${depth}px ${depth}px 0 rgba(120,104,72,.6), 0 ${depth + 3}px ${depth + 8}px rgba(0,0,0,.3)`,
+        // боковушки — слегка серые (кость цвета слоновой кости),
+        // а не зелёные: грань и тело не спорят по цвету
+        boxShadow: `inset 0 1px 0 rgba(255,255,255,.6), 0 ${depth}px ${Math.max(2, depth * 0.45)}px 0 rgba(106,104,96,.48), 0 ${depth + 3}px ${depth * 7}px rgba(0,0,0,.26)`,
         animationDelay: `${v.enterDelay}ms`,
       }}
     >
-      <div className="mj-face" style={{ borderRadius: radius * 0.72 }}>
-        <TileFace defId={tile.defId} />
+      <div className="mj-flipper">
+        <div className="mj-face" style={{ borderRadius: radius * 0.78 }}>
+          <TileFace defId={tile.defId} />
+        </div>
+        <div className="mj-back" style={{ borderRadius: radius }} />
       </div>
     </div>
   );
