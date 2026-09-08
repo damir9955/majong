@@ -55,7 +55,7 @@ function HomeScreen() {
         title="Звук"
       >
         {sound ? (
-          <Volume2 className="h-5 w-5 text-emerald-900 sm:h-6 sm:w-6" />
+          <Volume2 className="h-5 w-5 text-sky-900 sm:h-6 sm:w-6" />
         ) : (
           <VolumeX className="h-5 w-5 text-stone-400 sm:h-6 sm:w-6" />
         )}
@@ -63,13 +63,13 @@ function HomeScreen() {
       <div className="flex flex-col items-center gap-3">
         <div className="flex items-end gap-2 sm:gap-3">
           <div className="mj-logo-tile" style={{ transform: 'rotate(-8deg)' }}>
-            <TileFace defId="dot-2" />
+            <TileFace defId="drg-1" />
           </div>
           <div
             className="mj-logo-tile"
             style={{ transform: 'rotate(6deg) translateY(-6px)' }}
           >
-            <TileFace defId="drg-1" />
+            <TileFace defId="drg-2" />
           </div>
         </div>
         <p className="text-lg font-bold tracking-[0.3em] text-amber-200/85 sm:text-2xl lg:text-3xl">
@@ -82,7 +82,7 @@ function HomeScreen() {
           <span
             className="mj-mode-ico"
             style={{
-              background: 'linear-gradient(160deg, #7fd8ae, #2e8b57)',
+              background: 'linear-gradient(160deg, #7fc0ec, #2e6b9e)',
               boxShadow: 'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
             }}
           >
@@ -119,9 +119,9 @@ function HomeScreen() {
         </button>
       </div>
 
-      {/* просто номер — без слова «уровень», числа идут бесконечно */}
+      {/* чип уровня: «Уровень N» — как в классических маджонгах */}
       <span className="mj-level-chip text-[13px] font-black sm:text-base lg:text-lg">
-        {level}
+        Уровень {level}
       </span>
     </div>
   );
@@ -171,13 +171,13 @@ function TopBar() {
           <Tray />
         </div>
         <span className="mj-level-chip shrink-0 text-[13px] font-black tabular-nums sm:text-base lg:text-lg">
-          {session.level}
+          Уровень {session.level}
         </span>
       </header>
       {confirmExit && (
         <div className="mj-overlay z-50" role="dialog" aria-modal="true">
           <div className="mj-card">
-            <h2 className="text-2xl font-black text-emerald-900 sm:text-3xl">
+            <h2 className="text-2xl font-black text-sky-900 sm:text-3xl">
               Выйти в меню?
             </h2>
             <p className="mt-1 text-sm font-semibold text-stone-500 sm:text-base">
@@ -211,7 +211,7 @@ function BonusChip({ kind, delay }: { kind: 'hint' | 'shuffle'; delay: number })
       {isHint ? (
         <Lightbulb className="h-4 w-4 text-amber-600" />
       ) : (
-        <Shuffle className="h-4 w-4 text-emerald-600" />
+        <Shuffle className="h-4 w-4 text-sky-600" />
       )}
       {isHint ? 'Подсказка +1' : 'Перемешать +1'}
     </span>
@@ -251,8 +251,8 @@ function ClassicResult() {
     return (
       <div className="mj-overlay">
         <div className="mj-card">
-          <h2 className="text-3xl font-black text-emerald-700 sm:text-4xl">
-            Пройдено!
+          <h2 className="text-3xl font-black text-sky-700 sm:text-4xl">
+            Уровень пройден!
           </h2>
           <p className="mt-1 text-sm font-semibold text-stone-500 sm:text-base">
             Доска собрана — дальше новая
@@ -303,7 +303,7 @@ function Tutorial({ mode, onGo }: { mode: GameMode; onGo: () => void }) {
   return (
     <div className="mj-overlay">
       <div className="mj-card">
-        <h2 className="text-3xl font-black text-emerald-900">
+        <h2 className="text-3xl font-black text-sky-900">
           {mode === 'battle' ? 'Маджонг 1 на 1' : 'Маджонг'}
         </h2>
         <div className="mt-2 flex flex-col gap-3">

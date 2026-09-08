@@ -71,7 +71,7 @@ export function HUD() {
             aria-label="Вернуть плитку"
             title={`Вернуть последнюю плитку из лотка (осталось ${session.undosLeft})`}
           >
-            <Undo2 className="h-4 w-4 text-emerald-900 sm:h-5 sm:w-5 lg:h-6 lg:w-6" />
+            <Undo2 className="h-4 w-4 text-sky-900 sm:h-5 sm:w-5 lg:h-6 lg:w-6" />
           </button>
           <CountBadge
             count={session.undosLeft}

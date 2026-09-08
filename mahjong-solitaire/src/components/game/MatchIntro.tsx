@@ -111,7 +111,7 @@ export function MatchIntro() {
             Поиск соперника
           </p>
           <p className="mt-2 text-xs text-stone-300/70">
-            {session.level} · {b.totalPairs} пар
+            Уровень {session.level} · {b.totalPairs} пар
           </p>
         </div>
       </div>

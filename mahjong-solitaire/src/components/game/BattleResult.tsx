@@ -27,7 +27,7 @@ function BonusChip({ kind, delay }: { kind: BonusItem; delay: number }) {
       {isHint ? (
         <Lightbulb className="h-4 w-4 text-amber-600" />
       ) : (
-        <Shuffle className="h-4 w-4 text-emerald-600" />
+        <Shuffle className="h-4 w-4 text-sky-600" />
       )}
       {isHint ? 'Подсказка +1' : 'Перемешать +1'}
     </span>
@@ -71,11 +71,11 @@ export function BattleResult() {
       <div className="mj-card mj-result-card">
         <p className="flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.3em] text-stone-500">
           <Swords className="h-3.5 w-3.5" />
-          матч · {session?.level}
+          матч · уровень {session?.level}
         </p>
         <h2
           className={`mt-1 text-4xl font-black ${
-            won ? 'text-emerald-700' : 'text-rose-600'
+            won ? 'text-sky-700' : 'text-rose-600'
           }`}
         >
           {won ? 'Победа!' : 'Поражение'}

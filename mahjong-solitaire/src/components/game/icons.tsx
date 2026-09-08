@@ -14,7 +14,7 @@ export function IconHome({ className }: { className?: string }) {
       />
       <path
         d="M12 7.5 19.4 13.9v5.6c0 .8-.6 1.4-1.4 1.4H6c-.8 0-1.4-.6-1.4-1.4v-5.6L12 7.5Z"
-        fill="#1f5c46"
+        fill="#1d4f7c"
       />
       <rect x="9.8" y="14.8" width="4.4" height="6.1" rx="1.3" fill="#f4ead0" />
     </svg>
