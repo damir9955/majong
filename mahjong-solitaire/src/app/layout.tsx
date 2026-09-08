@@ -30,7 +30,7 @@ export const viewport: Viewport = {
   maximumScale: 1,
   userScalable: false,
   viewportFit: "cover",
-  themeColor: "#0d4030",
+  themeColor: "#0e3255",
 };
 
 export default function RootLayout({
@@ -40,7 +40,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ru" suppressHydrationWarning>
-      <body className="antialiased bg-[#0d4030]">{children}</body>
+      <body className="antialiased bg-[#0e3255]">{children}</body>
     </html>
   );
 }

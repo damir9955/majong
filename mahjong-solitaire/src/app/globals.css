@@ -129,11 +129,11 @@
     'Microsoft YaHei', 'WenQuanYi Zen Hei', sans-serif;
 }
 
-/* сукно игрового стола: глубокий нефрит с верхним светом */
+/* сукно игрового стола: глубокий синий с верхним светом */
 .mj-table {
   background:
-    radial-gradient(ellipse 130% 80% at 50% -18%, rgba(84, 178, 132, 0.4) 0%, rgba(30, 106, 76, 0) 62%),
-    radial-gradient(ellipse 120% 90% at 50% 34%, #175c46 0%, #0f4634 52%, #0a3125 100%);
+    radial-gradient(ellipse 130% 80% at 50% -18%, rgba(96, 168, 228, 0.36) 0%, rgba(30, 92, 156, 0) 62%),
+    radial-gradient(ellipse 120% 90% at 50% 34%, #1e5a8f 0%, #154675 52%, #0e3255 100%);
   color: #f3ead0;
   user-select: none;
   -webkit-user-select: none;
@@ -155,7 +155,7 @@
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(ellipse 105% 100% at 50% 42%, transparent 58%, rgba(2, 14, 10, 0.5) 100%);
+  background: radial-gradient(ellipse 105% 100% at 50% 42%, transparent 58%, rgba(2, 12, 26, 0.5) 100%);
 }
 
 /* плитка: тело цвета слоновой кости со слегка СЕРЫМИ боковушками
@@ -391,12 +391,12 @@
   width: min(94vw, calc((clamp(56px, min(12.5vw, 15vh), 104px) - 14px) * 3.125 + 28px));
   height: clamp(56px, min(12.5vw, 15vh), 104px);
   border-radius: 14px;
-  background: rgba(5, 24, 18, 0.62);
+  background: rgba(5, 22, 40, 0.62);
   box-shadow:
     inset 0 3px 12px rgba(0, 0, 0, 0.62),
     inset 0 -1px 0 rgba(255, 255, 255, 0.07),
     0 1px 0 rgba(255, 214, 130, 0.1);
-  border: 1px solid rgba(140, 170, 120, 0.34);
+  border: 1px solid rgba(120, 170, 220, 0.34);
   transition: border-color 0.25s ease;
 }
 
@@ -430,14 +430,13 @@
   }
 }
 
-/* чип номера — тёмная капсула с золотым текстом: просто число,
-   без слова «уровень» — числа идут бесконечно */
+/* чип уровня — тёмная капсула с золотым текстом «Уровень N» */
 .mj-level-chip {
   color: #ffe9b3;
   padding: 4px 11px;
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(24, 66, 48, 0.92), rgba(13, 46, 33, 0.92));
-  border: 1px solid rgba(140, 170, 120, 0.4);
+  background: linear-gradient(180deg, rgba(24, 62, 104, 0.92), rgba(13, 44, 74, 0.92));
+  border: 1px solid rgba(120, 170, 220, 0.4);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 2px 6px rgba(0, 0, 0, 0.25);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
   white-space: nowrap;
@@ -446,7 +445,7 @@
 
 /* верхняя панель: [Домой] [лоток] [Уровень] — как на макете */
 .mj-topbar {
-  background: linear-gradient(180deg, rgba(3, 18, 13, 0.5), rgba(3, 18, 13, 0));
+  background: linear-gradient(180deg, rgba(3, 16, 31, 0.5), rgba(3, 16, 31, 0));
 }
 
 /* круглая белая кнопка «плавающая»: белая с мягкой тенью;
@@ -489,8 +488,8 @@
    как в топовых маджонгах: кнопки собраны, не «плавают» */
 .mj-dock {
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(8, 30, 22, 0.72), rgba(5, 20, 15, 0.66));
-  border: 1px solid rgba(140, 170, 120, 0.3);
+  background: linear-gradient(180deg, rgba(8, 28, 48, 0.72), rgba(5, 20, 36, 0.66));
+  border: 1px solid rgba(120, 170, 220, 0.3);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
     inset 0 -6px 14px rgba(0, 0, 0, 0.35),
@@ -803,7 +802,7 @@
 /* ================= Панель 1v1 (VersusBar) ================= */
 
 .mj-versus {
-  background: linear-gradient(180deg, rgba(6, 26, 20, 0.55), rgba(6, 26, 20, 0.18));
+  background: linear-gradient(180deg, rgba(6, 26, 46, 0.55), rgba(6, 26, 46, 0.18));
 }
 
 .mj-vside {
