@@ -155,7 +155,7 @@ export function Standings({ onClose }: { onClose: () => void }) {
         title={t('st.back')}
         data-testid="mj-standings-back"
       >
-        <ArrowLeft className="h-5 w-5 text-sky-900 sm:h-6 sm:w-6" />
+        <ArrowLeft className="h-5 w-5 text-[#22432e] sm:h-6 sm:w-6" />
       </button>
 
       <div className="flex items-center gap-2">

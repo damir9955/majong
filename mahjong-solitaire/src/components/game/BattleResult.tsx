@@ -28,7 +28,7 @@ function BonusChip({ kind, delay }: { kind: BonusItem; delay: number }) {
       {isHint ? (
         <Lightbulb className="h-4 w-4 text-amber-600" />
       ) : (
-        <Shuffle className="h-4 w-4 text-sky-600" />
+        <Shuffle className="h-4 w-4 text-[#2e6b52]" />
       )}
       {t(isHint ? 'bonus.hint' : 'bonus.shuffle')}
     </span>
@@ -87,7 +87,7 @@ export function BattleResult() {
         </p>
         <h2
           className={`mt-1 text-4xl font-black ${
-            won ? 'text-sky-700' : 'text-rose-600'
+            won ? 'text-emerald-800' : 'text-rose-600'
           }`}
         >
           {won ? t('res.win') : t('res.lose')}

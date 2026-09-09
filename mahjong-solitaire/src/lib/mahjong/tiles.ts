@@ -138,8 +138,34 @@ export const TILE_DEF_MAP: Record<string, TileDef> = Object.fromEntries(
   TILE_DEFS.map((d) => [d.id, d]),
 );
 
+/* СТАБИЛЬНОСТЬ: набор плиток меняется между версиями, а сохранённые
+ *  партии хранят defId. Неизвестный defId не должен рушить игру:
+ *  возвращаем безопасную заглушку — старая пара по-прежнему
+ *  совпадает сама с собой (matchKey = defId), рендер — «пустая
+ *  кость». Без этого getTileDef(...).matchKey падал на старых сейвах. */
+const fallbackDefs = new Map<string, TileDef>();
+
+/** дефиниция по id — ВСЕГДА валидный объект (никогда undefined) */
 export function getTileDef(defId: string): TileDef {
-  return TILE_DEF_MAP[defId];
+  const d = TILE_DEF_MAP[defId];
+  if (d) return d;
+  let f = fallbackDefs.get(defId);
+  if (!f) {
+    f = {
+      id: defId,
+      matchKey: defId,
+      suit: 'chars',
+      value: 1,
+      name: 'Плитка',
+    };
+    fallbackDefs.set(defId, f);
+  }
+  return f;
+}
+
+/** известный ли вид плитки (для «пустой» отрисовки старых сейвов) */
+export function hasTileDef(defId: string): boolean {
+  return !!TILE_DEF_MAP[defId];
 }
 
 /** Пара плиток для генерации колоды (обе плитки совпадают по matchKey).

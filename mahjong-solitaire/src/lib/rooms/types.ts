@@ -45,6 +45,21 @@ export interface RoomView {
   serverNow: number;
   players: RoomPlayerView[];
   result: RoomResultView | null;
+  /** открытая игра видна в общем списке, закрытая — только по коду */
+  visibility?: 'open' | 'closed';
+}
+
+/** запись в списке открытых игр (лобби) */
+export interface OpenRoomInfo {
+  code: string;
+  level: number;
+  hostName: string;
+  /** цвет аватара создателя (hue) */
+  hue: number;
+  /** давно создана? — раньше в списке (epoch-ms) */
+  createdAt: number;
+  /** сколько игроков уже внутри (1 — ждём соперника) */
+  players: number;
 }
 
 /** ошибка транспорта комнаты */

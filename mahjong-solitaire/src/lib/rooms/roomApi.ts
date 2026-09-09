@@ -5,7 +5,7 @@
  * а «sync» может пересоздать комнату на сервере из снимка.
  */
 
-import { RoomError, type RoomView } from './types';
+import { RoomError, type OpenRoomInfo, type RoomView } from './types';
 
 const CREDS_KEY = 'mahjong-room';
 const NAME_KEY = 'mahjong-name';
@@ -16,6 +16,8 @@ export interface RoomCreds {
   playerId: string;
   /** я создатель комнаты (может пересоздать её через sync) */
   host?: boolean;
+  /** открытая игра — пересоздаётся такой же при self-heal */
+  visibility?: 'open' | 'closed';
   /** сид и уровень — снимок для восстановления комнаты */
   seed?: number;
   level?: number;
@@ -32,6 +34,7 @@ export interface RoomSnapshot {
   seed: number;
   hostId: string;
   status: 'waiting' | 'playing' | 'result';
+  visibility?: 'open' | 'closed';
   timeLeftMs: number;
   score?: number;
   pairsDone?: number;
@@ -46,6 +49,7 @@ export function getSavedCreds(): RoomCreds | null {
       code?: unknown;
       playerId?: unknown;
       host?: unknown;
+      visibility?: unknown;
       seed?: unknown;
       level?: unknown;
       name?: unknown;
@@ -60,6 +64,7 @@ export function getSavedCreds(): RoomCreds | null {
         code: c.code,
         playerId: c.playerId,
         host: c.host === true,
+        visibility: c.visibility === 'open' ? 'open' : 'closed',
         seed: typeof c.seed === 'number' ? c.seed : undefined,
         level: typeof c.level === 'number' ? c.level : undefined,
         name: typeof c.name === 'string' ? c.name : undefined,
@@ -175,19 +180,46 @@ function toView(data: Record<string, unknown>): RoomView {
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 
-/** создать комнату (хост) */
+/** создать игру (хост): visibility 'open' — видна в лобби */
 export async function apiCreateRoom(
   name: string,
   level: number,
+  visibility: 'open' | 'closed' = 'closed',
 ): Promise<{ playerId: string; view: RoomView }> {
   const data = await request('/api/rooms', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, level }),
+    body: JSON.stringify({ name, level, visibility }),
   });
   const playerId = typeof data.playerId === 'string' ? data.playerId : '';
   if (!playerId) throw new RoomError('NETWORK', 'Некорректный ответ сервера');
   return { playerId, view: toView(data) };
+}
+
+/** список открытых игр (лобби): можно зайти без кода */
+export async function apiListOpenRooms(): Promise<OpenRoomInfo[]> {
+  const data = await request('/api/rooms', { cache: 'no-store' });
+  const raw = Array.isArray(data.rooms) ? data.rooms : [];
+  const out: OpenRoomInfo[] = [];
+  for (const r of raw) {
+    const x = r as Record<string, unknown>;
+    if (
+      typeof x.code === 'string' &&
+      x.code.length === 5 &&
+      typeof x.hostName === 'string' &&
+      typeof x.level === 'number'
+    ) {
+      out.push({
+        code: x.code,
+        level: x.level,
+        hostName: x.hostName,
+        hue: typeof x.hue === 'number' ? x.hue : 30,
+        createdAt: typeof x.createdAt === 'number' ? x.createdAt : 0,
+        players: typeof x.players === 'number' ? x.players : 1,
+      });
+    }
+  }
+  return out;
 }
 
 /** войти в комнату по коду (друг) */
@@ -234,6 +266,7 @@ export async function apiSyncRoom(snap: RoomSnapshot): Promise<RoomView> {
       seed: snap.seed,
       hostId: snap.hostId,
       status: snap.status,
+      visibility: snap.visibility,
       timeLeftMs: Math.round(snap.timeLeftMs),
       score: snap.score,
       pairsDone: snap.pairsDone,

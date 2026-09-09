@@ -27,6 +27,7 @@ import {
   hostIdOf,
   joinRoom,
   leaveRoom,
+  listOpenRooms,
   matchJoin,
   matchLeave,
   matchPoll,
@@ -51,7 +52,7 @@ function ok(data: Record<string, unknown>) {
 
 type Ctx = { params: Promise<{ code?: string[] }> };
 
-/* ---------- POST /api/rooms — создать комнату / очередь матча ---------- */
+/* ---------- POST /api/rooms — создать игру / очередь матча ---------- */
 
 async function handleRootPost(req: Request) {
   let body: Record<string, unknown> = {};
@@ -75,17 +76,20 @@ async function handleRootPost(req: Request) {
     return ok(matchLeave(body.ticketId));
   }
 
-  // создание комнаты (совместимо со старым форматом { name, level })
-  const { room } = createRoom(body.name, body.level);
+  // создание игры (совместимо со старым форматом { name, level };
+  //  visibility: 'open' — игра видна в списке открытых игр)
+  const { room } = createRoom(body.name, body.level, body.visibility);
   return ok({ playerId: hostIdOf(room), view: roomView(room) });
 }
 
-/* ---------- GET /api/rooms?match= — статус подбора ---------- */
+/* ---------- GET /api/rooms ----------
+ *  ?match=<ticketId> — статус подбора (поллинг ~1/сек)
+ *  без параметров    — список открытых игр (лобби) */
 
 async function handleRootGet(req: Request) {
   const url = new URL(req.url);
   const ticketId = url.searchParams.get('match');
-  if (!ticketId) return err(400, 'BAD_CODE');
+  if (!ticketId) return ok({ rooms: listOpenRooms() });
   const res = matchPoll(ticketId);
   return ok(res as unknown as Record<string, unknown>);
 }

@@ -21,11 +21,11 @@ export function IconHome({ className }: { className?: string }) {
       {/* корпус — почти до низа круга */}
       <path
         d="M12 5.7 21.2 13.6V21c0 .9-.7 1.6-1.6 1.6H4.4c-.9 0-1.6-.7-1.6-1.6v-7.4L12 5.7Z"
-        fill="#1d4f7c"
+        fill="#1d5c40"
       />
       <path
         d="M12 5.7 21.2 13.6V15L12 7.3 2.8 15v-1.4L12 5.7Z"
-        fill="#2a6ba3"
+        fill="#2a7a56"
       />
       {/* дверь по центру, крупная */}
       <rect x="9.4" y="13.7" width="5.2" height="8.9" rx="1.5" fill="#f4ead0" />

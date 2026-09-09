@@ -6,6 +6,11 @@
  * доску (одинаковый seed) каждый на своём устройстве. Клиент присылает
  * свой прогресс поллингом (GET), терминальные события — POST.
  *
+ * ОТКРЫТЫЕ И ЗАКРЫТЫЕ ИГРЫ: createRoom(name, level, 'open') — игра
+ * видна в списке открытых (лобби), заходят без кода; 'closed' —
+ * только по коду приглашения. Список отдаёт listOpenRooms():
+ * ждущие открытые комнаты, отсортированы «кто раньше ждёт».
+ *
  * Соперник пропал больше 10 секунд — победа ждущего (по просьбе
  * игроков: раньше матч тянулся 90 секунд вхолостую).
  *
@@ -17,7 +22,7 @@
  */
 
 import { getLayoutForLevel } from '@/lib/mahjong/layouts';
-import type { RoomFinishReason, RoomView } from './types';
+import type { OpenRoomInfo, RoomFinishReason, RoomView } from './types';
 
 interface RoomPlayer {
   id: string;
@@ -36,6 +41,8 @@ interface Room {
   status: 'waiting' | 'playing' | 'result';
   hostId: string;
   players: RoomPlayer[];
+  /** открытая игра видна в лобби; закрытая — только по коду */
+  visibility: 'open' | 'closed';
   /** epoch-ms старта отсчёта времени (с запасом на интро) */
   startedAt: number;
   timeTotalMs: number;
@@ -59,6 +66,11 @@ const TIME_MAX_MS = 270000;
 /** комнаты живут 6 часов, «ожидание друга» — час */
 const ROOM_TTL_MS = 6 * 60 * 60 * 1000;
 const WAITING_TTL_MS = 60 * 60 * 1000;
+/** создатель «ждущей» комнаты пропал (не поллит) — убираем
+ *  игру из лобби, чтобы в списке не висели мёртвые комнаты */
+const WAITING_HOST_STALE_MS = 45 * 1000;
+/** максимум записей в списке открытых игр */
+const OPEN_LIST_MAX = 30;
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // без I O 0 1
 const CODE_LEN = 5;
@@ -156,6 +168,7 @@ function view(room: Room): RoomView {
     result: room.result
       ? { winnerId: room.result.winnerId, reason: room.result.reason }
       : null,
+    visibility: room.visibility,
   };
 }
 
@@ -163,8 +176,17 @@ function cleanup() {
   const t = now();
   for (const [code, r] of rooms) {
     if (t - r.createdAt > ROOM_TTL_MS) rooms.delete(code);
-    else if (r.status === 'waiting' && t - r.createdAt > WAITING_TTL_MS)
-      rooms.delete(code);
+    else if (r.status === 'waiting') {
+      if (t - r.createdAt > WAITING_TTL_MS) {
+        rooms.delete(code);
+        continue;
+      }
+      // создатель закрыл браузер/потерял связь — комнату никто не
+      // занимает: из лобби и из памяти её убираем (self-heal хоста
+      // пересоздаст комнату, если он жив на другом инстансе)
+      const host = r.players[0];
+      if (host && t - host.lastSeen > WAITING_HOST_STALE_MS) rooms.delete(code);
+    }
   }
   for (const [id, tk] of tickets) {
     if (t - tk.lastSeen > TICKET_TTL_MS) tickets.delete(id);
@@ -210,10 +232,13 @@ function checkAutoFinish(room: Room) {
 export function createRoom(
   nameRaw: unknown,
   levelRaw: unknown,
+  visibilityRaw?: unknown,
 ): { room: Room } {
   cleanup();
   const name = sanitizeName(nameRaw);
   const level = clamp(Math.floor(Number(levelRaw) || 1), 1, 999);
+  const visibility: Room['visibility'] =
+    visibilityRaw === 'open' ? 'open' : 'closed';
   let code = '';
   do {
     code = Array.from(
@@ -237,6 +262,7 @@ export function createRoom(
     status: 'waiting',
     hostId: host.id,
     players: [host],
+    visibility,
     startedAt: 0,
     timeTotalMs: timeForLevel(level),
     result: null,
@@ -244,6 +270,30 @@ export function createRoom(
   };
   rooms.set(code, room);
   return { room };
+}
+
+/* ---------- список открытых игр (лобби) ---------- */
+
+/** ждущие открытые комнаты: кто раньше создал — тот выше.
+ *  Вызов чистит мёртвые комнаты, так что в списке только живые. */
+export function listOpenRooms(): OpenRoomInfo[] {
+  cleanup();
+  const out: OpenRoomInfo[] = [];
+  for (const r of rooms.values()) {
+    if (r.status !== 'waiting' || r.visibility !== 'open') continue;
+    const host = r.players[0];
+    if (!host || r.players.length >= 2) continue;
+    out.push({
+      code: r.code,
+      level: r.level,
+      hostName: host.name,
+      hue: host.hue,
+      createdAt: r.createdAt,
+      players: r.players.length,
+    });
+  }
+  out.sort((a, b) => a.createdAt - b.createdAt);
+  return out.slice(0, OPEN_LIST_MAX);
 }
 
 /** пересоздать комнату по коду с снимка игрока (клиент знает всю
@@ -302,6 +352,8 @@ export function syncRoom(code: string, body: Record<string, unknown>): {
     });
   }
   const level = clamp(Math.floor(Number(body.level) || 1), 1, 999);
+  const visibility: Room['visibility'] =
+    body.visibility === 'open' ? 'open' : 'closed';
   const seed =
     Number.isFinite(Number(body.seed)) && Number(body.seed) >= 0
       ? Math.floor(Number(body.seed))
@@ -324,6 +376,7 @@ export function syncRoom(code: string, body: Record<string, unknown>): {
     status,
     hostId,
     players,
+    visibility,
     // старт «как будто сейчас» — отсчёт продолжается с timeLeft
     startedAt:
       status === 'playing' ? now() + timeLeftMs - timeTotalMs : 0,

@@ -71,7 +71,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
         >
           <X className="h-5 w-5" />
         </button>
-        <h2 className="text-2xl font-black text-sky-900">{t('home.settings')}</h2>
+        <h2 className="text-2xl font-black text-[#22432e]">{t('home.settings')}</h2>
 
         <div className="mt-5">
           <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.2em] text-stone-500">
@@ -153,7 +153,7 @@ function OpponentChoice({
         >
           <X className="h-5 w-5" />
         </button>
-        <h2 className="text-2xl font-black text-sky-900">{t('opp.title')}</h2>
+        <h2 className="text-2xl font-black text-[#22432e]">{t('opp.title')}</h2>
         <div className="mt-4 flex flex-col gap-3">
           <button className="mj-mode-card" onClick={() => onPick('bot')}>
             <span
@@ -252,7 +252,7 @@ function HomeScreen({
           aria-label={t('home.settings')}
           title={t('home.settings')}
         >
-          <Settings className="h-5 w-5 text-sky-900 sm:h-6 sm:w-6" />
+          <Settings className="h-5 w-5 text-[#22432e] sm:h-6 sm:w-6" />
         </button>
       </div>
       <div className="flex flex-col items-center gap-3">
@@ -277,7 +277,7 @@ function HomeScreen({
           <span
             className="mj-mode-ico"
             style={{
-              background: 'linear-gradient(160deg, #7fc0ec, #2e6b9e)',
+              background: 'linear-gradient(160deg, #6fd0b6, #1f8f7a)',
               boxShadow:
                 'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
             }}
@@ -404,7 +404,7 @@ function BonusChip({ kind, delay }: { kind: 'hint' | 'shuffle'; delay: number })
       {isHint ? (
         <Lightbulb className="h-4 w-4 text-amber-600" />
       ) : (
-        <Shuffle className="h-4 w-4 text-sky-600" />
+        <Shuffle className="h-4 w-4 text-[#2e6b52]" />
       )}
       {t(isHint ? 'bonus.hint' : 'bonus.shuffle')}
     </span>
@@ -445,7 +445,7 @@ function ClassicResult() {
     return (
       <div className="mj-overlay">
         <div className="mj-card">
-          <h2 className="text-3xl font-black text-sky-700 sm:text-4xl">
+          <h2 className="text-3xl font-black text-emerald-800 sm:text-4xl">
             {t('res.levelDone')}
           </h2>
           <p className="mt-1 text-sm font-semibold text-stone-500 sm:text-base">
@@ -502,7 +502,7 @@ function Tutorial({ mode, onGo }: { mode: GameMode; onGo: () => void }) {
   return (
     <div className="mj-overlay">
       <div className="mj-card">
-        <h2 className="text-3xl font-black text-sky-900">
+        <h2 className="text-3xl font-black text-[#22432e]">
           {mode === 'online'
             ? t('tut.onlineTitle')
             : mode === 'battle'
@@ -559,7 +559,7 @@ function LevelEntryDialog() {
         >
           <X className="h-5 w-5" />
         </button>
-        <h2 className="text-2xl font-black text-sky-900">
+        <h2 className="text-2xl font-black text-[#22432e]">
           {t('entry.title', { n: session.level })}
         </h2>
         <p className="mt-1 text-sm font-semibold text-stone-600">
@@ -594,27 +594,13 @@ export function GameScreen() {
   const tutorialSeen = useGame((s) => s.tutorialSeen);
   const markTutorialSeen = useGame((s) => s.markTutorialSeen);
 
-  // комната по коду: экран создания/входа открывается из меню и по
-  // ссылке ?room=CODE (из «Поделиться» друга)
-  const [initialCode] = useState(() => {
-    if (typeof window === 'undefined') return '';
-    return (new URLSearchParams(window.location.search).get('room') ?? '')
-      .toUpperCase()
-      .replace(/[^A-Z2-9]/g, '')
-      .slice(0, 5);
-  });
-  const [roomOpen, setRoomOpen] = useState(() => initialCode.length > 0);
+  // «С другом»: экран открытых/закрытых игр открывается из меню;
+  //  вход в закрытую игру — ТОЛЬКО по коду приглашения (без ссылок)
+  const [roomOpen, setRoomOpen] = useState(false);
   const [mmOpen, setMmOpen] = useState(false);
   const [oppOpen, setOppOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [standingsOpen, setStandingsOpen] = useState(false);
-  // чистим ?room= из адресной строки (в эффекте — НЕ в рендере:
-  // Next патчит history, и replaceState в рендере ломает Router)
-  useEffect(() => {
-    if (initialCode) {
-      window.history.replaceState(null, '', window.location.pathname);
-    }
-  }, [initialCode]);
 
   // тикер боя: таймер, соперник, челленджи (≈5 раз/сек).
   // В «Классике» tick ничего не делает.
@@ -770,12 +756,7 @@ export function GameScreen() {
   }, [session?.sid]);
 
   if (roomOpen) {
-    return (
-      <RoomScreen
-        initialCode={initialCode}
-        onClose={() => setRoomOpen(false)}
-      />
-    );
+    return <RoomScreen onClose={() => setRoomOpen(false)} />;
   }
 
   if (mmOpen) {

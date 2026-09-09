@@ -28,7 +28,7 @@ function CountBadge({
     tone === 'amber'
       ? 'bg-amber-400 text-amber-950'
       : tone === 'sky'
-        ? 'bg-sky-300 text-sky-950'
+        ? 'bg-emerald-300 text-emerald-950'
         : 'bg-emerald-400 text-emerald-950';
   return (
     <span
@@ -98,7 +98,7 @@ export function HUD() {
             aria-label={t('hud.undo')}
             title={t('hud.undoLeft', { n: session.undosLeft })}
           >
-            <Undo2 className="h-5 w-5 text-sky-900 sm:h-6 sm:w-6 lg:h-7 lg:w-7" />
+            <Undo2 className="h-5 w-5 text-[#22432e] sm:h-6 sm:w-6 lg:h-7 lg:w-7" />
           </button>
           <CountBadge
             count={session.undosLeft}

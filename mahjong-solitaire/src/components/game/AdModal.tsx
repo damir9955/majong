@@ -100,7 +100,7 @@ export function AdModal() {
             <span className="mj-ad-ico">
               <Gift className="h-7 w-7 text-white" />
             </span>
-            <h2 className="text-2xl font-black text-sky-900">
+            <h2 className="text-2xl font-black text-[#22432e]">
               {t('ad.title', { bonus: bonusName })}
             </h2>
             <p className="text-sm font-semibold text-stone-600">

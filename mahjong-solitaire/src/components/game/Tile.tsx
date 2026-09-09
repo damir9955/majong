@@ -74,9 +74,10 @@ function TileInner({ v, registerEl }: Props) {
         zIndex: v.zIndex,
         borderRadius: radius,
         display: v.gone ? 'none' : undefined,
-        // боковушки — слегка серые (кость цвета слоновой кости),
-        // а не зелёные: грань и тело не спорят по цвету
-        boxShadow: `inset 0 1px 0 rgba(255,255,255,.6), 0 ${depth}px ${Math.max(2, depth * 0.45)}px 0 rgba(106,104,96,.48), 0 ${depth + 3}px ${depth * 7}px rgba(0,0,0,.26)`,
+        // «настоящая» костяшка: тёплая кость, видимый боковой срез
+        // (жёсткая серо-кремовая кромка снизу = толщина), мягкий
+        // контакт с доской и широкая амбиентная тень
+        boxShadow: `inset 0 1.5px 0 rgba(255,255,255,.72), inset 0 -2px 2px rgba(112,92,58,.22), 0 ${depth}px ${Math.max(2, depth * 0.35)}px 0 rgba(118,106,88,.62), 0 ${depth + 3}px ${depth * 7}px rgba(0,0,0,.28)`,
         animationDelay: `${v.enterDelay}ms`,
       }}
     >
