@@ -1,14 +1,17 @@
 'use client';
 
 /**
- * Экран игры: выбор режима (Классика / 1 на 1), лоток, доска,
- * кнопки, итоги. «Классика» — без соперника и таймера: просто
- * бесконечные уровни с лотком. «1 на 1» — матч против соперника.
+ * Экран игры: меню выбора режима (Классика / 1 на 1 / С другом),
+ * настройки (язык и звук), таблица результатов, лоток, доска, кнопки,
+ * итоги. «1 на 1» — выбор соперника: компьютер или реальный человек
+ * (быстрый матч через интернет). При входе на уровень с прогрессом
+ * спрашиваем «продолжить или начать заново».
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useGame, type GameMode } from '@/lib/game/store';
 import { backColorsForLevel } from '@/lib/game/config';
+import { useT, useLang, trNow } from '@/lib/i18n';
 import { Board } from './Board';
 import { HUD } from './HUD';
 import { Tray } from './Tray';
@@ -17,15 +20,21 @@ import { MatchIntro } from './MatchIntro';
 import { BattleResult } from './BattleResult';
 import { ChallengeBanner } from './ChallengeBanner';
 import { RoomScreen } from './RoomScreen';
+import { Matchmaker } from './Matchmaker';
+import { Standings } from './Standings';
+import { AdModal } from './AdModal';
 import { setSoundEnabled, buzz } from '@/lib/sound';
 import { confetti, showToast } from '@/lib/game/fx';
 import { TileFace } from './TileFace';
 import { IconHome } from './icons';
 import {
   apiPollRoom,
+  apiSyncRoom,
   clearCreds,
   getSavedCreds,
+  type RoomSnapshot,
 } from '@/lib/rooms/roomApi';
+import { RoomError, type RoomView } from '@/lib/rooms/types';
 import {
   Sparkles,
   Hand,
@@ -35,18 +44,181 @@ import {
   Shuffle,
   Eye,
   Users,
-  Volume2,
-  VolumeX,
+  Trophy,
+  Settings,
+  Bot,
+  Globe2,
+  X,
 } from 'lucide-react';
+
+/* ---------- Модальные окна меню ---------- */
+
+/** настройки: язык + звук */
+function SettingsModal({ onClose }: { onClose: () => void }) {
+  const t = useT();
+  const sound = useGame((s) => s.settings.sound);
+  const setSound = useGame((s) => s.setSound);
+  const lang = useLang((s) => s.lang);
+  const setLang = useLang((s) => s.setLang);
+  return (
+    <div className="mj-overlay">
+      <div className="mj-card relative w-full max-w-sm p-6">
+        <button
+          type="button"
+          className="mj-close-x"
+          onClick={onClose}
+          aria-label={t('room.back')}
+        >
+          <X className="h-5 w-5" />
+        </button>
+        <h2 className="text-2xl font-black text-sky-900">{t('home.settings')}</h2>
+
+        <div className="mt-5">
+          <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.2em] text-stone-500">
+            {t('settings.language')}
+          </p>
+          <div className="mj-lang-switch" data-testid="mj-lang-switch">
+            <button
+              type="button"
+              data-testid="mj-lang-ru"
+              className={
+                lang === 'ru' ? 'mj-lang-btn mj-lang-btn-active' : 'mj-lang-btn'
+              }
+              onClick={() => {
+                buzz(12);
+                setLang('ru');
+              }}
+            >
+              Русский
+            </button>
+            <button
+              type="button"
+              data-testid="mj-lang-en"
+              className={
+                lang === 'en' ? 'mj-lang-btn mj-lang-btn-active' : 'mj-lang-btn'
+              }
+              onClick={() => {
+                buzz(12);
+                setLang('en');
+              }}
+            >
+              English
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-5">
+          <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.2em] text-stone-500">
+            {t('settings.sound')}
+          </p>
+          <div className="mj-lang-switch">
+            <button
+              type="button"
+              className={sound ? 'mj-lang-btn mj-lang-btn-active' : 'mj-lang-btn'}
+              onClick={() => setSound(true)}
+            >
+              {t('settings.on')}
+            </button>
+            <button
+              type="button"
+              className={!sound ? 'mj-lang-btn mj-lang-btn-active' : 'mj-lang-btn'}
+              onClick={() => setSound(false)}
+            >
+              {t('settings.off')}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** выбор соперника для «1 на 1»: компьютер или человек */
+function OpponentChoice({
+  onPick,
+  onClose,
+}: {
+  onPick: (kind: 'bot' | 'human') => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  return (
+    <div className="mj-overlay">
+      <div className="mj-card relative w-full max-w-sm p-6">
+        <button
+          type="button"
+          className="mj-close-x"
+          onClick={onClose}
+          aria-label={t('room.back')}
+        >
+          <X className="h-5 w-5" />
+        </button>
+        <h2 className="text-2xl font-black text-sky-900">{t('opp.title')}</h2>
+        <div className="mt-4 flex flex-col gap-3">
+          <button className="mj-mode-card" onClick={() => onPick('bot')}>
+            <span
+              className="mj-mode-ico"
+              style={{
+                background: 'linear-gradient(160deg, #f2b25c, #c07a2a)',
+                boxShadow:
+                  'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
+              }}
+            >
+              <Bot className="h-7 w-7 text-white sm:h-9 sm:w-9" />
+            </span>
+            <span>
+              <b className="block text-lg font-black text-stone-800 sm:text-xl">
+                {t('opp.computer')}
+              </b>
+              <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
+                {t('opp.computerSub')}
+              </span>
+            </span>
+          </button>
+          <button className="mj-mode-card" onClick={() => onPick('human')}>
+            <span
+              className="mj-mode-ico"
+              style={{
+                background: 'linear-gradient(160deg, #7fd4c1, #1f8f7a)',
+                boxShadow:
+                  'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
+              }}
+            >
+              <Globe2 className="h-7 w-7 text-white sm:h-9 sm:w-9" />
+            </span>
+            <span>
+              <b className="block text-lg font-black text-stone-800 sm:text-xl">
+                {t('opp.human')}
+              </b>
+              <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
+                {t('opp.humanSub')}
+              </span>
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ---------- Экран выбора режима ---------- */
 
-function HomeScreen({ onOnline }: { onOnline: () => void }) {
+function HomeScreen({
+  onOnline,
+  onSettings,
+  onStandings,
+  onBattle,
+}: {
+  onOnline: () => void;
+  onSettings: () => void;
+  onStandings: () => void;
+  onBattle: () => void;
+}) {
   const startMode = useGame((s) => s.startMode);
   const session = useGame((s) => s.session);
   const level = useGame((s) => s.level);
-  const sound = useGame((s) => s.settings.sound);
-  const setSound = useGame((s) => s.setSound);
+  const credsOnline = !!getSavedCreds();
+  const t = useT();
 
   const go = (mode: GameMode) => {
     buzz(15);
@@ -59,19 +231,30 @@ function HomeScreen({ onOnline }: { onOnline: () => void }) {
 
   return (
     <div className="mj-table relative flex h-dvh flex-col items-center justify-center gap-7 px-6 sm:gap-10">
-      <button
-        type="button"
-        className="mj-circle-btn absolute right-3 top-[max(0.8rem,env(safe-area-inset-top))] sm:right-5"
-        onClick={() => setSound(!sound)}
-        aria-label={sound ? 'Выключить звук' : 'Включить звук'}
-        title="Звук"
-      >
-        {sound ? (
-          <Volume2 className="h-5 w-5 text-sky-900 sm:h-6 sm:w-6" />
-        ) : (
-          <VolumeX className="h-5 w-5 text-stone-400 sm:h-6 sm:w-6" />
-        )}
-      </button>
+      <div className="absolute left-3 top-[max(0.8rem,env(safe-area-inset-top))] flex gap-2 sm:left-5">
+        <button
+          type="button"
+          className="mj-circle-btn"
+          data-testid="mj-standings-btn"
+          onClick={onStandings}
+          aria-label={t('home.standings')}
+          title={t('home.standings')}
+        >
+          <Trophy className="h-5 w-5 text-[#b8860b] sm:h-6 sm:w-6" />
+        </button>
+      </div>
+      <div className="absolute right-3 top-[max(0.8rem,env(safe-area-inset-top))] flex gap-2 sm:right-5">
+        <button
+          type="button"
+          className="mj-circle-btn"
+          data-testid="mj-settings-btn"
+          onClick={onSettings}
+          aria-label={t('home.settings')}
+          title={t('home.settings')}
+        >
+          <Settings className="h-5 w-5 text-sky-900 sm:h-6 sm:w-6" />
+        </button>
+      </div>
       <div className="flex flex-col items-center gap-3">
         <div className="flex items-end gap-2 sm:gap-3">
           <div className="mj-logo-tile" style={{ transform: 'rotate(-8deg)' }}>
@@ -85,7 +268,7 @@ function HomeScreen({ onOnline }: { onOnline: () => void }) {
           </div>
         </div>
         <p className="text-lg font-bold tracking-[0.3em] text-amber-200/85 sm:text-2xl lg:text-3xl">
-          МАДЖОНГ
+          {t('home.title')}
         </p>
       </div>
 
@@ -95,41 +278,47 @@ function HomeScreen({ onOnline }: { onOnline: () => void }) {
             className="mj-mode-ico"
             style={{
               background: 'linear-gradient(160deg, #7fc0ec, #2e6b9e)',
-              boxShadow: 'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
+              boxShadow:
+                'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
             }}
           >
             <Flower2 className="h-7 w-7 text-white sm:h-9 sm:w-9" />
           </span>
           <span>
             <b className="block text-lg font-black text-stone-800 sm:text-xl lg:text-2xl">
-              {resumable('classic') ? 'Продолжить' : 'Классика'}
+              {resumable('classic') ? t('home.continue') : t('home.classic')}
             </b>
             <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
               {resumable('classic')
-                ? `Уровень ${session?.level} — партия сохранена`
-                : 'Спокойная игра без соперника'}
+                ? t('home.classicResume', { n: session?.level ?? 1 })
+                : t('home.classicSub')}
             </span>
           </span>
         </button>
 
-        <button className="mj-mode-card" onClick={() => go('battle')}>
+        <button
+          className="mj-mode-card"
+          data-testid="mj-battle-card"
+          onClick={onBattle}
+        >
           <span
             className="mj-mode-ico"
             style={{
               background: 'linear-gradient(160deg, #f2b25c, #c07a2a)',
-              boxShadow: 'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
+              boxShadow:
+                'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
             }}
           >
             <Swords className="h-7 w-7 text-white sm:h-9 sm:w-9" />
           </span>
           <span>
             <b className="block text-lg font-black text-stone-800 sm:text-xl lg:text-2xl">
-              {resumable('battle') ? 'Продолжить матч' : '1 на 1'}
+              {resumable('battle') ? t('home.continueMatch') : t('home.battle')}
             </b>
             <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
               {resumable('battle')
-                ? `Уровень ${session?.level} ждёт тебя`
-                : 'Матч против соперника · трофеи'}
+                ? t('home.battleWaiting', { n: session?.level ?? 1 })
+                : t('home.battleSub')}
             </span>
           </span>
         </button>
@@ -139,19 +328,22 @@ function HomeScreen({ onOnline }: { onOnline: () => void }) {
             className="mj-mode-ico"
             style={{
               background: 'linear-gradient(160deg, #6fd0b6, #1f8f7a)',
-              boxShadow: 'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
+              boxShadow:
+                'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
             }}
           >
             <Users className="h-7 w-7 text-white sm:h-9 sm:w-9" />
           </span>
           <span>
             <b className="block text-lg font-black text-stone-800 sm:text-xl lg:text-2xl">
-              {resumable('online') ? 'Продолжить матч' : 'С другом'}
+              {resumable('online') && credsOnline
+                ? t('home.continueMatch')
+                : t('home.online')}
             </b>
             <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
-              {resumable('online')
-                ? `Друг ждёт на уровне ${session?.level}`
-                : 'Комната по коду · по ссылке'}
+              {resumable('online') && credsOnline
+                ? t('home.onlineWaiting', { n: session?.level ?? 1 })
+                : t('home.onlineSub')}
             </span>
           </span>
         </button>
@@ -159,7 +351,7 @@ function HomeScreen({ onOnline }: { onOnline: () => void }) {
 
       {/* чип уровня: «Уровень N» — как в классических маджонгах */}
       <span className="mj-level-chip text-[13px] font-black sm:text-base lg:text-lg">
-        Уровень {level}
+        {t('home.level', { n: level })}
       </span>
     </div>
   );
@@ -176,6 +368,7 @@ function HomeScreen({ onOnline }: { onOnline: () => void }) {
 function TopBar() {
   const session = useGame((s) => s.session);
   const exitToMenu = useGame((s) => s.exitToMenu);
+  const t = useT();
 
   if (!session) return null;
 
@@ -183,18 +376,19 @@ function TopBar() {
     <header className="mj-topbar z-20 flex shrink-0 items-center gap-1.5 px-2 pb-1 pt-[max(0.35rem,env(safe-area-inset-top))] sm:gap-3 sm:px-3">
       <button
         type="button"
-        className="mj-circle-btn mj-circle-btn-sm shrink-0"
+        className="mj-circle-btn mj-circle-btn-home shrink-0"
         onClick={exitToMenu}
-        aria-label="Домой"
-        title="В меню (партия сохранится)"
+        aria-label={t('hud.home')}
+        title={t('hud.homeTitle')}
+        data-testid="mj-home-btn"
       >
-        <IconHome className="h-4 w-4 sm:h-5 sm:w-5 lg:h-6 lg:w-6" />
+        <IconHome className="h-[26px] w-[26px] sm:h-[32px] sm:w-[32px] lg:h-[36px] lg:w-[36px]" />
       </button>
       <div className="flex min-w-0 flex-1 justify-center">
         <Tray />
       </div>
       <span className="mj-level-chip shrink-0 text-[13px] font-black tabular-nums sm:text-base lg:text-lg">
-        Уровень {session.level}
+        {t('home.level', { n: session.level })}
       </span>
     </header>
   );
@@ -204,6 +398,7 @@ function TopBar() {
 
 function BonusChip({ kind, delay }: { kind: 'hint' | 'shuffle'; delay: number }) {
   const isHint = kind === 'hint';
+  const t = useT();
   return (
     <span className="mj-bonus-chip" style={{ animationDelay: `${delay}ms` }}>
       {isHint ? (
@@ -211,7 +406,7 @@ function BonusChip({ kind, delay }: { kind: 'hint' | 'shuffle'; delay: number })
       ) : (
         <Shuffle className="h-4 w-4 text-sky-600" />
       )}
-      {isHint ? 'Подсказка +1' : 'Перемешать +1'}
+      {t(isHint ? 'bonus.hint' : 'bonus.shuffle')}
     </span>
   );
 }
@@ -221,6 +416,7 @@ function ClassicResult() {
   const nextLevel = useGame((s) => s.nextLevel);
   const restartLevel = useGame((s) => s.restartLevel);
   const exitToMenu = useGame((s) => s.exitToMenu);
+  const t = useT();
 
   const status = session?.status;
   const won = status === 'won';
@@ -229,18 +425,18 @@ function ClassicResult() {
   useEffect(() => {
     if (!status || status === 'play') return;
     const show = won ? 1400 : 350;
-    const t = window.setTimeout(() => {
+    const tm = window.setTimeout(() => {
       setVisible(true);
       if (won) confetti();
     }, show);
-    return () => window.clearTimeout(t);
+    return () => window.clearTimeout(tm);
   }, [status, won]);
 
   // автопереход на следующий уровень после победы
   useEffect(() => {
     if (!visible || !won) return;
-    const t = window.setTimeout(() => nextLevel(), 3600);
-    return () => window.clearTimeout(t);
+    const tm = window.setTimeout(() => nextLevel(), 3600);
+    return () => window.clearTimeout(tm);
   }, [visible, won, nextLevel]);
 
   if (!session || status === 'play' || !visible) return null;
@@ -250,10 +446,10 @@ function ClassicResult() {
       <div className="mj-overlay">
         <div className="mj-card">
           <h2 className="text-3xl font-black text-sky-700 sm:text-4xl">
-            Уровень пройден!
+            {t('res.levelDone')}
           </h2>
           <p className="mt-1 text-sm font-semibold text-stone-500 sm:text-base">
-            Доска собрана — дальше новая
+            {t('res.levelDoneSub')}
           </p>
           {session.bonusGrant.length > 0 && (
             <div className="mt-4 flex flex-wrap justify-center gap-2">
@@ -263,7 +459,7 @@ function ClassicResult() {
             </div>
           )}
           <button className="mj-btn" onClick={() => nextLevel()}>
-            Дальше
+            {t('res.next')}
           </button>
         </div>
       </div>
@@ -273,13 +469,15 @@ function ClassicResult() {
   return (
     <div className="mj-overlay">
       <div className="mj-card">
-        <h2 className="text-3xl font-black text-rose-600 sm:text-4xl">Нет места</h2>
+        <h2 className="text-3xl font-black text-rose-600 sm:text-4xl">
+          {t('res.noSpace')}
+        </h2>
         <div className="mt-4 flex flex-col gap-2">
           <button className="mj-btn" onClick={() => restartLevel()}>
-            Ещё раз
+            {t('res.again')}
           </button>
           <button className="mj-btn mj-btn-ghost" onClick={() => exitToMenu()}>
-            Меню
+            {t('res.menu')}
           </button>
         </div>
       </div>
@@ -290,25 +488,26 @@ function ClassicResult() {
 /* ---------- Обучение ---------- */
 
 function Tutorial({ mode, onGo }: { mode: GameMode; onGo: () => void }) {
+  const t = useT();
   const rows: [typeof Sparkles, string, string][] = [
-    [Sparkles, 'Собирай пары', 'Одинаковые плитки взрываются.'],
-    [Eye, 'Переворачивай рубашки', 'Тапни закрытую — а её близнеца ищи рядом.'],
-    [Hand, 'Смотри под кости', 'Рубашки прячутся и ПОД костями: снимешь верхнюю — нижняя откроется сама.'],
+    [Sparkles, t('tut.pairs'), t('tut.pairsText')],
+    [Eye, t('tut.flip'), t('tut.flipText')],
+    [Hand, t('tut.under'), t('tut.underText')],
     mode === 'classic'
-      ? [Flower2, 'Спокойный режим', 'Без таймера и соперника — в своё удовольствие.']
-      : [
-          Swords,
-          mode === 'online' ? 'Обгони друга' : 'Обгони соперника',
-          mode === 'online'
-            ? 'Доска у вас одна — кто соберёт первым, тот победил.'
-            : 'Собери доску быстрее и получи трофеи.',
-        ],
+      ? [Flower2, t('tut.classic'), t('tut.classicText')]
+      : mode === 'online'
+        ? [Users, t('tut.raceFriend'), t('tut.raceFriendText')]
+        : [Swords, t('tut.raceBot'), t('tut.raceText')],
   ];
   return (
     <div className="mj-overlay">
       <div className="mj-card">
         <h2 className="text-3xl font-black text-sky-900">
-          {mode === 'online' ? 'Маджонг с другом' : mode === 'battle' ? 'Маджонг 1 на 1' : 'Маджонг'}
+          {mode === 'online'
+            ? t('tut.onlineTitle')
+            : mode === 'battle'
+              ? t('tut.battleTitle')
+              : t('tut.classicTitle')}
         </h2>
         <div className="mt-2 flex flex-col gap-3">
           {rows.map(([Icon, title, text]) => (
@@ -334,8 +533,54 @@ function Tutorial({ mode, onGo }: { mode: GameMode; onGo: () => void }) {
             onGo();
           }}
         >
-          Играть
+          {t('tut.play')}
         </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Вопрос при входе на уровень ---------- */
+
+function LevelEntryDialog() {
+  const ask = useGame((s) => s.askLevelEntry);
+  const session = useGame((s) => s.session);
+  const answer = useGame((s) => s.answerLevelEntry);
+  const t = useT();
+  if (!ask || !session || session.mode !== 'classic') return null;
+  return (
+    <div className="mj-overlay" data-testid="mj-level-entry">
+      <div className="mj-card relative w-full max-w-sm p-6">
+        <button
+          type="button"
+          className="mj-close-x"
+          onClick={() => answer(false)}
+          aria-label="×"
+        >
+          <X className="h-5 w-5" />
+        </button>
+        <h2 className="text-2xl font-black text-sky-900">
+          {t('entry.title', { n: session.level })}
+        </h2>
+        <p className="mt-1 text-sm font-semibold text-stone-600">
+          {t('entry.text')}
+        </p>
+        <div className="mt-4 flex flex-col gap-2">
+          <button
+            className="mj-btn"
+            data-testid="mj-entry-continue"
+            onClick={() => answer(false)}
+          >
+            {t('entry.continue')}
+          </button>
+          <button
+            className="mj-btn mj-btn-ghost"
+            data-testid="mj-entry-restart"
+            onClick={() => answer(true)}
+          >
+            {t('entry.restart')}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -359,6 +604,10 @@ export function GameScreen() {
       .slice(0, 5);
   });
   const [roomOpen, setRoomOpen] = useState(() => initialCode.length > 0);
+  const [mmOpen, setMmOpen] = useState(false);
+  const [oppOpen, setOppOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [standingsOpen, setStandingsOpen] = useState(false);
   // чистим ?room= из адресной строки (в эффекте — НЕ в рендере:
   // Next патчит history, и replaceState в рендере ломает Router)
   useEffect(() => {
@@ -374,14 +623,61 @@ export function GameScreen() {
     return () => window.clearInterval(iv);
   }, []);
 
-  // поллинг онлайн-комнаты (~1 раз/сек): прогресс друга, серверный
-  // таймер, исходы и переход на следующий уровень. Живёт и в меню —
-  // присутствие игрока нужно другу, а матч не останавливается.
+  /* ---------- поллинг онлайн-комнаты с самовосстановлением ----------
+   * Живёт и в меню — присутствие игрока нужно другу, матч не
+   * останавливается. 404 (запрос попал на другой инстанс) лечим
+   * быстрым повтором и «sync»-пересозданием комнаты из снимка. */
   const isOnline = session?.mode === 'online';
   const sid = session?.sid;
+  const missesRef = useRef(0);
   useEffect(() => {
-    if (!isOnline) return;
+    if (!isOnline) {
+      missesRef.current = 0;
+      return;
+    }
     let alive = true;
+
+    const snapshot = (): RoomSnapshot | null => {
+      const creds = getSavedCreds();
+      const s = useGame.getState().session;
+      const on = s?.battle?.online;
+      if (!creds || !s || !on || !s.battle || on.code !== creds.code) return null;
+      const b = s.battle;
+      const name = creds.name ?? b.opponent.name;
+      return {
+        code: on.code,
+        playerId: on.playerId,
+        name: name || 'Игрок',
+        level: s.level,
+        seed: on.seed,
+        hostId: on.hostId ?? creds.playerId,
+        status: 'playing',
+        timeLeftMs: b.timeLeftMs,
+        score: b.myScore,
+        pairsDone: b.myPairsDone,
+        players: [
+          {
+            id: on.playerId,
+            name: name || 'Игрок',
+            hue: 150,
+            score: b.myScore,
+            pairsDone: b.myPairsDone,
+          },
+          ...(on.friendId
+            ? [
+                {
+                  id: on.friendId,
+                  name: on.friendName ?? 'Друг',
+                  hue: on.friendHue ?? 30,
+                  score: b.botScore,
+                  pairsDone: b.botPairsDone,
+                },
+              ]
+            : []),
+        ],
+      };
+    };
+
     const poll = async () => {
       const creds = getSavedCreds();
       const s = useGame.getState().session;
@@ -393,6 +689,7 @@ export function GameScreen() {
           pairsDone: s.battle.myPairsDone,
         });
         if (!alive) return;
+        missesRef.current = 0;
         useGame.getState().applyRoomView(view);
       } catch (e) {
         if (!alive) return;
@@ -401,11 +698,41 @@ export function GameScreen() {
             ? String((e as { code?: unknown }).code)
             : '';
         if (code === 'ROOM_NOT_FOUND') {
-          // комната истекла по TTL — матч прерван
-          showToast('Комната закрыта — матч прерван');
-          clearCreds();
-          useGame.setState({ session: null, showMenu: true });
+          missesRef.current++;
+          // 1) быстрый повтор — 404 бывает «чужим инстансом»
+          if (missesRef.current < 6) {
+            try {
+              const view = await apiPollRoom(creds.code, creds.playerId);
+              if (!alive) return;
+              missesRef.current = 0;
+              useGame.getState().applyRoomView(view);
+              return;
+            } catch {
+              // fallthrough к sync
+            }
+          }
+          // 2) пересоздать комнату из снимка (клиент знает картину)
+          const snap = snapshot();
+          if (snap) {
+            try {
+              const view = await apiSyncRoom(snap);
+              if (!alive) return;
+              missesRef.current = 0;
+              useGame.getState().applyRoomView(view);
+              return;
+            } catch {
+              // даже sync не прошёл — считаем ниже
+            }
+          }
+          // 3) комната окончательно потеряна
+          if (missesRef.current > 12) {
+            missesRef.current = 0;
+            showToast(trNow('room.closed'));
+            useGame.getState().dropOnlineSession(creds.code);
+          }
+          return;
         }
+        // сеть моргнула — просто ждём следующий тик
       }
     };
     void poll();
@@ -443,10 +770,49 @@ export function GameScreen() {
   }, [session?.sid]);
 
   if (roomOpen) {
-    return <RoomScreen initialCode={initialCode} onClose={() => setRoomOpen(false)} />;
+    return (
+      <RoomScreen
+        initialCode={initialCode}
+        onClose={() => setRoomOpen(false)}
+      />
+    );
   }
 
-  if (showMenu || !session) return <HomeScreen onOnline={() => setRoomOpen(true)} />;
+  if (mmOpen) {
+    return <Matchmaker onClose={() => setMmOpen(false)} />;
+  }
+
+  if (standingsOpen) {
+    return <Standings onClose={() => setStandingsOpen(false)} />;
+  }
+
+  if (showMenu || !session) {
+    return (
+      <>
+        <HomeScreen
+          onOnline={() => setRoomOpen(true)}
+          onSettings={() => setSettingsOpen(true)}
+          onStandings={() => setStandingsOpen(true)}
+          onBattle={() => setOppOpen(true)}
+        />
+        {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+        {oppOpen && (
+          <OpponentChoice
+            onPick={(kind) => {
+              setOppOpen(false);
+              if (kind === 'bot') {
+                buzz(15);
+                useGame.getState().startMode('battle');
+              } else {
+                setMmOpen(true);
+              }
+            }}
+            onClose={() => setOppOpen(false)}
+          />
+        )}
+      </>
+    );
+  }
 
   const mode = session.mode;
   const b = session.battle;
@@ -468,7 +834,7 @@ export function GameScreen() {
       {versus && <VersusBar />}
       <TopBar />
       {/* z-30: летящие в лоток плитки рисуются поверх верхней панели и лотка */}
-      <main className="relative z-30 flex-1">
+      <main className="relative z-30 min-h-0 flex-1">
         <Board />
       </main>
       <HUD />
@@ -477,6 +843,8 @@ export function GameScreen() {
       {showIntro && <MatchIntro />}
       {battleFinished && <BattleResult />}
       {mode === 'classic' && finished && <ClassicResult />}
+      <LevelEntryDialog />
+      <AdModal />
       {showTut && (
         <Tutorial
           mode={mode}
@@ -486,6 +854,11 @@ export function GameScreen() {
           }}
         />
       )}
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
+
+/* ---------- helpers ---------- */
+
+export type { RoomView };

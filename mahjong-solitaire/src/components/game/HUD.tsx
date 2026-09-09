@@ -5,12 +5,13 @@
  * маджонгов из Google Play): тёмная мягкая капсула-подставка,
  * внутри [отмена] [перемешать] [помощь] с бейджами-счётчиками.
  *
- * Кнопка «Домой» — в верхней панели (TopBar), звук — на экране
- * выбора режима. Отмена ограничена (3 за уровень), подсказки и
- * перемешивания тоже считаются бейджами.
+ * Кнопка «Домой» — в верхней панели (TopBar), звук и язык — в
+ * настройках на экране меню. Если бонус КОНЧИЛСЯ — тап по кнопке
+ * предлагает получить 1 бонус за просмотр рекламы.
  */
 
-import { useGame } from '@/lib/game/store';
+import { useGame, UNDOS_MAX, HINTS_MAX, SHUFFLES_MAX } from '@/lib/game/store';
+import { useT } from '@/lib/i18n';
 import { Undo2, Shuffle } from 'lucide-react';
 import { IconHelp } from './icons';
 
@@ -45,6 +46,8 @@ export function HUD() {
   const undo = useGame((s) => s.undo);
   const hint = useGame((s) => s.hint);
   const shuffle = useGame((s) => s.shuffle);
+  const setAdOffer = useGame((s) => s.setAdOffer);
+  const t = useT();
 
   if (!session) return null;
 
@@ -52,12 +55,36 @@ export function HUD() {
   const playing =
     session.status === 'play' &&
     (session.mode === 'classic' || !!session.battle?.started);
-  // отменить можно и в момент 4-й разной плитки — это спасает от
-  // поражения, но возвраты ограничены: 3 за уровень
-  const canUndo =
-    playing && session.tray.length > 0 && session.undosLeft > 0;
-  const canHint = playing && !session.pendingLose && session.hintsLeft > 0;
-  const canShuffle = playing && !session.pendingLose && session.shufflesLeft > 0;
+
+  /** тап по бонусу: если он закончился — предложение рекламы */
+  const onUndo = () => {
+    if (session.tray.length === 0) return; // возвращать нечего
+    if (session.undosLeft <= 0) {
+      if (playing && session.undosLeft < UNDOS_MAX) setAdOffer('undo');
+      return;
+    }
+    undo();
+  };
+  const onShuffle = () => {
+    if (session.shufflesLeft <= 0) {
+      if (playing && session.shufflesLeft < SHUFFLES_MAX) setAdOffer('shuffle');
+      return;
+    }
+    if (session.pendingLose) return;
+    shuffle();
+  };
+  const onHint = () => {
+    if (session.hintsLeft <= 0) {
+      if (playing && session.hintsLeft < HINTS_MAX) setAdOffer('hint');
+      return;
+    }
+    if (session.pendingLose) return;
+    hint();
+  };
+
+  const canUndo = playing && session.tray.length > 0;
+  const canShuffle = playing && !session.pendingLose;
+  const canHint = playing && !session.pendingLose;
 
   return (
     <footer className="z-20 flex shrink-0 items-center justify-center px-3 pb-[max(0.4rem,env(safe-area-inset-bottom))] pt-1">
@@ -66,10 +93,10 @@ export function HUD() {
           <button
             type="button"
             className="mj-circle-btn mj-circle-btn-sm mj-circle-btn-muted"
-            onClick={undo}
+            onClick={onUndo}
             disabled={!canUndo}
-            aria-label="Вернуть плитку"
-            title={`Вернуть последнюю плитку из лотка (осталось ${session.undosLeft})`}
+            aria-label={t('hud.undo')}
+            title={t('hud.undoLeft', { n: session.undosLeft })}
           >
             <Undo2 className="h-5 w-5 text-sky-900 sm:h-6 sm:w-6 lg:h-7 lg:w-7" />
           </button>
@@ -83,10 +110,10 @@ export function HUD() {
           <button
             type="button"
             className="mj-circle-btn mj-circle-btn-sm"
-            onClick={shuffle}
+            onClick={onShuffle}
             disabled={!canShuffle}
-            aria-label="Перемешать"
-            title="Перемешать плитки"
+            aria-label={t('hud.shuffle')}
+            title={t('hud.shuffle')}
           >
             <Shuffle className="h-5 w-5 text-[#b3382c] sm:h-6 sm:w-6 lg:h-7 lg:w-7" />
           </button>
@@ -100,10 +127,10 @@ export function HUD() {
           <button
             type="button"
             className="mj-circle-btn mj-circle-btn-sm"
-            onClick={hint}
+            onClick={onHint}
             disabled={!canHint}
-            aria-label="Подсказка"
-            title="Подсказка"
+            aria-label={t('hud.hint')}
+            title={t('hud.hint')}
           >
             <IconHelp className="h-5 w-5 sm:h-6 sm:w-6 lg:h-7 lg:w-7" />
           </button>

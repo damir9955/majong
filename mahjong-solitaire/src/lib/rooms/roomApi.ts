@@ -1,31 +1,69 @@
 /**
- * Клиентский транспорт комнат «игра с другом».
- * Креды комнаты (код + playerId) хранятся в localStorage — перезагрузка
- * страницы не выкидывает игрока из матча.
+ * Клиентский транспорт комнат «игра с другом» и матчмейкинга.
+ * Креды комнаты (код + playerId + снимок для восстановления) хранятся
+ * в localStorage — перезагрузка страницы не выкидывает игрока из матча,
+ * а «sync» может пересоздать комнату на сервере из снимка.
  */
 
 import { RoomError, type RoomView } from './types';
 
 const CREDS_KEY = 'mahjong-room';
 const NAME_KEY = 'mahjong-name';
+const TICKET_KEY = 'mahjong-match-ticket';
 
 export interface RoomCreds {
   code: string;
   playerId: string;
+  /** я создатель комнаты (может пересоздать её через sync) */
+  host?: boolean;
+  /** сид и уровень — снимок для восстановления комнаты */
+  seed?: number;
+  level?: number;
+  /** имя игрока (для sync-восстановления) */
+  name?: string;
+}
+
+/** полный снимок комнаты для sync: у клиента есть вся картина */
+export interface RoomSnapshot {
+  code: string;
+  playerId: string;
+  name: string;
+  level: number;
+  seed: number;
+  hostId: string;
+  status: 'waiting' | 'playing' | 'result';
+  timeLeftMs: number;
+  score?: number;
+  pairsDone?: number;
+  players: { id: string; name: string; hue: number; score: number; pairsDone: number }[];
 }
 
 export function getSavedCreds(): RoomCreds | null {
   try {
     const raw = localStorage.getItem(CREDS_KEY);
     if (!raw) return null;
-    const c = JSON.parse(raw) as { code?: unknown; playerId?: unknown };
+    const c = JSON.parse(raw) as {
+      code?: unknown;
+      playerId?: unknown;
+      host?: unknown;
+      seed?: unknown;
+      level?: unknown;
+      name?: unknown;
+    };
     if (
       typeof c.code === 'string' &&
       c.code.length === 5 &&
       typeof c.playerId === 'string' &&
       c.playerId.length > 0
     ) {
-      return { code: c.code, playerId: c.playerId };
+      return {
+        code: c.code,
+        playerId: c.playerId,
+        host: c.host === true,
+        seed: typeof c.seed === 'number' ? c.seed : undefined,
+        level: typeof c.level === 'number' ? c.level : undefined,
+        name: typeof c.name === 'string' ? c.name : undefined,
+      };
     }
   } catch {
     // битый стор — считаем, что комнаты нет
@@ -61,6 +99,31 @@ export function getSavedName(): string {
 export function saveName(name: string) {
   try {
     localStorage.setItem(NAME_KEY, name);
+  } catch {
+    // ignore
+  }
+}
+
+/** тикет матчмейкинга живёт между перезагрузками (пока ждём соперника) */
+export function getSavedTicket(): string {
+  try {
+    return localStorage.getItem(TICKET_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export function saveTicket(id: string) {
+  try {
+    localStorage.setItem(TICKET_KEY, id);
+  } catch {
+    // ignore
+  }
+}
+
+export function clearTicket() {
+  try {
+    localStorage.removeItem(TICKET_KEY);
   } catch {
     // ignore
   }
@@ -158,6 +221,28 @@ export async function apiPollRoom(
   return toView(data);
 }
 
+/** пересоздать/оживить комнату из снимка (самовосстановление) */
+export async function apiSyncRoom(snap: RoomSnapshot): Promise<RoomView> {
+  const data = await request(`/api/rooms/${snap.code}`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      action: 'sync',
+      playerId: snap.playerId,
+      name: snap.name,
+      level: snap.level,
+      seed: snap.seed,
+      hostId: snap.hostId,
+      status: snap.status,
+      timeLeftMs: Math.round(snap.timeLeftMs),
+      score: snap.score,
+      pairsDone: snap.pairsDone,
+      players: snap.players,
+    }),
+  });
+  return toView(data);
+}
+
 /** терминальное событие: собрал доску / переполнил лоток */
 export async function apiReportFinish(
   code: string,
@@ -200,5 +285,46 @@ export async function apiLeave(code: string, playerId: string) {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ action: 'leave', playerId }),
+  });
+}
+
+/* ---------- матчмейкинг «быстрый матч» ---------- */
+
+export interface MatchStatus {
+  status: 'search' | 'paired';
+  ticketId?: string;
+  code?: string;
+  playerId?: string;
+  view?: RoomView;
+}
+
+/** встать в очередь быстрого матча (идемпотентно по ticketId) */
+export async function apiMatchJoin(
+  name: string,
+  level: number,
+  ticketId?: string,
+): Promise<MatchStatus> {
+  const data = await request('/api/rooms', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ action: 'match', name, level, ticketId }),
+  });
+  return data as unknown as MatchStatus;
+}
+
+/** статус подбора (поллинг ~1/сек) */
+export async function apiMatchPoll(ticketId: string): Promise<MatchStatus> {
+  const data = await request(`/api/rooms?match=${encodeURIComponent(ticketId)}`, {
+    cache: 'no-store',
+  });
+  return data as unknown as MatchStatus;
+}
+
+/** выйти из очереди */
+export async function apiMatchLeave(ticketId: string) {
+  await request('/api/rooms', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ action: 'match-leave', ticketId }),
   });
 }

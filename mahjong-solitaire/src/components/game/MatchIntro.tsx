@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useGame } from '@/lib/game/store';
 import { LEAGUES, leagueIndexForPoints } from '@/lib/game/league';
+import { useT } from '@/lib/i18n';
 import { getSavedName } from '@/lib/rooms/roomApi';
 import { playVersus, playCount } from '@/lib/sound';
 import { Search } from 'lucide-react';
@@ -54,6 +55,7 @@ function SideCard({
 export function MatchIntro() {
   const session = useGame((s) => s.session);
   const leaguePoints = useGame((s) => s.league.points);
+  const t = useT();
   // онлайн: соперник уже найден (комната) — радар поиска не нужен
   const online = session?.mode === 'online';
   const [phase, setPhase] = useState<'search' | 'vs' | 'count'>(
@@ -108,7 +110,7 @@ export function MatchIntro() {
         className="mj-overlay mj-intro"
         onClick={() => setPhase('vs')}
         role="button"
-        aria-label="Пропустить поиск"
+        aria-label={t('mi.skip')}
       >
         <div className="mj-intro-inner">
           <div className="mj-radar">
@@ -118,10 +120,10 @@ export function MatchIntro() {
             <Search className="h-7 w-7" />
           </div>
           <p className="mt-4 text-sm font-bold uppercase tracking-[0.3em] text-stone-100/80">
-            Поиск соперника
+            {t('mi.search')}
           </p>
           <p className="mt-2 text-xs text-stone-300/70">
-            Уровень {session.level} · {b.totalPairs} пар
+            {t('mi.searchSub', { n: session?.level ?? 1, p: b.totalPairs })}
           </p>
         </div>
       </div>
@@ -130,13 +132,13 @@ export function MatchIntro() {
 
   // VS-карточка
   if (phase === 'vs') {
-    const myName = online ? getSavedName() || 'Ты' : 'Вы';
+    const myName = online ? getSavedName() || t('vs.me') : t('vs.you');
     return (
       <div
         className="mj-overlay mj-intro"
         onClick={() => setPhase('count')}
         role="button"
-        aria-label="Пропустить"
+        aria-label={t('mi.skip')}
       >
         <div className="mj-intro-inner">
           <div className="flex items-center gap-3">
@@ -146,7 +148,7 @@ export function MatchIntro() {
               name={myName}
               leagueIndex={leagueIndexForPoints(leaguePoints)}
               delay={0}
-              chip={online ? 'ты' : undefined}
+              chip={online ? t('mi.youChip') : undefined}
               chipColor={online ? '#7fd4c1' : undefined}
             />
             <span className="mj-vs-badge">VS</span>
@@ -156,12 +158,12 @@ export function MatchIntro() {
               name={b.opponent.name}
               leagueIndex={b.opponent.leagueIndex}
               delay={120}
-              chip={online ? 'друг' : undefined}
+              chip={online ? t('mi.friendChip') : undefined}
               chipColor={online ? '#e6b84a' : undefined}
             />
           </div>
           <p className="mt-5 text-xs text-stone-300/70">
-            {online ? 'Собери доску быстрее друга' : 'Собери доску быстрее соперника'}
+            {online ? t('mi.fasterFriend') : t('mi.faster')}
           </p>
         </div>
       </div>
@@ -177,7 +179,7 @@ export function MatchIntro() {
             {count}
           </span>
         ) : (
-          <span className="mj-count-go">Вперёд!</span>
+          <span className="mj-count-go">{t('mi.go')}</span>
         )}
       </div>
     </div>

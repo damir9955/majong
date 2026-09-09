@@ -9,8 +9,8 @@
  *    (светлая кромка + мягкая тень);
  *  — каждый номинал кружков и бамбука имеет СВОЙ ЦВЕТ и СВОЙ узор:
  *    кости различаются с первого взгляда, даже мелкие;
- *  — знаки — только сильно различающиеся иероглифы 五六七八九
- *    (похожие 一二三四 убраны из колоды);
+ *  — знаки: крупная цифра по центру, снизу БЕЗ красного «萬»;
+ *    плитки-«полоски» 一二三 снова в колоде;
  *  — цветы и сезоны — цветные пиктограммы;
  *  — все иероглифы — залитые контуры (пути) из glyphs.ts:
  *    никаких <text>/шрифтов, значки видны на любом устройстве.
@@ -21,7 +21,7 @@
 
 import { memo } from 'react';
 import { getTileDef } from '@/lib/mahjong/tiles';
-import { GLYPHS, WAN } from './glyphs';
+import { GLYPHS } from './glyphs';
 
 /* классическая палитра знаков */
 const RED = '#bf3a30';
@@ -187,9 +187,9 @@ function Glyph({ ch, fill, scale = 1, px = 50, py = 65 }: GlyphProps) {
   return (
     <g>
       {/* тиснение: светлая кромка сверху-слева… */}
-      <path d={g.d} transform={`${t} translate(-1.8 -2.2)`} fill="rgba(255,255,255,.72)" />
+      <path d={g.d} transform={`${t} translate(-2.1 -2.6)`} fill="rgba(255,255,255,.78)" />
       {/* …и мягкая тень снизу-справа */}
-      <path d={g.d} transform={`${t} translate(2 2.5)`} fill="rgba(84,58,28,.28)" />
+      <path d={g.d} transform={`${t} translate(2.3 2.9)`} fill="rgba(84,58,28,.3)" />
       <path d={g.d} transform={t} fill={fill} />
     </g>
   );
@@ -483,16 +483,14 @@ function BambooFace({ n }: { n: number }) {
   );
 }
 
-/* ---------- Знаки: крупная цифра-контур + маленькая 萬 ---------- */
+/* ---------- Знаки: одна крупная цифра по центру (без 萬) ---------- */
 
 const NUM_GLYPHS = ['一', '二', '三', '四', '五', '六', '七', '八', '九'];
 
 function CharsFace({ n }: { n: number }) {
+  // только цифра, крупно и по центру: красного знака снизу больше нет
   return (
-    <g>
-      <Glyph ch={NUM_GLYPHS[n - 1]} fill={INK} scale={1.18} px={50} py={50} />
-      <path d={WAN.d} transform={WAN.t} fill={RED} />
-    </g>
+    <Glyph ch={NUM_GLYPHS[n - 1]} fill={INK} scale={1.34} px={50} py={64} />
   );
 }
 

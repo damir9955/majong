@@ -7,6 +7,7 @@
 
 import { useGame } from '@/lib/game/store';
 import { LEAGUES, leagueIndexForPoints } from '@/lib/game/league';
+import { useT } from '@/lib/i18n';
 
 function fmtTime(ms: number) {
   const s = Math.max(0, Math.ceil(ms / 1000));
@@ -55,6 +56,7 @@ function Avatar({
 export function VersusBar() {
   const session = useGame((s) => s.session);
   const leaguePoints = useGame((s) => s.league.points);
+  const t = useT();
   if (!session?.battle) return null;
   const b = session.battle;
   const online = !!b.online;
@@ -72,13 +74,13 @@ export function VersusBar() {
     : undefined;
 
   return (
-    <header className="mj-versus z-20 shrink-0 px-3 pb-1.5 pt-[max(0.55rem,env(safe-area-inset-top))]">
-      <div className="flex items-center gap-2">
+    <header className="mj-versus z-20 shrink-0">
+      <div className="flex w-full items-center gap-2">
         {/* я */}
         <div className="mj-vside">
-          <Avatar hue={150} initial="Я" leagueIndex={myLeague} />
+          <Avatar hue={150} initial={t('vs.me')[0] ?? 'Я'} leagueIndex={myLeague} />
           <div className="mj-vinfo">
-            <span className="mj-vname">Вы</span>
+            <span className="mj-vname">{t('vs.you')}</span>
             <span className="flex items-baseline gap-1">
               <span className="mj-vscore tabular-nums">{b.myScore}</span>
               {b.myCombo > 1 && (

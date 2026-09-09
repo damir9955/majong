@@ -17,6 +17,7 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { trNow } from '@/lib/i18n';
 import {
   generateBoard,
   buildOccupancy,
@@ -34,6 +35,7 @@ import { makeOpponent, leagueIndexForPoints, type Opponent } from './league';
 import {
   apiAdvance,
   apiReportFinish,
+  clearCreds,
   getSavedCreds,
 } from '@/lib/rooms/roomApi';
 import { RoomError, type RoomView } from '@/lib/rooms/types';
@@ -56,6 +58,18 @@ import {
 
 /** бонусы за пройденный уровень */
 export type BonusItem = 'hint' | 'shuffle';
+
+/** какой бонус можно получить за просмотр рекламы */
+export type AdBonusKind = 'hint' | 'shuffle' | 'undo';
+
+/** результаты встреч с друзьями (таблица «С друзьями») */
+export interface FriendRecord {
+  name: string;
+  hue: number;
+  played: number;
+  wins: number;
+  losses: number;
+}
 
 /** режим игры */
 export type GameMode = 'classic' | 'battle' | 'online';
@@ -112,13 +126,19 @@ export interface Battle {
   lastTickAt: number;
   result: MatchResult | null;
   /** онлайн-комната (режим «С другом»): соперник — реальный друг,
-   *  его счёт/прогресс приходят с сервера поллингом */
+   *  его счёт/прогресс приходят с сервера поллингом. Данные друга
+   *  и hostId нужны для «sync» — восстановления комнаты после
+   *  попадания запроса на другой serverless-инстанс */
   online?: {
     code: string;
     playerId: string;
     seed: number;
     /** друг на связи (свежий поллинг) */
     friendOnline: boolean;
+    hostId?: string;
+    friendId?: string;
+    friendName?: string;
+    friendHue?: number;
   };
 }
 
@@ -177,6 +197,15 @@ interface GameState {
   bank: { hints: number; shuffles: number };
   /** лига: трофеи и статистика */
   league: { points: number; wins: number; losses: number; streak: number };
+  /** статистика для таблиц: классика и встречи с друзьями */
+  stats: {
+    classic: { levelsCleared: number; pairsMatched: number; games: number };
+    friends: Record<string, FriendRecord>;
+  };
+  /** предложить «продолжить или заново» при входе на уровень */
+  askLevelEntry: boolean;
+  /** какой бонус предложить получить за рекламу (модалка) */
+  adOffer: AdBonusKind | null;
 
   setHydrated: (v: boolean) => void;
   /** режим, в который играли в последний раз (для «Дальше») */
@@ -195,6 +224,13 @@ interface GameState {
   nextLevel: () => void;
   setSound: (v: boolean) => void;
   markTutorialSeen: () => void;
+  /** выдать 1 бонус за просмотр рекламы (в рамках лимита) */
+  grantAdBonus: (kind: AdBonusKind) => boolean;
+  setAdOffer: (kind: AdBonusKind | null) => void;
+  /** ответ на вопрос «продолжить или заново» */
+  answerLevelEntry: (restart: boolean) => void;
+  /** сбросить устаревшую онлайн-партию (комнаты больше нет) */
+  dropOnlineSession: (code?: string) => void;
   /** создать/пересоздать онлайн-сессию из состояния комнаты */
   startOnlineSession: (
     view: RoomView,
@@ -208,7 +244,11 @@ interface GameState {
 export const TRAY_SIZE = 4;
 export const HINTS_PER_LEVEL = 3;
 export const SHUFFLES_PER_LEVEL = 2;
-export const UNDOS_PER_LEVEL = 3;
+export const UNDOS_PER_LEVEL = 5;
+/** потолки бонусов: подсказки ≤ 15, перемешивание ≤ 5, возвраты ≤ 5 */
+export const HINTS_MAX = 15;
+export const SHUFFLES_MAX = 5;
+export const UNDOS_MAX = 5;
 const LOSE_DELAY_MS = 900;
 const HINT_SHOW_MS = 2600;
 
@@ -241,6 +281,40 @@ const nextSid = () => sidCounter++;
 function rollBonuses(): BonusItem[] {
   if (Math.random() < 0.45) return ['hint', 'shuffle'];
   return Math.random() < 0.5 ? ['hint'] : ['shuffle'];
+}
+
+/** начислить бонусы в «банк» с учётом потолков (15 подсказок / 5 миксов) */
+function grantBank(
+  bank: { hints: number; shuffles: number },
+  items: BonusItem[],
+): { hints: number; shuffles: number } {
+  const hints = items.filter((g) => g === 'hint').length;
+  const shuffles = items.filter((g) => g === 'shuffle').length;
+  return {
+    hints: Math.min(HINTS_MAX, bank.hints + hints),
+    shuffles: Math.min(SHUFFLES_MAX, bank.shuffles + shuffles),
+  };
+}
+
+/** зафиксировать результат встречи с другом (таблица «С друзьями») */
+function recordFriendMatch(
+  friends: Record<string, FriendRecord>,
+  name: string,
+  hue: number,
+  won: boolean,
+): Record<string, FriendRecord> {
+  const key = name || 'Друг';
+  const cur = friends[key] ?? { name: key, hue, played: 0, wins: 0, losses: 0 };
+  return {
+    ...friends,
+    [key]: {
+      ...cur,
+      hue,
+      played: cur.played + 1,
+      wins: cur.wins + (won ? 1 : 0),
+      losses: cur.losses + (won ? 0 : 1),
+    },
+  };
 }
 
 /** ориентация экрана в момент старта партии — под неё подбирается раскладка */
@@ -297,11 +371,11 @@ function createSession(
     invalidId: null,
     status: 'play',
     pendingLose: false,
-    hintsLeft: HINTS_PER_LEVEL + bonus.hints,
+    hintsLeft: Math.min(HINTS_MAX, HINTS_PER_LEVEL + bonus.hints),
     hintPair: null,
-    shufflesLeft: SHUFFLES_PER_LEVEL + bonus.shuffles,
+    shufflesLeft: Math.min(SHUFFLES_MAX, SHUFFLES_PER_LEVEL + bonus.shuffles),
     shuffleSeq: 0,
-    undosLeft: UNDOS_PER_LEVEL,
+    undosLeft: UNDOS_MAX,
     bonusGrant: [],
     mode,
     battle,
@@ -366,7 +440,7 @@ function advanceChallenge(
     challenge = null;
     lastChallengeAt = divineNextAt();
     playDivineMiss();
-    showToast('Челлендж упущен');
+    showToast(trNow('toast.missed'));
   } else if (
     !challenge &&
     now > lastChallengeAt &&
@@ -464,7 +538,7 @@ function unstuckSession(s: Session): Session | null {
     if (hasAnyMove({ ...s, tiles })) break;
   }
   if (tiles === s.tiles) return null;
-  showToast('Ходов больше нет — перемешали');
+  showToast(trNow('toast.stuck'));
   return {
     ...s,
     tiles,
@@ -526,7 +600,7 @@ function removePair(
     floatScore(`+${pts}`, divine ? 'gold' : 'normal');
     if (divine) {
       playDivineWin();
-      showToast(`Божественный ход! +${pts}`);
+      showToast(trNow('toast.divine', { n: pts }));
     }
   }
 
@@ -608,14 +682,18 @@ function finishClassic(
   const won = reason === 'cleared';
   const bonusGrant = won ? rollBonuses() : [];
   const bank = st.bank;
+  const stats = st.stats;
   set({
-    bank: won
-      ? {
-          hints: bank.hints + bonusGrant.filter((g) => g === 'hint').length,
-          shuffles:
-            bank.shuffles + bonusGrant.filter((g) => g === 'shuffle').length,
-        }
-      : bank,
+    bank: won ? grantBank(bank, bonusGrant) : bank,
+    // таблица «Классика»: пройденные уровни и собранные пары
+    stats: {
+      ...stats,
+      classic: {
+        levelsCleared: stats.classic.levelsCleared + (won ? 1 : 0),
+        pairsMatched: stats.classic.pairsMatched + s.matchedSeq,
+        games: stats.classic.games + 1,
+      },
+    },
     session: {
       ...s,
       status: won ? 'won' : 'lost',
@@ -685,13 +763,7 @@ function finishMatch(
             ? league.streak - 1
             : -1,
     },
-    bank: outcome === 'win'
-      ? {
-          hints: bank.hints + bonusGrant.filter((g) => g === 'hint').length,
-          shuffles:
-            bank.shuffles + bonusGrant.filter((g) => g === 'shuffle').length,
-        }
-      : bank,
+    bank: outcome === 'win' ? grantBank(bank, bonusGrant) : bank,
     session: {
       ...s,
       status: outcome === 'win' ? 'won' : 'lost',
@@ -758,13 +830,17 @@ function settleOnline(
             ? league.streak - 1
             : -1,
     },
-    bank: outcome === 'win'
-      ? {
-          hints: bank.hints + bonusGrant.filter((g) => g === 'hint').length,
-          shuffles:
-            bank.shuffles + bonusGrant.filter((g) => g === 'shuffle').length,
-        }
-      : bank,
+    bank: outcome === 'win' ? grantBank(bank, bonusGrant) : bank,
+    // таблица «С друзьями»: итог встречи с этим другом
+    stats: {
+      ...st.stats,
+      friends: recordFriendMatch(
+        st.stats.friends,
+        b.opponent.name,
+        b.opponent.hue,
+        outcome === 'win',
+      ),
+    },
     session: {
       ...s,
       status: outcome === 'win' ? 'won' : 'lost',
@@ -845,6 +921,9 @@ function applyOnlineResult(view: RoomView): void {
     score: friend?.score ?? 0,
     pairsDone: friend?.pairsDone ?? 0,
   });
+  // друга в комнате уже нет (вышел/отключился) — креды не нужны:
+  // не предлагаем «вернуться в матч», которого больше не существует
+  if (r === 'left' || r === 'disconnect') clearCreds();
 }
 
 export const useGame = create<GameState>()(
@@ -859,6 +938,12 @@ export const useGame = create<GameState>()(
       lastMode: 'classic',
       bank: { hints: 0, shuffles: 0 },
       league: { points: 0, wins: 0, losses: 0, streak: 0 },
+      stats: {
+        classic: { levelsCleared: 0, pairsMatched: 0, games: 0 },
+        friends: {},
+      },
+      askLevelEntry: false,
+      adOffer: null,
 
       setHydrated: (v) => set({ hydrated: v }),
 
@@ -870,10 +955,16 @@ export const useGame = create<GameState>()(
         const cur = st.session;
         if (cur && cur.mode === mode && cur.status === 'play') {
           // продолжение сохранённой партии
+          const hasProgress =
+            cur.tray.length > 0 ||
+            cur.matchedSeq > 0 ||
+            cur.tiles.some((t) => t.removed);
           set({
             showMenu: false,
             lastMode: mode,
             session: normalizeForResume(cur),
+            // при входе на уровень с прогрессом — спросить «дальше или заново?»
+            askLevelEntry: mode === 'classic' && hasProgress,
           });
           return;
         }
@@ -897,11 +988,18 @@ export const useGame = create<GameState>()(
 
       /** вернуться в меню — партия СОХРАНЯЕТСЯ (продолжится
        *  по кнопке); победный уровень сразу поднимает лестницу.
-       *  Онлайн-матч выход не останавливает: друг продолжает играть,
-       *  поллинг в меню не прекращается. */
+       *  Онлайн-матч: если друг ушёл/комнаты нет — зачищаем всё,
+       *  чтобы не «предлагать вернуться» в несуществующий матч */
       exitToMenu: () => {
         const s = get().session;
         if (s && s.mode === 'online') {
+          const creds = getSavedCreds();
+          const gone = s.status !== 'play' || !creds;
+          if (gone) {
+            clearCreds();
+            set({ session: null, showMenu: true });
+            return;
+          }
           set({ showMenu: true });
           return;
         }
@@ -915,17 +1013,21 @@ export const useGame = create<GameState>()(
 
       /** возобновление сохранённой партии после загрузки страницы:
        *  нормализуем время боя, гасим признак летящей пары и
-       *  перезапускаем защитный таймер «четырёх разных» */
+       *  перезапускаем защитный таймер «четырёх разных».
+       *  Сразу открываем МЕНЮ — играем дальше только по кнопке */
       resumeAfterHydration: () => {
         const s = get().session;
-        if (!s) return;
+        if (!s) {
+          set({ showMenu: true });
+          return;
+        }
         // счётчик партий должен жить выше восстановленного sid —
         // иначе новая партия получит тот же sid и контроллер доски
         // не заметит смену расклада
         if (s.sid >= sidCounter) sidCounter = s.sid + 1;
         let session = normalizeForResume(s);
         if (session.matchedPair) session = { ...session, matchedPair: null };
-        set({ session });
+        set({ session, showMenu: true });
         if (session.pendingLose) {
           later(LOSE_DELAY_MS, () => {
             const cur = useGame.getState().session;
@@ -1235,7 +1337,7 @@ export const useGame = create<GameState>()(
         if (!s || s.status !== 'play' || s.tray.length === 0) return;
         if (s.undosLeft <= 0) {
           playError();
-          showToast('Возвраты закончились');
+          showToast(trNow('toast.noUndos'));
           return;
         }
         const lastId = s.tray[s.tray.length - 1];
@@ -1294,7 +1396,7 @@ export const useGame = create<GameState>()(
 
         // пар нет — подсказку не списываем
         if (!pair) {
-          showToast('Нет пар');
+          showToast(trNow('toast.noPairs'));
           playError();
           return;
         }
@@ -1324,7 +1426,7 @@ export const useGame = create<GameState>()(
         if (s.shufflesLeft <= 0) return;
         const remaining = s.tiles.filter((t) => !t.removed);
         if (remaining.length < 4) {
-          showToast('Нечего мешать');
+          showToast(trNow('toast.nothing'));
           return;
         }
         const tiles = reshuffleRemaining(s.tiles);
@@ -1357,8 +1459,8 @@ export const useGame = create<GameState>()(
           void apiAdvance(code, playerId, 'rematch').catch((e) => {
             showToast(
               e instanceof RoomError && e.code === 'ROOM_EMPTY'
-                ? 'Друг вышел из комнаты'
-                : 'Комната недоступна',
+                ? trNow('toast.friendLeft')
+                : trNow('toast.roomGone'),
             );
           });
           return;
@@ -1377,8 +1479,8 @@ export const useGame = create<GameState>()(
           void apiAdvance(code, playerId, 'next').catch((e) => {
             showToast(
               e instanceof RoomError && e.code === 'ROOM_EMPTY'
-                ? 'Друг вышел из комнаты'
-                : 'Комната недоступна',
+                ? trNow('toast.friendLeft')
+                : trNow('toast.roomGone'),
             );
           });
           return;
@@ -1404,6 +1506,53 @@ export const useGame = create<GameState>()(
       },
 
       markTutorialSeen: () => set({ tutorialSeen: true }),
+
+      /* ---------- бонусы за рекламу / вход на уровень ---------- */
+
+      /** 1 бонус за просмотр рекламы (в потолках: 5 / 5 / 15) */
+      grantAdBonus: (kind) => {
+        const s = get().session;
+        if (!s || s.status !== 'play') return false;
+        if (kind === 'hint') {
+          if (s.hintsLeft >= HINTS_MAX) return false;
+          set({ session: { ...s, hintsLeft: s.hintsLeft + 1 } });
+          return true;
+        }
+        if (kind === 'shuffle') {
+          if (s.shufflesLeft >= SHUFFLES_MAX) return false;
+          set({ session: { ...s, shufflesLeft: s.shufflesLeft + 1 } });
+          return true;
+        }
+        if (s.undosLeft >= UNDOS_MAX) return false;
+        set({ session: { ...s, undosLeft: s.undosLeft + 1 } });
+        return true;
+      },
+
+      setAdOffer: (kind) => set({ adOffer: kind }),
+
+      /** ответ на «продолжить или начать заново» */
+      answerLevelEntry: (restart) => {
+        set({ askLevelEntry: false });
+        if (restart) get().restartLevel();
+      },
+
+      /** комната мертва — убрать устаревшую онлайн-партию,
+       *  чтобы меню не предлагало «вернуться» в несуществующий матч */
+      dropOnlineSession: (code) => {
+        const s = get().session;
+        const creds = getSavedCreds();
+        const target = code ?? creds?.code;
+        if (
+          s &&
+          s.mode === 'online' &&
+          (!target || s.battle?.online?.code === target)
+        ) {
+          clearCreds();
+          set({ session: null, showMenu: true });
+          return;
+        }
+        if (creds && (!target || creds.code === target)) clearCreds();
+      },
 
       /* ============ онлайн-комната «С другом» ============ */
 
@@ -1459,6 +1608,10 @@ export const useGame = create<GameState>()(
             playerId,
             seed: view.seed,
             friendOnline: friend?.online ?? true,
+            hostId: view.hostId,
+            friendId: friend?.id,
+            friendName: friend?.name,
+            friendHue: friend?.hue,
           },
         };
         const base = createSession(view.level, 0, undefined, 'online', {
@@ -1531,7 +1684,14 @@ export const useGame = create<GameState>()(
                     ? { ...b.opponent, name: friend.name, hue: friend.hue }
                     : b.opponent,
                   online: b.online
-                    ? { ...b.online, friendOnline: friend?.online ?? false }
+                    ? {
+                        ...b.online,
+                        friendOnline: friend?.online ?? false,
+                        hostId: view.hostId,
+                        friendId: friend?.id,
+                        friendName: friend?.name,
+                        friendHue: friend?.hue,
+                      }
                     : b.online,
                 },
               },
@@ -1550,13 +1710,14 @@ export const useGame = create<GameState>()(
     }),
     {
       name: 'mahjong-relax-save',
-      version: 5,
+      version: 6,
       partialize: (state) => ({
         level: state.level,
         settings: state.settings,
         tutorialSeen: state.tutorialSeen,
         bank: state.bank,
         league: state.league,
+        stats: state.stats,
         lastMode: state.lastMode,
         // ПАРТИЯ СОХРАНЯЕТСЯ: выход/закрытие — прогресс не теряется
         session: state.session,
@@ -1577,6 +1738,10 @@ export const useGame = create<GameState>()(
               lastMode?: GameMode;
               session?: Session | null;
               progress?: { unlockedLevel?: number };
+              stats?: {
+                classic?: { levelsCleared?: number; pairsMatched?: number; games?: number };
+                friends?: Record<string, FriendRecord>;
+              };
             }
           | undefined;
         const base = {
@@ -1601,8 +1766,25 @@ export const useGame = create<GameState>()(
           // раньше партия не сохранялась — начинаем с чистого листа
           return { ...base, lastMode: 'classic', session: null };
         }
+        const stats = {
+          classic: {
+            levelsCleared: p?.stats?.classic?.levelsCleared ?? 0,
+            pairsMatched: p?.stats?.classic?.pairsMatched ?? 0,
+            games: p?.stats?.classic?.games ?? 0,
+          },
+          friends: p?.stats?.friends ?? {},
+        };
+        if (version < 6) {
+          return {
+            ...base,
+            stats,
+            lastMode: p?.lastMode ?? 'classic',
+            session: p?.session ?? null,
+          };
+        }
         return {
           ...base,
+          stats,
           lastMode: p?.lastMode ?? 'classic',
           session: p?.session ?? null,
         };
@@ -1657,6 +1839,23 @@ if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
       return moves;
     },
     tap: (id: number) => useGame.getState().tapTile(id),
+    /** тесты: немедленный финал текущей партии (поражение по лотку) */
+    loseNow: () => {
+      finish(useGame.setState as unknown as (p: Partial<GameState>) => void, 'tray');
+    },
+    /** тесты: выставить остаток бонуса */
+    setBonus: (kind: 'hints' | 'shuffles' | 'undos', n: number) => {
+      const s = useGame.getState().session;
+      if (!s) return;
+      useGame.setState({
+        session: {
+          ...s,
+          hintsLeft: kind === 'hints' ? n : s.hintsLeft,
+          shufflesLeft: kind === 'shuffles' ? n : s.shufflesLeft,
+          undosLeft: kind === 'undos' ? n : s.undosLeft,
+        },
+      });
+    },
     undo: () => useGame.getState().undo(),
     hint: () => useGame.getState().hint(),
     shuffle: () => useGame.getState().shuffle(),

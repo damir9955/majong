@@ -3,28 +3,25 @@
 /**
  * Итог матча 1v1: победа/поражение, сравнение очков, трофеи,
  * прогресс лиги и кнопки «Реванш»/«Дальше». После победы —
- * автопереход на следующий уровень.
+ * автопереход на следующий уровень. Если друга в комнате нет —
+ * только «В меню» (комната зачищена, никаких «вернуться в матч»).
  */
 
 import { useEffect } from 'react';
 import { useGame, type BonusItem, type MatchResult } from '@/lib/game/store';
-import { LEAGUES, leagueIndexForPoints, leagueProgress } from '@/lib/game/league';
+import {
+  LEAGUES,
+  leagueIndexForPoints,
+  leagueProgress,
+} from '@/lib/game/league';
+import { useT, useLang, leagueName } from '@/lib/i18n';
 import { clearCreds } from '@/lib/rooms/roomApi';
 import { confetti } from '@/lib/game/fx';
 import { playTrophy } from '@/lib/sound';
 import { Trophy, Lightbulb, Shuffle, Swords } from 'lucide-react';
 
-const REASON_TEXT: Record<MatchResult['reason'], string> = {
-  cleared: 'Доска собрана',
-  opponent: 'Соперник собрал первым',
-  timeout: 'Время вышло',
-  tray: 'Нет места',
-  oppTray: 'Соперник: нет места',
-  left: 'Соперник вышел',
-  disconnect: 'Соперник отключился',
-};
-
 function BonusChip({ kind, delay }: { kind: BonusItem; delay: number }) {
+  const t = useT();
   const isHint = kind === 'hint';
   return (
     <span className="mj-bonus-chip" style={{ animationDelay: `${delay}ms` }}>
@@ -33,7 +30,7 @@ function BonusChip({ kind, delay }: { kind: BonusItem; delay: number }) {
       ) : (
         <Shuffle className="h-4 w-4 text-sky-600" />
       )}
-      {isHint ? 'Подсказка +1' : 'Перемешать +1'}
+      {t(isHint ? 'bonus.hint' : 'bonus.shuffle')}
     </span>
   );
 }
@@ -43,6 +40,8 @@ export function BattleResult() {
   const league = useGame((s) => s.league);
   const nextLevel = useGame((s) => s.nextLevel);
   const restartLevel = useGame((s) => s.restartLevel);
+  const t = useT();
+  const lang = useLang((s) => s.lang);
 
   const res = session?.battle?.result ?? null;
   const bonuses = session?.bonusGrant ?? [];
@@ -77,30 +76,31 @@ export function BattleResult() {
   const next = LEAGUES[leagueIdx + 1];
   const progress = leagueProgress(league.points);
   const toNext = next ? next.min - league.points : 0;
+  const reasonText = t(`res.reason.${res.reason as MatchResult['reason']}`);
 
   return (
     <div className="mj-overlay mj-res">
       <div className="mj-card mj-result-card">
         <p className="flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.3em] text-stone-500">
           <Swords className="h-3.5 w-3.5" />
-          матч · уровень {session?.level}
+          {t('res.match', { n: session?.level ?? 1 })}
         </p>
         <h2
           className={`mt-1 text-4xl font-black ${
             won ? 'text-sky-700' : 'text-rose-600'
           }`}
         >
-          {won ? 'Победа!' : 'Поражение'}
+          {won ? t('res.win') : t('res.lose')}
         </h2>
         <p className="mt-0.5 text-sm font-semibold text-stone-500">
-          {REASON_TEXT[res.reason]}
+          {reasonText}
         </p>
 
         {/* сравнение очков */}
         <div className="mj-res-scores mt-4">
           <div className="mj-res-col">
             <b className="mj-res-n tabular-nums">{res.myScore}</b>
-            <span>Вы</span>
+            <span>{t('vs.you')}</span>
           </div>
           <span className="mj-res-sep">—</span>
           <div className="mj-res-col">
@@ -124,7 +124,7 @@ export function BattleResult() {
               {res.trophiesDelta}
             </b>
             <span className="text-sm font-semibold" style={{ color: cur.color }}>
-              {cur.name}
+              {leagueName(leagueIdx, lang)}
             </span>
             <span className="text-xs text-stone-400 tabular-nums">
               {league.points}
@@ -141,8 +141,8 @@ export function BattleResult() {
           </div>
           <p className="mt-1 text-[11px] text-stone-400">
             {next
-              ? `До «${next.name}»: ${toNext} трофеев`
-              : 'Высшая лига достигнута'}
+              ? t('res.toNext', { name: leagueName(leagueIdx + 1, lang), n: toNext })
+              : t('res.topLeague')}
           </p>
         </div>
 
@@ -163,15 +163,15 @@ export function BattleResult() {
                 useGame.setState({ session: null, showMenu: true });
               }}
             >
-              В меню
+              {t('res.menu')}
             </button>
           ) : (
             <>
               <button className="mj-btn-secondary" onClick={restartLevel}>
-                Реванш
+                {t('res.rematch')}
               </button>
               <button className="mj-btn" onClick={nextLevel}>
-                Дальше
+                {t('res.next')}
               </button>
             </>
           )}
