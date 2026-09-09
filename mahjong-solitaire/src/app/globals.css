@@ -1,0 +1,1656 @@
+@import "tailwindcss";
+/* probe */
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ================= Стили игры «Маджонг» ================= */
+
+.mj-cjk {
+  font-family: 'Noto Sans SC', 'Noto Sans CJK SC', 'PingFang SC',
+    'Microsoft YaHei', 'WenQuanYi Zen Hei', sans-serif;
+}
+
+/* сукно игрового стола: глубокий синий с верхним светом */
+.mj-table {
+  background:
+    radial-gradient(ellipse 130% 80% at 50% -18%, rgba(96, 168, 228, 0.36) 0%, rgba(30, 92, 156, 0) 62%),
+    radial-gradient(ellipse 120% 90% at 50% 34%, #1e5a8f 0%, #154675 52%, #0e3255 100%);
+  color: #f3ead0;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.mj-table::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1.4px),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.012) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.012) 75%);
+  background-size: 26px 26px, 52px 52px;
+}
+/* виньетка по краям — глубина стола */
+.mj-table::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse 105% 100% at 50% 42%, transparent 58%, rgba(2, 12, 26, 0.5) 100%);
+}
+
+/* плитка: тело цвета слоновой кости со слегка СЕРЫМИ боковушками
+   (толщина — box-shadow из Tile.tsx, светлая грань с рамкой —
+   в TileFace): цвет боковушек близок к грани, не спорит с ней */
+.mj-tile {
+  background: linear-gradient(165deg, #f2f0ea 0%, #e6e3da 55%, #d5d1c6 100%);
+  border: 1px solid rgba(104, 104, 96, 0.38);
+  cursor: pointer;
+  transition: filter 0.18s ease;
+  touch-action: none;
+  overflow: hidden;
+  perspective: 700px;
+}
+
+/* ---- рубашка (переворот) ---- */
+.mj-flipper {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  transition: transform 0.5s cubic-bezier(0.3, 0.7, 0.3, 1);
+}
+.mj-tile.concealed .mj-flipper {
+  transform: rotateY(180deg);
+}
+
+.mj-tile .mj-back {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  transform: rotateY(180deg);
+  backface-visibility: hidden;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(255, 214, 130, 0.16) 0%, transparent 58%),
+    linear-gradient(160deg, var(--mj-back-a, #2c5a49) 0%, var(--mj-back-b, #123127) 100%);
+  border: 1px solid rgba(255, 226, 150, 0.35);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -3px 8px rgba(0, 0, 0, 0.45);
+}
+
+/* золотая рамка-орнамент рубашки */
+.mj-tile .mj-back::before {
+  content: '';
+  position: absolute;
+  inset: 9%;
+  border-radius: 8px;
+  border: 1.5px solid rgba(255, 214, 130, 0.5);
+}
+
+/* эмблема в центре рубашки */
+.mj-tile .mj-back::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: 38%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 2px solid rgba(255, 214, 130, 0.65);
+  background: radial-gradient(
+    circle,
+    rgba(255, 226, 150, 0.28) 0%,
+    rgba(255, 226, 150, 0.06) 55%,
+    transparent 70%
+  );
+  box-shadow: inset 0 0 0 4px rgba(20, 56, 45, 0.35);
+}
+/* диагональный блеск на стекле плитки */
+.mj-tile::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    transparent 38%,
+    rgba(255, 255, 255, 0.22) 47%,
+    rgba(255, 255, 255, 0.06) 54%,
+    transparent 63%
+  );
+}
+/* грань: светлая вставка в зелёном теле — фон-пастель и
+   тёмно-зелёная рамка рисуются внутри SVG (TileFace) */
+.mj-tile .mj-face {
+  position: absolute;
+  inset: 4.5% 6% 6% 5.5%;
+  overflow: hidden;
+  backface-visibility: hidden;
+}
+/* лёгкий приятный оттенок: тёплый мёд сверху, мята снизу */
+.mj-tile .mj-face::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    170deg,
+    rgba(255, 212, 138, 0.32) 0%,
+    rgba(255, 255, 255, 0) 42%,
+    rgba(156, 210, 184, 0.28) 100%
+  );
+}
+
+/* тап по занятой — тряска «занято» */
+.mj-tile.mj-invalid {
+  animation: mj-shake 0.38s ease-in-out;
+  border-color: #c0453a;
+  filter: brightness(0.92);
+}
+
+/* плитка поднята пальцем: под ней видно доску */
+.mj-tile.mj-peek {
+  filter: brightness(1.08) drop-shadow(0 26px 26px rgba(0, 0, 0, 0.55));
+  cursor: grabbing;
+}
+
+/* пара соединяется в лотке — тёплое свечение */
+.mj-tile.mj-joining {
+  filter: brightness(1.18) saturate(1.15);
+  box-shadow:
+    0 0 0 2px rgba(255, 214, 107, 0.9),
+    0 0 22px 4px rgba(255, 200, 84, 0.55),
+    0 6px 14px rgba(0, 0, 0, 0.35) !important;
+  z-index: 7500;
+}
+
+/* подсказка — золотая пульсация пары */
+.mj-tile.mj-hint {
+  animation: mj-hint-pulse 0.85s ease-in-out 3;
+}
+
+@keyframes mj-hint-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 0 rgba(255, 204, 64, 0),
+      0 4px 8px rgba(0, 0, 0, 0.3);
+    filter: brightness(1);
+  }
+  50% {
+    box-shadow:
+      0 0 0 4px rgba(255, 204, 64, 0.95),
+      0 0 26px 6px rgba(255, 190, 54, 0.6),
+      0 4px 8px rgba(0, 0, 0, 0.3);
+    filter: brightness(1.12);
+  }
+}
+
+/* каскадное появление доски */
+.mj-tile.mj-enter {
+  animation: mj-enter-pop 0.5s cubic-bezier(0.25, 1.35, 0.35, 1) backwards;
+}
+
+/* волна переворотов после перемешивания */
+.mj-tile.mj-shuffle-wave {
+  animation: mj-flip 0.52s ease backwards;
+}
+
+@keyframes mj-flip {
+  0% {
+    transform: scale(1) rotateY(0deg);
+    filter: brightness(1);
+  }
+  50% {
+    transform: scale(0.85) rotateY(90deg);
+    filter: brightness(1.15);
+  }
+  100% {
+    transform: scale(1) rotateY(0deg);
+    filter: brightness(1);
+  }
+}
+
+/* логотип на сплеше */
+.mj-logo-tile {
+  height: 84px;
+  width: 64px;
+  border-radius: 10px;
+  background: linear-gradient(165deg, #f2f0ea 0%, #e6e3da 55%, #d5d1c6 100%);
+  border: 1px solid rgba(104, 104, 96, 0.38);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 7px 3px 0 rgba(106, 104, 96, 0.5),
+    0 10px 16px rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+}
+
+@keyframes mj-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(2px); }
+}
+
+@keyframes mj-enter-pop {
+  from {
+    transform: scale(0.25) translateY(16px);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+  }
+}
+
+/* ================= Лоток ================= */
+
+/* лоток живёт В ВЕРХНЕЙ панели (TopBar) между кнопкой «Домой»
+   и чипом номера — КОМПАКТНО: лоток не главная часть игры,
+   места он занимает мало (плитки в нём меньше доски — как
+   в топовых tile-match играх) */
+.mj-tray {
+  display: flex;
+  justify-content: center;
+  padding: 1px 0 2px;
+}
+
+/* одна зона вместо четырёх ячеек: плитки идут в ряд, пары
+   соединяются и взрываются, остаток соскальзывает на их место.
+   Ширина подогнана РОВНО под 4 слота — та же формула, что в
+   traySlots.ts (2*padX + 4*(h-2*padY)/1.28 + 3*gap): по виду
+   влезает столько, сколько реально принимает игра. Зона
+   ЗАМЕТНО КРУПНЕЕ, чем раньше (слоты ~40px на телефоне) —
+   кости в лотке хорошо читаются. Высота ограничена и шириной,
+   и ВЫСОТОЙ экрана — в альбомной ориентации лоток не
+   съедает доску. */
+.mj-tray-zone {
+  width: min(94vw, calc((clamp(62px, min(14vw, 16vh), 118px) - 14px) * 3.125 + 28px));
+  height: clamp(62px, min(14vw, 16vh), 118px);
+  border-radius: 14px;
+  background: rgba(5, 22, 40, 0.62);
+  box-shadow:
+    inset 0 3px 12px rgba(0, 0, 0, 0.62),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.07),
+    0 1px 0 rgba(255, 214, 130, 0.1);
+  border: 1px solid rgba(120, 170, 220, 0.34);
+  transition: border-color 0.25s ease;
+}
+
+/* третья плитка — мягкое золотое свечение */
+.mj-tray.warn .mj-tray-zone {
+  border-color: rgba(217, 160, 56, 0.75);
+  animation: mj-slot-warn 1s ease-in-out infinite;
+}
+
+/* четвёртая — красная тревога */
+.mj-tray.full .mj-tray-zone {
+  border-color: rgba(226, 86, 86, 0.9);
+  animation: mj-slot-full 0.5s ease-in-out infinite;
+}
+
+@keyframes mj-slot-warn {
+  0%, 100% {
+    box-shadow: inset 0 3px 12px rgba(0, 0, 0, 0.6), 0 0 0 0 rgba(217, 160, 56, 0);
+  }
+  50% {
+    box-shadow: inset 0 3px 12px rgba(0, 0, 0, 0.6), 0 0 16px 3px rgba(217, 160, 56, 0.45);
+  }
+}
+
+@keyframes mj-slot-full {
+  0%, 100% {
+    box-shadow: inset 0 3px 12px rgba(0, 0, 0, 0.6), 0 0 0 0 rgba(226, 86, 86, 0);
+  }
+  50% {
+    box-shadow: inset 0 3px 12px rgba(0, 0, 0, 0.6), 0 0 20px 5px rgba(226, 86, 86, 0.6);
+  }
+}
+
+/* чип уровня — тёмная капсула с золотым текстом «Уровень N» */
+.mj-level-chip {
+  color: #ffe9b3;
+  padding: 4px 11px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(24, 62, 104, 0.92), rgba(13, 44, 74, 0.92));
+  border: 1px solid rgba(120, 170, 220, 0.4);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 2px 6px rgba(0, 0, 0, 0.25);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+/* верхняя панель: [Домой] [лоток] [Уровень] — как на макете */
+.mj-topbar {
+  background: linear-gradient(180deg, rgba(3, 16, 31, 0.5), rgba(3, 16, 31, 0));
+}
+
+/* круглая белая кнопка «плавающая»: белая с мягкой тенью;
+   приглушённый вариант для отмены. —sm: компактная версия
+   для верхней строки и дока (лоток — не главная часть игры) */
+.mj-circle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background: #fdfbf5;
+  border: 1px solid rgba(120, 113, 100, 0.3);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 4px 10px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.2s ease;
+}
+.mj-circle-btn:active {
+  transform: scale(0.93);
+}
+.mj-circle-btn:disabled {
+  opacity: 0.42;
+  cursor: default;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 2px 5px rgba(0, 0, 0, 0.18);
+}
+.mj-circle-btn-muted {
+  background: #e8e4da;
+}
+.mj-circle-btn-sm {
+  width: 42px;
+  height: 42px;
+}
+
+/* кнопка «Домой» — чуть крупнее остальных круглых: домик во
+   весь круг, промахнуться невозможно */
+.mj-circle-btn-home {
+  width: 50px;
+  height: 50px;
+}
+@media (min-width: 700px) {
+  .mj-circle-btn-home {
+    width: 58px;
+    height: 58px;
+  }
+}
+@media (min-width: 1100px) {
+  .mj-circle-btn-home {
+    width: 64px;
+    height: 64px;
+  }
+}
+
+/* док нижних кнопок — мягкая тёмная капсула-подставка,
+   как в топовых маджонгах: кнопки собраны, не «плавают» */
+.mj-dock {
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(8, 28, 48, 0.72), rgba(5, 20, 36, 0.66));
+  border: 1px solid rgba(120, 170, 220, 0.3);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -6px 14px rgba(0, 0, 0, 0.35),
+    0 6px 18px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+/* ============ Большие экраны: планшет и десктоп ============
+   Всё масштабируется автоматически: крупнее плитки, текст,
+   кнопки и карточки — пустых полей заметно меньше. */
+
+@media (min-width: 700px) {
+  .mj-level-chip {
+    font-size: 1.05rem;
+    padding: 5px 15px;
+  }
+  .mj-card {
+    max-width: min(86vw, 440px);
+    padding: 30px 34px;
+  }
+  .mj-btn {
+    padding: 14px 40px;
+    font-size: 1.05rem;
+  }
+  .mj-btn.mj-btn-ghost {
+    padding: 12px 36px;
+  }
+  .mj-tray {
+    padding: 2px 0 3px;
+  }
+  .mj-circle-btn {
+    width: 54px;
+    height: 54px;
+  }
+  .mj-circle-btn-sm {
+    width: 48px;
+    height: 48px;
+  }
+  .mj-mode-card {
+    padding: 20px 22px;
+  }
+}
+
+@media (min-width: 1100px) {
+  .mj-level-chip {
+    font-size: 1.15rem;
+  }
+  .mj-card {
+    max-width: min(80vw, 500px);
+  }
+  .mj-btn {
+    padding: 16px 46px;
+    font-size: 1.12rem;
+  }
+  .mj-tray {
+    padding: 3px 0 4px;
+  }
+  .mj-circle-btn {
+    width: 62px;
+    height: 62px;
+  }
+  .mj-circle-btn-sm {
+    width: 56px;
+    height: 56px;
+  }
+}
+
+/* ================= Экран выбора режима ================= */
+
+.mj-mode-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+  padding: 16px 18px;
+  border-radius: 20px;
+  background: linear-gradient(165deg, rgba(255, 250, 235, 0.96), rgba(240, 231, 205, 0.92));
+  border: 1px solid rgba(180, 158, 106, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 10px 24px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+.mj-mode-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 14px 30px rgba(0, 0, 0, 0.4);
+}
+.mj-mode-card:active {
+  transform: scale(0.98);
+}
+.mj-mode-ico {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  border-radius: 16px;
+  flex-shrink: 0;
+}
+
+/* ================= Эффекты ================= */
+
+/* искры взрывов */
+.mj-spark {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ударная волна — расширяющееся кольцо
+   (margin анимируется из fx.ts, чтобы расти из центра) */
+.mj-ring {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9998;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 6px solid rgba(255, 226, 140, 0.9);
+  box-shadow: 0 0 20px rgba(255, 210, 100, 0.55), inset 0 0 12px rgba(255, 235, 170, 0.5);
+}
+
+/* вспышка в точке взрыва */
+.mj-flash {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9998;
+  width: 120px;
+  height: 120px;
+  margin: -60px 0 0 -60px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 252, 235, 0.98) 0%, rgba(255, 226, 140, 0.75) 38%, rgba(255, 200, 90, 0) 70%);
+}
+
+/* золотое гало, догорающее после взрыва */
+.mj-glow {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9997;
+  width: 96px;
+  height: 96px;
+  margin: -48px 0 0 -48px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 240, 190, 0.95) 0%, rgba(255, 210, 110, 0.5) 45%, rgba(255, 190, 80, 0) 72%);
+  filter: blur(3px);
+}
+
+/* тост сверху */
+.mj-toast {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 76px);
+  left: 50%;
+  transform: translate(-50%, 0);
+  z-index: 9999;
+  padding: 10px 18px;
+  border-radius: 14px;
+  background: rgba(12, 34, 26, 0.92);
+  border: 1px solid rgba(255, 226, 150, 0.3);
+  color: #ffe9b3;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+  max-width: 86vw;
+  text-align: center;
+}
+
+/* ================= Оверлеи ================= */
+
+.mj-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 16, 12, 0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: mj-fade 0.3s ease;
+}
+
+.mj-card {
+  background: linear-gradient(180deg, #fdf9ec, #efe6c9);
+  color: #1f2c26;
+  border-radius: 22px;
+  padding: 26px 28px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 #fffdf5;
+  text-align: center;
+  max-width: min(86vw, 380px);
+  animation: mj-card-in 0.45s cubic-bezier(0.25, 1.4, 0.35, 1) backwards;
+}
+.mj-card p {
+  font-size: 14px;
+  color: #4a5a52;
+  line-height: 1.45;
+}
+
+.mj-btn {
+  margin-top: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, #2f6e58, #275a48);
+  color: #fff;
+  border-radius: 14px;
+  padding: 12px 34px;
+  font-weight: 700;
+  font-size: 16px;
+  box-shadow: 0 6px 0 #1c4436, 0 10px 18px rgba(0, 0, 0, 0.35);
+  border: none;
+  cursor: pointer;
+  transition: transform 0.08s ease, box-shadow 0.08s ease;
+}
+.mj-btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 4px 0 #1c4436, 0 6px 12px rgba(0, 0, 0, 0.3);
+}
+/* второстепенная кнопка карточки */
+.mj-btn.mj-btn-ghost {
+  background: transparent;
+  color: #4a5a52;
+  box-shadow: none;
+  border: 1px solid rgba(74, 90, 82, 0.35);
+  padding: 10px 30px;
+}
+.mj-btn.mj-btn-ghost:active {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+/* баннер победы: дать взрыву последней пары отыграться */
+.mj-win {
+  animation: mj-fade 0.35s ease 1.9s backwards;
+}
+.mj-win .mj-win-card {
+  animation: mj-card-in 0.5s cubic-bezier(0.25, 1.4, 0.35, 1) 1.9s backwards;
+}
+
+/* чипы бонусов за уровень */
+.mj-bonus-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: rgba(47, 110, 88, 0.1);
+  border: 1px solid rgba(47, 110, 88, 0.28);
+  color: #1f4a3c;
+  font-size: 14px;
+  font-weight: 700;
+  animation: mj-bonus-pop 0.5s cubic-bezier(0.25, 1.5, 0.4, 1) backwards;
+}
+
+@keyframes mj-bonus-pop {
+  from {
+    transform: scale(0.4) translateY(12px);
+    opacity: 0;
+  }
+}
+
+@keyframes mj-fade {
+  from { opacity: 0; }
+}
+
+@keyframes mj-card-in {
+  from {
+    transform: scale(0.7) translateY(24px);
+    opacity: 0;
+  }
+}
+
+/* строки обучения */
+.mj-tut-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  text-align: left;
+}
+.mj-tut-ico {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(47, 110, 88, 0.12);
+  color: #275a48;
+}
+
+/* аккуратный скроллбар */
+.mj-table ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.mj-table ::-webkit-scrollbar-thumb {
+  background: rgba(243, 234, 208, 0.25);
+  border-radius: 999px;
+}
+.mj-table ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+
+/* ================= Панель 1v1 (VersusBar) ================= */
+
+/* верхняя панель матча 1v1 — ФИКСИРОВАННАЯ ВЫСОТА: доска у обоих
+   игроков занимает одинаковое место (раньше имена/прогресс
+   «поджимали» доску у одного из игроков) */
+.mj-versus {
+  background: linear-gradient(180deg, rgba(6, 26, 46, 0.55), rgba(6, 26, 46, 0.18));
+  box-sizing: border-box;
+  height: calc(60px + max(env(safe-area-inset-top), 0px));
+  padding: 0 12px;
+  padding-top: max(env(safe-area-inset-top), 0px);
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+@media (min-width: 700px) {
+  .mj-versus {
+    height: calc(68px + max(env(safe-area-inset-top), 0px));
+    padding: 0 16px;
+    padding-top: max(env(safe-area-inset-top), 0px);
+  }
+}
+
+.mj-vside {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.mj-vside-right {
+  flex-direction: row;
+}
+
+.mj-vinfo {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 0;
+}
+
+.mj-vinfo-right {
+  align-items: flex-end;
+}
+
+.mj-vname {
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(243, 234, 208, 0.55);
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mj-vscore {
+  font-size: 17px;
+  font-weight: 900;
+  color: #fdf9ec;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+}
+
+.mj-combo {
+  font-size: 11px;
+  font-weight: 900;
+  color: #ffd873;
+  background: rgba(255, 216, 115, 0.14);
+  border: 1px solid rgba(255, 216, 115, 0.45);
+  border-radius: 999px;
+  padding: 0 6px;
+  animation: mj-combo-pop 0.35s cubic-bezier(0.25, 1.6, 0.4, 1);
+}
+
+.mj-combo-bot {
+  color: #ffb0be;
+  border-color: rgba(255, 176, 190, 0.45);
+  background: rgba(255, 176, 190, 0.12);
+}
+
+@keyframes mj-combo-pop {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+}
+
+.mj-av {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 2.5px solid;
+  color: #fff;
+  font-weight: 900;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.mj-av-lg {
+  width: 64px;
+  height: 64px;
+  font-size: 26px;
+  border-width: 3.5px;
+}
+
+.mj-vmid {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.mj-timer {
+  font-size: 19px;
+  font-weight: 900;
+  color: #fdf9ec;
+  letter-spacing: 0.04em;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  transition: color 0.3s ease;
+}
+
+.mj-timer-low {
+  color: #ff9a6b;
+  animation: mj-timer-pulse 0.85s ease-in-out infinite;
+}
+
+@keyframes mj-timer-pulse {
+  50% {
+    transform: scale(1.12);
+    text-shadow: 0 0 18px rgba(255, 130, 80, 0.8);
+  }
+}
+
+.mj-race {
+  width: 100%;
+  max-width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mj-race-row {
+  position: relative;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.mj-race-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  transition: width 0.24s linear;
+}
+
+.mj-race-me {
+  background: linear-gradient(90deg, #2f6e58, #6fd8a8);
+  box-shadow: 0 0 8px rgba(111, 216, 168, 0.65);
+}
+
+.mj-race-bot {
+  background: linear-gradient(90deg, #a33748, #ff9a8b);
+  box-shadow: 0 0 8px rgba(255, 154, 139, 0.6);
+}
+
+/* ================= Матчмейкинг ================= */
+
+.mj-intro {
+  z-index: 60;
+}
+
+.mj-intro-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 24px;
+}
+
+.mj-radar {
+  position: relative;
+  width: 108px;
+  height: 108px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9fe8c8;
+}
+
+.mj-radar span {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 2px solid rgba(159, 232, 200, 0.65);
+  animation: mj-radar 1.7s ease-out infinite;
+}
+
+.mj-radar span:nth-child(2) {
+  animation-delay: 0.55s;
+}
+
+.mj-radar span:nth-child(3) {
+  animation-delay: 1.1s;
+}
+
+@keyframes mj-radar {
+  from {
+    transform: scale(0.25);
+    opacity: 0.9;
+  }
+  to {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+
+.mj-vs-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  animation: mj-side-in 0.5s cubic-bezier(0.25, 1.3, 0.4, 1) backwards;
+}
+
+@keyframes mj-side-in {
+  from {
+    transform: translateX(-26px) scale(0.7);
+    opacity: 0;
+  }
+}
+
+.mj-vs-name {
+  font-size: 15px;
+  font-weight: 800;
+  color: #fdf9ec;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mj-league-chip {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1.5px solid;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.mj-vs-badge {
+  flex: none;
+  font-size: 22px;
+  font-weight: 900;
+  font-style: italic;
+  color: #ffd873;
+  text-shadow: 0 0 22px rgba(255, 187, 62, 0.75), 0 2px 4px rgba(0, 0, 0, 0.5);
+  animation: mj-vs-pop 0.55s cubic-bezier(0.25, 1.6, 0.4, 1) 0.25s backwards;
+}
+
+@keyframes mj-vs-pop {
+  from {
+    transform: scale(0.2) rotate(-9deg);
+    opacity: 0;
+  }
+}
+
+.mj-count-num {
+  font-size: 110px;
+  font-weight: 900;
+  color: #fdf9ec;
+  text-shadow: 0 0 40px rgba(159, 232, 200, 0.6), 0 6px 18px rgba(0, 0, 0, 0.5);
+  animation: mj-count-pop 0.55s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+
+@keyframes mj-count-pop {
+  from {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+
+.mj-count-go {
+  font-size: 52px;
+  font-weight: 900;
+  color: #ffd873;
+  text-shadow: 0 0 34px rgba(255, 187, 62, 0.8), 0 4px 14px rgba(0, 0, 0, 0.5);
+  animation: mj-count-pop 0.4s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+
+/* ================= Итог матча ================= */
+
+.mj-res {
+  z-index: 55;
+  animation: mj-fade 0.35s ease 1.35s backwards;
+}
+
+.mj-res .mj-result-card {
+  animation: mj-card-in 0.5s cubic-bezier(0.25, 1.4, 0.35, 1) 1.35s backwards;
+}
+
+.mj-res-scores {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: rgba(31, 44, 38, 0.06);
+  border-radius: 16px;
+  padding: 10px 18px;
+}
+
+.mj-res-col {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+  min-width: 64px;
+}
+
+.mj-res-col:first-child {
+  align-items: flex-end;
+}
+
+.mj-res-col:last-child {
+  align-items: flex-start;
+}
+
+.mj-res-n {
+  font-size: 26px;
+  font-weight: 900;
+  color: #1f7a5c;
+}
+
+.mj-res-n-bot {
+  color: #b35560;
+}
+
+.mj-res-col span {
+  font-size: 11px;
+  font-weight: 700;
+  color: #6a7a72;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mj-res-sep {
+  font-size: 16px;
+  color: #9aa8a0;
+}
+
+.mj-res-league {
+  background: rgba(31, 44, 38, 0.05);
+  border-radius: 16px;
+  padding: 12px 16px;
+}
+
+.mj-league-track {
+  height: 9px;
+  border-radius: 999px;
+  background: rgba(31, 44, 38, 0.12);
+  overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.mj-league-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.7s cubic-bezier(0.25, 1, 0.35, 1);
+}
+
+.mj-btn-secondary {
+  margin-top: 18px;
+  background: rgba(47, 110, 88, 0.1);
+  color: #1f4a3c;
+  border: 1.5px solid rgba(47, 110, 88, 0.35);
+  border-radius: 14px;
+  padding: 12px 26px;
+  font-weight: 700;
+  font-size: 15px;
+  cursor: pointer;
+  transition: transform 0.08s ease, background 0.15s ease;
+}
+
+.mj-btn-secondary:active {
+  transform: translateY(2px);
+  background: rgba(47, 110, 88, 0.18);
+}
+
+/* ================= Челлендж «Божественный ход» ================= */
+
+.mj-challenge {
+  position: fixed;
+  left: 50%;
+  top: 148px;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: min(92vw, 400px);
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(66, 32, 6, 0.88), rgba(48, 24, 4, 0.88));
+  border: 1.5px solid rgba(255, 196, 84, 0.65);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 0 24px rgba(255, 187, 62, 0.28);
+  color: #ffdb9e;
+  font-size: 13px;
+  animation: mj-challenge-in 0.4s cubic-bezier(0.25, 1.4, 0.4, 1);
+  pointer-events: none;
+}
+
+@keyframes mj-challenge-in {
+  from {
+    transform: translate(-50%, -18px) scale(0.8);
+    opacity: 0;
+  }
+}
+
+.mj-challenge-track {
+  flex: 1;
+  min-width: 60px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.mj-challenge-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ffb35c, #ffe9a8);
+  box-shadow: 0 0 10px rgba(255, 187, 62, 0.8);
+}
+
+.mj-challenge-bonus {
+  color: #ffd873;
+  font-size: 14px;
+  text-shadow: 0 0 12px rgba(255, 187, 62, 0.6);
+}
+
+/* ================= Флоатер очков ================= */
+
+.mj-float {
+  position: fixed;
+  z-index: 8500;
+  transform: translate(-50%, 0);
+  font-size: 24px;
+  font-weight: 900;
+  color: #fdf9ec;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.55), 0 0 22px rgba(111, 216, 168, 0.55);
+  pointer-events: none;
+}
+
+.mj-float-gold {
+  color: #ffd873;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.55), 0 0 26px rgba(255, 187, 62, 0.85);
+}
+
+/* trigger-recompile */
+
+/* cache-bust: t13 */
+
+/* ================= Комната «С другом» (код приглашения) ================= */
+
+.mj-input {
+  width: 100%;
+  border-radius: 14px;
+  border: 1.5px solid #c9d4c6;
+  background: rgba(255, 255, 255, 0.94);
+  color: #22322a;
+  padding: 0.72rem 0.9rem;
+  font-size: 16px;
+  font-weight: 700;
+  outline: none;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.mj-input::placeholder {
+  color: #9aa89b;
+  font-weight: 600;
+}
+
+.mj-input:focus {
+  border-color: #2e6b9e;
+  box-shadow: 0 0 0 3px rgba(46, 107, 158, 0.16);
+}
+
+/* поле кода: «печатная машинка» из 5 широких букв */
+.mj-code-input {
+  letter-spacing: 0.42em;
+  text-transform: uppercase;
+  font-size: 20px;
+  font-weight: 900;
+  text-align: center;
+}
+
+/* крупный код на экране ожидания: буквы-«косточки» —
+   белые плитки с тёмными жирными буквами, видно издалека */
+.mj-code-display {
+  display: flex;
+  justify-content: center;
+  gap: 7px;
+  user-select: all;
+}
+.mj-code-display span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: clamp(46px, 13vw, 58px);
+  height: clamp(56px, 15.5vw, 70px);
+  border-radius: 10px;
+  font-size: clamp(30px, 8.5vw, 40px);
+  font-weight: 900;
+  color: #1d4a37;
+  background: linear-gradient(160deg, #fffef8, #efe7d2);
+  border: 2.5px solid #2c6a4e;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -3px 0 rgba(120, 100, 60, 0.25),
+    0 4px 10px rgba(0, 0, 0, 0.25);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.9);
+  line-height: 1;
+}
+
+.mj-room-hint {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.78);
+  max-width: 340px;
+}
+
+.mj-err {
+  color: #d2463a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* разделитель «или» */
+.mj-room-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #8b978d;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+}
+
+.mj-room-divider::before,
+.mj-room-divider::after {
+  content: '';
+  flex: 1;
+  height: 1.5px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, #d5dcd2, transparent);
+}
+
+/* индикатор «друг в сети» на аватаре */
+.mj-online-dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #34d399;
+  border: 2px solid rgba(9, 34, 24, 0.85);
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.7);
+}
+
+.mj-online-dot-off {
+  background: #9aa3a8;
+  box-shadow: none;
+}
+
+/* ================= Настройки: переключатель языка/звука ================= */
+
+.mj-lang-switch {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(240, 236, 226, 0.9);
+  border: 1.5px solid #c9d4c6;
+}
+
+.mj-lang-btn {
+  flex: 1;
+  padding: 9px 12px;
+  border-radius: 9px;
+  font-size: 15px;
+  font-weight: 800;
+  color: #5b6b5e;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.mj-lang-btn-active {
+  background: linear-gradient(180deg, #ffffff, #eef5ef);
+  color: #1d4a37;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+/* крестик-закрывалка в углу модалок */
+.mj-close-x {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(240, 236, 226, 0.95);
+  border: 1.5px solid #c9d4c6;
+  color: #5b6b5e;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.15s ease;
+}
+.mj-close-x:active {
+  transform: scale(0.92);
+}
+.mj-close-x-dark {
+  background: rgba(12, 34, 22, 0.72);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #f3ecd2;
+}
+
+/* большая кнопка (реклама за бонус) */
+.mj-btn-xl {
+  padding: 16px 30px !important;
+  font-size: 1.1rem !important;
+  gap: 8px;
+}
+
+/* ================= Реклама с вознаграждением ================= */
+
+.mj-ad-ico {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  border-radius: 999px;
+  background: linear-gradient(160deg, #6fd0b6, #1f8f7a);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 6px 14px rgba(0, 0, 0, 0.3);
+}
+
+/* полноэкранный показ ролика */
+.mj-ad-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: 24px;
+  background: radial-gradient(120% 120% at 50% 20%, #123528 0%, #071c12 78%);
+}
+
+/* контейнер реального блока Яндекс.РС (если отрендерится) */
+.mj-ad-slot {
+  position: absolute;
+  inset: 0;
+  display: none;
+}
+.mj-ad-slot:has(iframe),
+.mj-ad-slot:has(div) {
+  display: block;
+}
+
+/* демо-ролик: «рекламный» экран с таймером */
+.mj-ad-demo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.mj-ad-demo-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 120px;
+  height: 120px;
+  border-radius: 28px;
+  background: linear-gradient(160deg, #2c5a49, #123127);
+  border: 3px solid rgba(217, 180, 100, 0.6);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.18),
+    0 10px 26px rgba(0, 0, 0, 0.5);
+}
+.mj-ad-progress {
+  width: min(70vw, 260px);
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.mj-ad-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #6fd0b6, #d9a43e);
+  transition: width 0.3s linear;
+}
+
+/* ================= Турнирная таблица ================= */
+
+.mj-st-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 13px;
+  background: rgba(240, 236, 226, 0.9);
+  border: 1.5px solid #c9d4c6;
+}
+
+.mj-st-tab {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 2px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #5b6b5e;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.mj-st-tab svg {
+  flex-shrink: 0;
+}
+@media (min-width: 700px) {
+  .mj-st-tab {
+    font-size: 14px;
+    padding: 10px 6px;
+    gap: 6px;
+  }
+}
+.mj-st-tab-active {
+  background: linear-gradient(180deg, #ffffff, #eef5ef);
+  color: #1d4a37;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.mj-st-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: 11px;
+  background: rgba(240, 236, 226, 0.75);
+  border: 1px solid rgba(201, 212, 198, 0.8);
+  font-size: 14px;
+  font-weight: 700;
+  color: #44524a;
+}
+.mj-st-row b {
+  font-size: 17px;
+  font-weight: 900;
+  color: #1d4a37;
+}
+
+/* плашка лиги в «Матчах» */
+.mj-st-league {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-radius: 13px;
+  border: 2px solid;
+  background: linear-gradient(160deg, rgba(255, 254, 248, 0.96), rgba(239, 231, 210, 0.9));
+}
+.mj-st-league-name {
+  font-size: 18px;
+  font-weight: 900;
+}
+.mj-st-league-pts {
+  font-size: 14px;
+  font-weight: 800;
+  color: #5b6b5e;
+}
+
+/* строка друга */
+.mj-st-friend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 11px;
+  background: rgba(240, 236, 226, 0.75);
+  border: 1px solid rgba(201, 212, 198, 0.8);
+}
+.mj-st-winrate {
+  font-size: 15px;
+  font-weight: 900;
+  color: #1d4a37;
+}
+
+.mj-st-empty {
+  padding: 18px 10px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: #7a877c;
+}
+
+/* cache-bust: t21 */
