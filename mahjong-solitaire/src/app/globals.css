@@ -1253,3 +1253,108 @@
 /* trigger-recompile */
 
 /* cache-bust: t13 */
+
+/* ================= Комната «С другом» (код приглашения) ================= */
+
+.mj-input {
+  width: 100%;
+  border-radius: 14px;
+  border: 1.5px solid #c9d4c6;
+  background: rgba(255, 255, 255, 0.94);
+  color: #22322a;
+  padding: 0.72rem 0.9rem;
+  font-size: 16px;
+  font-weight: 700;
+  outline: none;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.mj-input::placeholder {
+  color: #9aa89b;
+  font-weight: 600;
+}
+
+.mj-input:focus {
+  border-color: #2e6b9e;
+  box-shadow: 0 0 0 3px rgba(46, 107, 158, 0.16);
+}
+
+/* поле кода: «печатная машинка» из 5 широких букв */
+.mj-code-input {
+  letter-spacing: 0.42em;
+  text-transform: uppercase;
+  font-size: 20px;
+  font-weight: 900;
+  text-align: center;
+}
+
+/* крупный код на экране ожидания */
+.mj-code-display {
+  font-size: clamp(34px, 10vw, 44px);
+  font-weight: 900;
+  letter-spacing: 0.32em;
+  line-height: 1.1;
+  color: #1d4a37;
+  text-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9),
+    0 2px 10px rgba(0, 0, 0, 0.08);
+  padding-left: 0.32em; /* компенсируем letter-spacing */
+  user-select: all;
+}
+
+.mj-room-hint {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.78);
+  max-width: 340px;
+}
+
+.mj-err {
+  color: #d2463a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* разделитель «или» */
+.mj-room-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #8b978d;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+}
+
+.mj-room-divider::before,
+.mj-room-divider::after {
+  content: '';
+  flex: 1;
+  height: 1.5px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, #d5dcd2, transparent);
+}
+
+/* индикатор «друг в сети» на аватаре */
+.mj-online-dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #34d399;
+  border: 2px solid rgba(9, 34, 24, 0.85);
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.7);
+}
+
+.mj-online-dot-off {
+  background: #9aa3a8;
+  box-shadow: none;
+}
+
+/* cache-bust: t20-rooms */

@@ -1,13 +1,15 @@
 'use client';
 
 /**
- * Хранилище игры: два режима.
+ * Хранилище игры: три режима.
  *
  *  — «Классика» — спокойная игра без соперника, таймера и очков:
  *    бесконечные уровни, лоток на 4 места, парные взрываются,
  *    4 разные — «Нет места» (поражение).
  *  — «1 на 1» — матчи как в Vita Mahjong: соперник-бот, очки с комбо,
  *    челлендж «Божественный ход», таймер, трофеи и лиги.
+ *  — «С другом» — онлайн-комната по коду приглашения: та же гонка,
+ *    но соперник — реальный друг (прогресс приходит с сервера).
  *
  * Лоток и доска общие: тап отправляет плитку в лоток (4 места),
  * парная соединяется и взрывается, 4 разные — поражение.
@@ -22,12 +24,19 @@ import {
   freeTiles,
   reshuffleRemaining,
   pickShirts,
+  mulberry32,
   type TileInstance,
 } from '@/lib/mahjong/engine';
 import { getLayoutForLevel } from '@/lib/mahjong/layouts';
 import { getTileDef } from '@/lib/mahjong/tiles';
 import { showToast, floatScore } from './fx';
 import { makeOpponent, leagueIndexForPoints, type Opponent } from './league';
+import {
+  apiAdvance,
+  apiReportFinish,
+  getSavedCreds,
+} from '@/lib/rooms/roomApi';
+import { RoomError, type RoomView } from '@/lib/rooms/types';
 import {
   playSelect,
   playError,
@@ -49,9 +58,16 @@ import {
 export type BonusItem = 'hint' | 'shuffle';
 
 /** режим игры */
-export type GameMode = 'classic' | 'battle';
+export type GameMode = 'classic' | 'battle' | 'online';
 
-export type MatchReason = 'cleared' | 'opponent' | 'timeout' | 'tray';
+export type MatchReason =
+  | 'cleared'
+  | 'opponent'
+  | 'timeout'
+  | 'tray'
+  | 'oppTray'
+  | 'left'
+  | 'disconnect';
 
 export interface MatchResult {
   outcome: 'win' | 'lose';
@@ -95,6 +111,15 @@ export interface Battle {
   /** timestamp последнего тика */
   lastTickAt: number;
   result: MatchResult | null;
+  /** онлайн-комната (режим «С другом»): соперник — реальный друг,
+   *  его счёт/прогресс приходят с сервера поллингом */
+  online?: {
+    code: string;
+    playerId: string;
+    seed: number;
+    /** друг на связи (свежий поллинг) */
+    friendOnline: boolean;
+  };
 }
 
 export interface Session {
@@ -170,6 +195,14 @@ interface GameState {
   nextLevel: () => void;
   setSound: (v: boolean) => void;
   markTutorialSeen: () => void;
+  /** создать/пересоздать онлайн-сессию из состояния комнаты */
+  startOnlineSession: (
+    view: RoomView,
+    playerId: string,
+    opts: { intro: boolean },
+  ) => void;
+  /** применить свежее состояние комнаты (поллинг ~1 раз/сек) */
+  applyRoomView: (view: RoomView) => void;
 }
 
 export const TRAY_SIZE = 4;
@@ -239,9 +272,13 @@ function createSession(
   leaguePoints: number,
   bonus = { hints: 0, shuffles: 0 },
   mode: GameMode = 'battle',
+  opts: { seed?: number; landscape?: boolean } = {},
 ): Session {
-  const layout = getLayoutForLevel(level, isLandscape());
-  const tiles = generateBoard(layout.positions);
+  const layout = getLayoutForLevel(level, opts.landscape ?? isLandscape());
+  const tiles =
+    opts.seed != null
+      ? generateBoard(layout.positions, mulberry32(opts.seed))
+      : generateBoard(layout.positions);
   const shirts = pickShirts(tiles);
   const totalPairs = layout.positions.length / 2;
   const battle: Battle | null =
@@ -313,6 +350,36 @@ function later(ms: number, fn: (sid: number) => void) {
     const s = useGame.getState().session;
     if (s && s.sid === sid) fn(sid);
   }, ms);
+}
+
+/** челлендж «Божественный ход»: спавн/истечение — общий для бота и друга */
+function advanceChallenge(
+  b: Battle,
+  s: Session,
+  now: number,
+): { challenge: Challenge | null; lastChallengeAt: number } {
+  let challenge = b.challenge;
+  let lastChallengeAt = b.lastChallengeAt;
+  const remaining = b.totalPairs - b.myPairsDone;
+  if (challenge && now > challenge.endsAt) {
+    // упущен
+    challenge = null;
+    lastChallengeAt = divineNextAt();
+    playDivineMiss();
+    showToast('Челлендж упущен');
+  } else if (
+    !challenge &&
+    now > lastChallengeAt &&
+    remaining > 4 &&
+    s.tray.length < TRAY_SIZE
+  ) {
+    challenge = {
+      endsAt: now + DIVINE_WINDOW_MS,
+      totalMs: DIVINE_WINDOW_MS,
+    };
+    playDivineStart();
+  }
+  return { challenge, lastChallengeAt };
 }
 
 const byId = (s: Session, id: number) => s.tiles.find((t) => t.id === id);
@@ -526,6 +593,7 @@ function finish(
   const s = useGame.getState().session;
   if (!s) return;
   if (s.mode === 'classic') finishClassic(set, reason);
+  else if (s.mode === 'online') finishOnline(set, reason);
   else finishMatch(set, reason);
 }
 
@@ -636,6 +704,149 @@ function finishMatch(
   else playLose();
 }
 
+/* ============ онлайн-комната «С другом»: финалы ============ */
+
+/** Начислить итог онлайн-матча: трофеи, лига, бонусы — общее
+ *  для локального финала (я собрал/переполнил) и серверного
+ *  (друг опередил, тайм-аут, отключение, выход). */
+function settleOnline(
+  outcome: 'win' | 'lose',
+  reason: MatchReason,
+  friend: { score: number; pairsDone: number },
+) {
+  const st = useGame.getState();
+  const s = st.session;
+  if (!s || s.mode !== 'online' || !s.battle) return;
+  const b = s.battle;
+
+  let delta: number;
+  if (outcome === 'win') {
+    const speedFrac = Math.max(0, b.timeLeftMs / b.timeTotalMs);
+    delta =
+      TROPHY_WIN +
+      (reason === 'cleared' ? Math.round(TROPHY_SPEED_MAX * speedFrac) : 0);
+  } else {
+    delta = -TROPHY_LOSE;
+  }
+
+  const league = st.league;
+  const points = Math.max(0, league.points + delta);
+  const result: MatchResult = {
+    outcome,
+    reason,
+    myScore: b.myScore,
+    botScore: friend.score,
+    myPairs: b.myPairsDone,
+    botPairs: friend.pairsDone,
+    trophiesDelta: delta,
+    timeLeftMs: Math.max(0, b.timeLeftMs),
+  };
+
+  const bonusGrant = outcome === 'win' ? rollBonuses() : [];
+  const bank = st.bank;
+  useGame.setState({
+    league: {
+      points,
+      wins: league.wins + (outcome === 'win' ? 1 : 0),
+      losses: league.losses + (outcome === 'lose' ? 1 : 0),
+      streak:
+        outcome === 'win'
+          ? league.streak >= 0
+            ? league.streak + 1
+            : 1
+          : league.streak <= 0
+            ? league.streak - 1
+            : -1,
+    },
+    bank: outcome === 'win'
+      ? {
+          hints: bank.hints + bonusGrant.filter((g) => g === 'hint').length,
+          shuffles:
+            bank.shuffles + bonusGrant.filter((g) => g === 'shuffle').length,
+        }
+      : bank,
+    session: {
+      ...s,
+      status: outcome === 'win' ? 'won' : 'lost',
+      pendingLose: false,
+      bonusGrant,
+      battle: {
+        ...b,
+        botScore: friend.score,
+        botPairsDone: friend.pairsDone,
+        result,
+        challenge: null,
+      },
+    },
+  });
+  if (outcome === 'win') later(1250, () => playWin());
+  else playLose();
+}
+
+/** локальный финал онлайн-матча: я собрал доску или переполнил лоток.
+ *  Экран итога показываем сразу (оптимистично), сервер подтверждает;
+ *  если оба финишировали в одну секунду — поллинг уточнит победителя. */
+function finishOnline(
+  set: (p: Partial<GameState>) => void,
+  reason: MatchReason,
+) {
+  const s = useGame.getState().session;
+  const b = s?.battle;
+  const on = b?.online;
+  if (!s || !b || !on || s.status !== 'play' || b.result) return;
+  const fin = reason === 'cleared' ? 'cleared' : 'tray';
+  const outcome = fin === 'cleared' ? 'win' : 'lose';
+  settleOnline(outcome, reason, {
+    score: b.botScore,
+    pairsDone: b.botPairsDone,
+  });
+  void apiReportFinish(on.code, on.playerId, fin, b.myScore, b.myPairsDone).catch(
+    () => {
+      // сеть пропала — результат всё равно придёт поллингом
+    },
+  );
+}
+
+/** серверный финал: результат принёс поллинг комнаты */
+function applyOnlineResult(view: RoomView): void {
+  const s = useGame.getState().session;
+  const creds = getSavedCreds();
+  if (!s || s.mode !== 'online' || !s.battle?.online || !view.result) return;
+  if (s.battle.online.code !== view.code) return;
+  if (!creds || !view.players.some((p) => p.id === creds.playerId)) return;
+
+  const friend = view.players.find((p) => p.id !== creds.playerId);
+  const won = view.result.winnerId === creds.playerId;
+  const r = view.result.reason;
+  const reason: MatchReason = won
+    ? r === 'cleared'
+      ? 'cleared'
+      : r === 'tray'
+        ? 'oppTray'
+        : r
+    : r === 'cleared'
+      ? 'opponent'
+      : r === 'tray'
+        ? 'tray'
+        : r;
+  const outcome = won ? 'win' : 'lose';
+
+  // уже применён (локально или прошлым поллингом) — не начисляем дважды
+  const prev = s.battle.result;
+  if (
+    prev &&
+    s.status !== 'play' &&
+    prev.outcome === outcome &&
+    prev.reason === reason
+  )
+    return;
+
+  settleOnline(outcome, reason, {
+    score: friend?.score ?? 0,
+    pairsDone: friend?.pairsDone ?? 0,
+  });
+}
+
 export const useGame = create<GameState>()(
   persist(
     (set, get) => ({
@@ -685,9 +896,15 @@ export const useGame = create<GameState>()(
       },
 
       /** вернуться в меню — партия СОХРАНЯЕТСЯ (продолжится
-       *  по кнопке); победный уровень сразу поднимает лестницу */
+       *  по кнопке); победный уровень сразу поднимает лестницу.
+       *  Онлайн-матч выход не останавливает: друг продолжает играть,
+       *  поллинг в меню не прекращается. */
       exitToMenu: () => {
         const s = get().session;
+        if (s && s.mode === 'online') {
+          set({ showMenu: true });
+          return;
+        }
         if (s && s.status === 'won') {
           get().nextLevel();
           set({ showMenu: true });
@@ -730,7 +947,9 @@ export const useGame = create<GameState>()(
         });
       },
 
-      /** тик боя (≈5 раз/сек): таймер, соперник, челленджи. В «Классике» — ничего. */
+      /** тик боя (≈5 раз/сек): таймер, соперник, челленджи. В «Классике» — ничего.
+       *  «С другом»: соперник живёт на сервере (поллинг), бот не тикает;
+       *  тайм-аут тоже назначает сервер — локально только отсчёт. */
       tick: () => {
         // в меню матч на паузе: бот и таймер не тикают
         if (get().showMenu) return;
@@ -739,8 +958,39 @@ export const useGame = create<GameState>()(
         const b = s.battle;
         const now = performance.now();
         const dt = Math.min(1000, Math.max(0, now - b.lastTickAt));
+        const online = s.mode === 'online';
 
         let timeLeftMs = b.timeLeftMs - dt;
+
+        // — комбо игрока остыло —
+        const myCombo = now > b.myComboUntil ? 0 : b.myCombo;
+
+        // — челлендж «Божественный ход» (и с ботом, и с другом) —
+        const { challenge, lastChallengeAt } = advanceChallenge(b, s, now);
+
+        // звуковые тики на последних секундах
+        const secPrev = Math.ceil(b.timeLeftMs / 1000);
+        const secNow = Math.ceil(timeLeftMs / 1000);
+        if (secNow !== secPrev && secNow <= 10 && secNow > 0) playTick();
+
+        if (online) {
+          // онлайн: бота нет (счёт друга приходит поллингом), вердикт
+          // о тайм-ауте тоже приносит сервер — локально только отсчёт
+          set({
+            session: {
+              ...s,
+              battle: {
+                ...b,
+                timeLeftMs: Math.max(0, timeLeftMs),
+                myCombo,
+                challenge,
+                lastChallengeAt,
+                lastTickAt: now,
+              },
+            },
+          });
+          return;
+        }
 
         // — соперник: фазы темпа (разгон / пауза / ровный ход) —
         let botRate = b.botRate;
@@ -787,38 +1037,15 @@ export const useGame = create<GameState>()(
                 botPairsDone,
                 botScore,
                 botCombo,
+                myCombo,
+                challenge,
+                lastChallengeAt,
                 lastTickAt: now,
               },
             },
           });
           finishMatch(set, 'opponent');
           return;
-        }
-
-        // — комбо игрока остыло —
-        const myCombo = now > b.myComboUntil ? 0 : b.myCombo;
-
-        // — челлендж «Божественный ход» —
-        let challenge = b.challenge;
-        let lastChallengeAt = b.lastChallengeAt;
-        const remaining = b.totalPairs - b.myPairsDone;
-        if (challenge && now > challenge.endsAt) {
-          // упущен
-          challenge = null;
-          lastChallengeAt = divineNextAt();
-          playDivineMiss();
-          showToast('Челлендж упущен');
-        } else if (
-          !challenge &&
-          now > lastChallengeAt &&
-          remaining > 4 &&
-          s.tray.length < TRAY_SIZE
-        ) {
-          challenge = {
-            endsAt: now + DIVINE_WINDOW_MS,
-            totalMs: DIVINE_WINDOW_MS,
-          };
-          playDivineStart();
         }
 
         // — время вышло: подводим итоги по прогрессу —
@@ -845,11 +1072,6 @@ export const useGame = create<GameState>()(
           finishMatch(set, 'timeout');
           return;
         }
-
-        // звуковые тики на последних секундах
-        const secPrev = Math.ceil(b.timeLeftMs / 1000);
-        const secNow = Math.ceil(timeLeftMs / 1000);
-        if (secNow !== secPrev && secNow <= 10 && secNow > 0) playTick();
 
         set({
           session: {
@@ -1129,6 +1351,18 @@ export const useGame = create<GameState>()(
       restartLevel: () => {
         const st = get();
         const mode = st.session?.mode ?? st.lastMode;
+        // онлайн «Реванш» — решение на сервере: пересоздаст доску обоим
+        if (mode === 'online' && st.session?.battle?.online) {
+          const { code, playerId } = st.session.battle.online;
+          void apiAdvance(code, playerId, 'rematch').catch((e) => {
+            showToast(
+              e instanceof RoomError && e.code === 'ROOM_EMPTY'
+                ? 'Друг вышел из комнаты'
+                : 'Комната недоступна',
+            );
+          });
+          return;
+        }
         set({
           session: createSession(st.level, st.league.points, undefined, mode),
         });
@@ -1136,8 +1370,20 @@ export const useGame = create<GameState>()(
 
       nextLevel: () => {
         const st = get();
-        const level = st.level + 1;
         const mode = st.session?.mode ?? st.lastMode;
+        // онлайн «Дальше» — решение на сервере: уровень поднимется обоим
+        if (mode === 'online' && st.session?.battle?.online) {
+          const { code, playerId } = st.session.battle.online;
+          void apiAdvance(code, playerId, 'next').catch((e) => {
+            showToast(
+              e instanceof RoomError && e.code === 'ROOM_EMPTY'
+                ? 'Друг вышел из комнаты'
+                : 'Комната недоступна',
+            );
+          });
+          return;
+        }
+        const level = st.level + 1;
         const bank = st.bank;
         if (bank.hints > 0 || bank.shuffles > 0) {
           set({
@@ -1158,6 +1404,149 @@ export const useGame = create<GameState>()(
       },
 
       markTutorialSeen: () => set({ tutorialSeen: true }),
+
+      /* ============ онлайн-комната «С другом» ============ */
+
+      /** создать онлайн-сессию из состояния комнаты: доска детерминирована
+       *  сидом (у друга ТА ЖЕ доска), соперник — друг, таймер — серверный */
+      startOnlineSession: (view, playerId, opts) => {
+        const st = get();
+        const cur = st.session;
+        // не разрушать живую партию другого режима — RoomScreen
+        // предупреждает и спрашивает подтверждение
+        if (cur && cur.mode !== 'online' && cur.status === 'play') return;
+
+        const layout = getLayoutForLevel(view.level, false);
+        const totalPairs = layout.positions.length / 2;
+        const friend = view.players.find((p) => p.id !== playerId);
+        const timeLeftMs = Math.max(
+          0,
+          Math.min(
+            view.timeTotalMs,
+            view.startedAt + view.timeTotalMs - view.serverNow,
+          ),
+        );
+        const nowP = performance.now();
+        const battle: Battle = {
+          opponent: {
+            name: friend?.name ?? 'Друг',
+            hue: friend?.hue ?? 30,
+            leagueIndex: 1,
+            speedFactor: 1,
+            skill: 0.5,
+          },
+          started: !opts.intro,
+          timeLeftMs,
+          timeTotalMs: view.timeTotalMs,
+          totalPairs,
+          myScore: 0,
+          myCombo: 0,
+          myComboUntil: 0,
+          myPairsDone: 0,
+          botScore: friend?.score ?? 0,
+          botPairsDone: friend?.pairsDone ?? 0,
+          botProgress: 0,
+          botRate: 0,
+          botBaseRate: 0,
+          botPhaseUntil: 0,
+          botCombo: 0,
+          challenge: null,
+          lastChallengeAt: nowP + 15000 + Math.random() * 10000,
+          lastTickAt: nowP,
+          result: null,
+          online: {
+            code: view.code,
+            playerId,
+            seed: view.seed,
+            friendOnline: friend?.online ?? true,
+          },
+        };
+        const base = createSession(view.level, 0, undefined, 'online', {
+          seed: view.seed,
+          landscape: false,
+        });
+        set({
+          session: { ...base, battle },
+          lastMode: 'online',
+          showMenu: false,
+        });
+      },
+
+      /** применить свежее состояние комнаты (поллинг ~1 раз/сек):
+       *  переходы ожидание→игра→итог→следующий уровень, синхронизация
+       *  счёта друга, серверного таймера и присутствия */
+      applyRoomView: (view) => {
+        const st = get();
+        const creds = getSavedCreds();
+        if (!creds || creds.code !== view.code) return;
+        if (!view.players.some((p) => p.id === creds.playerId)) return;
+        // лобби («ожидание друга») обрабатывает RoomScreen
+        if (view.status === 'waiting') return;
+
+        const s = st.session;
+        const mine =
+          !!s &&
+          s.mode === 'online' &&
+          !!s.battle?.online &&
+          s.battle.online.code === view.code &&
+          s.battle.online.seed === view.seed &&
+          s.level === view.level;
+        // живая партия другого режима не затирается автоматически
+        const liveOther = !!s && s.mode !== 'online' && s.status === 'play';
+
+        if (view.status === 'playing') {
+          if (!mine) {
+            if (!liveOther) {
+              get().startOnlineSession(view, creds.playerId, {
+                // интро показываем, только если старт ещё далеко впереди
+                intro: view.serverNow < view.startedAt - 2500,
+              });
+            }
+            return;
+          }
+          if (s && s.status === 'play' && s.battle) {
+            const friend = view.players.find((p) => p.id !== creds.playerId);
+            const b = s.battle;
+            const timeLeftMs = Math.max(
+              0,
+              Math.min(
+                view.timeTotalMs,
+                view.startedAt + view.timeTotalMs - view.serverNow,
+              ),
+            );
+            set({
+              session: {
+                ...s,
+                battle: {
+                  ...b,
+                  botScore: friend?.score ?? b.botScore,
+                  botPairsDone: friend?.pairsDone ?? b.botPairsDone,
+                  // таймер подравниваем сервером, мелкую погрешность
+                  // локального отсчёта не трогаем (без дёрганья цифр)
+                  timeLeftMs:
+                    Math.abs(b.timeLeftMs - timeLeftMs) > 700
+                      ? timeLeftMs
+                      : b.timeLeftMs,
+                  opponent: friend
+                    ? { ...b.opponent, name: friend.name, hue: friend.hue }
+                    : b.opponent,
+                  online: b.online
+                    ? { ...b.online, friendOnline: friend?.online ?? false }
+                    : b.online,
+                },
+              },
+            });
+          }
+          return;
+        }
+
+        // итог матча (result)
+        if (!mine) {
+          if (liveOther) return;
+          get().startOnlineSession(view, creds.playerId, { intro: false });
+        }
+        applyOnlineResult(view);
+      },
     }),
     {
       name: 'mahjong-relax-save',

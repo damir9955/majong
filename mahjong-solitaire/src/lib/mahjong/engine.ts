@@ -79,10 +79,27 @@ export function findAvailableMoves(
   return moves;
 }
 
-function shuffle<T>(arr: T[]): T[] {
+export type RNG = () => number;
+
+/** Детерминированный ГПСЧ (mulberry32): один и тот же seed
+ *  даёт одну и ту же доску — нужно для онлайн-комнаты, где
+ *  оба игрока собирают ОДИНАКОВУЮ доску по коду приглашения. */
+export function mulberry32(seed: number): RNG {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** перемешивание: без rng — обычный Math.random (одиночная игра) */
+function shuffle<T>(arr: T[], rng: RNG = Math.random): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(rng() * (i + 1));
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
@@ -105,6 +122,7 @@ interface SimResult {
 function simulate(
   positions: Pos[],
   pairPool: PairUnit[],
+  rng: RNG = Math.random,
 ): SimResult {
   const live = new Set(positions.map((p) => key(p.x, p.y, p.z)));
   const posByKey = new Map<string, Pos>();
@@ -126,7 +144,7 @@ function simulate(
     }
     const unit = units.pop();
     if (!unit) return { ok: false, assignment };
-    const shuffledFree = shuffle(free);
+    const shuffledFree = shuffle(free, rng);
     if (unit.defIds.length >= 2) {
       if (free.length < 2) return { ok: false, assignment };
       const p1 = shuffledFree[0];
@@ -152,14 +170,17 @@ function simulate(
  * Сложность: из нескольких решаемых вариантов выбирается тот, где
  * на старте меньше всего готовых пар — пары чаще спрятаны под другими
  * плитками, и лоток приходится использовать по назначению.
+ *
+ * rng: детерминированный ГПСЧ (mulberry32(seed)) для онлайн-комнат —
+ * одинаковая доска у обоих игроков; без rng — Math.random.
  */
-export function generateBoard(positions: Pos[]): TileInstance[] {
+export function generateBoard(positions: Pos[], rng: RNG = Math.random): TileInstance[] {
   const neededPairs = positions.length / 2;
   let best: TileInstance[] | null = null;
   let bestMoves = Infinity;
   for (let attempt = 0; attempt < 24; attempt++) {
-    const units = shuffle(buildPairUnits()).slice(0, neededPairs);
-    const res = simulate(positions, units);
+    const units = shuffle(buildPairUnits(), rng).slice(0, neededPairs);
+    const res = simulate(positions, units, rng);
     if (!res.ok) continue;
     const tiles = materialize(res.assignment);
     const moves = findAvailableMoves(tiles).length;

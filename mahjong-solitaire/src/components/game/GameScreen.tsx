@@ -16,10 +16,16 @@ import { VersusBar } from './VersusBar';
 import { MatchIntro } from './MatchIntro';
 import { BattleResult } from './BattleResult';
 import { ChallengeBanner } from './ChallengeBanner';
+import { RoomScreen } from './RoomScreen';
 import { setSoundEnabled, buzz } from '@/lib/sound';
-import { confetti } from '@/lib/game/fx';
+import { confetti, showToast } from '@/lib/game/fx';
 import { TileFace } from './TileFace';
 import { IconHome } from './icons';
+import {
+  apiPollRoom,
+  clearCreds,
+  getSavedCreds,
+} from '@/lib/rooms/roomApi';
 import {
   Sparkles,
   Hand,
@@ -28,13 +34,14 @@ import {
   Lightbulb,
   Shuffle,
   Eye,
+  Users,
   Volume2,
   VolumeX,
 } from 'lucide-react';
 
 /* ---------- Экран выбора режима ---------- */
 
-function HomeScreen() {
+function HomeScreen({ onOnline }: { onOnline: () => void }) {
   const startMode = useGame((s) => s.startMode);
   const session = useGame((s) => s.session);
   const level = useGame((s) => s.level);
@@ -123,6 +130,28 @@ function HomeScreen() {
               {resumable('battle')
                 ? `Уровень ${session?.level} ждёт тебя`
                 : 'Матч против соперника · трофеи'}
+            </span>
+          </span>
+        </button>
+
+        <button className="mj-mode-card" onClick={onOnline}>
+          <span
+            className="mj-mode-ico"
+            style={{
+              background: 'linear-gradient(160deg, #6fd0b6, #1f8f7a)',
+              boxShadow: 'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
+            }}
+          >
+            <Users className="h-7 w-7 text-white sm:h-9 sm:w-9" />
+          </span>
+          <span>
+            <b className="block text-lg font-black text-stone-800 sm:text-xl lg:text-2xl">
+              {resumable('online') ? 'Продолжить матч' : 'С другом'}
+            </b>
+            <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
+              {resumable('online')
+                ? `Друг ждёт на уровне ${session?.level}`
+                : 'Комната по коду · по ссылке'}
             </span>
           </span>
         </button>
@@ -265,15 +294,21 @@ function Tutorial({ mode, onGo }: { mode: GameMode; onGo: () => void }) {
     [Sparkles, 'Собирай пары', 'Одинаковые плитки взрываются.'],
     [Eye, 'Переворачивай рубашки', 'Тапни закрытую — а её близнеца ищи рядом.'],
     [Hand, 'Смотри под кости', 'Рубашки прячутся и ПОД костями: снимешь верхнюю — нижняя откроется сама.'],
-    mode === 'battle'
-      ? [Swords, 'Обгони соперника', 'Собери доску быстрее и получи трофеи.']
-      : [Flower2, 'Спокойный режим', 'Без таймера и соперника — в своё удовольствие.'],
+    mode === 'classic'
+      ? [Flower2, 'Спокойный режим', 'Без таймера и соперника — в своё удовольствие.']
+      : [
+          Swords,
+          mode === 'online' ? 'Обгони друга' : 'Обгони соперника',
+          mode === 'online'
+            ? 'Доска у вас одна — кто соберёт первым, тот победил.'
+            : 'Собери доску быстрее и получи трофеи.',
+        ],
   ];
   return (
     <div className="mj-overlay">
       <div className="mj-card">
         <h2 className="text-3xl font-black text-sky-900">
-          {mode === 'battle' ? 'Маджонг 1 на 1' : 'Маджонг'}
+          {mode === 'online' ? 'Маджонг с другом' : mode === 'battle' ? 'Маджонг 1 на 1' : 'Маджонг'}
         </h2>
         <div className="mt-2 flex flex-col gap-3">
           {rows.map(([Icon, title, text]) => (
@@ -314,12 +349,77 @@ export function GameScreen() {
   const tutorialSeen = useGame((s) => s.tutorialSeen);
   const markTutorialSeen = useGame((s) => s.markTutorialSeen);
 
+  // комната по коду: экран создания/входа открывается из меню и по
+  // ссылке ?room=CODE (из «Поделиться» друга)
+  const [initialCode] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    return (new URLSearchParams(window.location.search).get('room') ?? '')
+      .toUpperCase()
+      .replace(/[^A-Z2-9]/g, '')
+      .slice(0, 5);
+  });
+  const [roomOpen, setRoomOpen] = useState(() => initialCode.length > 0);
+  // чистим ?room= из адресной строки (в эффекте — НЕ в рендере:
+  // Next патчит history, и replaceState в рендере ломает Router)
+  useEffect(() => {
+    if (initialCode) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, [initialCode]);
+
   // тикер боя: таймер, соперник, челленджи (≈5 раз/сек).
   // В «Классике» tick ничего не делает.
   useEffect(() => {
     const iv = window.setInterval(() => useGame.getState().tick(), 200);
     return () => window.clearInterval(iv);
   }, []);
+
+  // поллинг онлайн-комнаты (~1 раз/сек): прогресс друга, серверный
+  // таймер, исходы и переход на следующий уровень. Живёт и в меню —
+  // присутствие игрока нужно другу, а матч не останавливается.
+  const isOnline = session?.mode === 'online';
+  const sid = session?.sid;
+  useEffect(() => {
+    if (!isOnline) return;
+    let alive = true;
+    const poll = async () => {
+      const creds = getSavedCreds();
+      const s = useGame.getState().session;
+      if (!creds || !s?.battle?.online || s.battle.online.code !== creds.code)
+        return;
+      try {
+        const view = await apiPollRoom(creds.code, creds.playerId, {
+          score: s.battle.myScore,
+          pairsDone: s.battle.myPairsDone,
+        });
+        if (!alive) return;
+        useGame.getState().applyRoomView(view);
+      } catch (e) {
+        if (!alive) return;
+        const code =
+          e && typeof e === 'object' && 'code' in e
+            ? String((e as { code?: unknown }).code)
+            : '';
+        if (code === 'ROOM_NOT_FOUND') {
+          // комната истекла по TTL — матч прерван
+          showToast('Комната закрыта — матч прерван');
+          clearCreds();
+          useGame.setState({ session: null, showMenu: true });
+        }
+      }
+    };
+    void poll();
+    const iv = window.setInterval(() => void poll(), 1100);
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void poll();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      alive = false;
+      window.clearInterval(iv);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [isOnline, sid]);
 
   // обучение — один раз при первом запуске
   const [tutDismissed, setTutDismissed] = useState(false);
@@ -342,14 +442,19 @@ export function GameScreen() {
     setSoundEnabled(useGame.getState().settings.sound);
   }, [session?.sid]);
 
-  if (showMenu || !session) return <HomeScreen />;
+  if (roomOpen) {
+    return <RoomScreen initialCode={initialCode} onClose={() => setRoomOpen(false)} />;
+  }
+
+  if (showMenu || !session) return <HomeScreen onOnline={() => setRoomOpen(true)} />;
 
   const mode = session.mode;
   const b = session.battle;
   const finished = session.status !== 'play';
-  const battleFinished = mode === 'battle' && !!b?.result;
+  const versus = mode === 'battle' || mode === 'online';
+  const battleFinished = versus && !!b?.result;
   const showTut = !tutDismissed && !tutorialSeen && !finished;
-  const showIntro = mode === 'battle' && !showTut && !!b && !b.started && !finished;
+  const showIntro = versus && !showTut && !!b && !b.started && !finished;
 
   // цвет рубашек этого уровня (меняется не часто — каждые 5 уровней):
   // CSS-переменные наследуются всем плиткам доски
@@ -360,7 +465,7 @@ export function GameScreen() {
       className="mj-table flex h-dvh flex-col"
       style={{ '--mj-back-a': backA, '--mj-back-b': backB } as React.CSSProperties}
     >
-      {mode === 'battle' && <VersusBar />}
+      {versus && <VersusBar />}
       <TopBar />
       {/* z-30: летящие в лоток плитки рисуются поверх верхней панели и лотка */}
       <main className="relative z-30 flex-1">
@@ -368,7 +473,7 @@ export function GameScreen() {
       </main>
       <HUD />
 
-      {mode === 'battle' && <ChallengeBanner />}
+      {versus && <ChallengeBanner />}
       {showIntro && <MatchIntro />}
       {battleFinished && <BattleResult />}
       {mode === 'classic' && finished && <ClassicResult />}

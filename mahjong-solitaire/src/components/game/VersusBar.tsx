@@ -18,26 +18,37 @@ function Avatar({
   initial,
   leagueIndex,
   size = 36,
+  dot,
 }: {
   hue: number;
   initial: string;
   leagueIndex: number;
   size?: number;
+  /** индикатор присутствия (онлайн-матч) */
+  dot?: 'on' | 'off';
 }) {
   const color = LEAGUES[leagueIndex].color;
   return (
-    <div
-      className="mj-av"
-      style={{
-        width: size,
-        height: size,
-        background: `linear-gradient(160deg, hsl(${hue} 52% 62%), hsl(${hue} 48% 40%))`,
-        borderColor: color,
-      }}
-      aria-hidden
-    >
-      <span style={{ fontSize: size * 0.42 }}>{initial}</span>
-    </div>
+    <span className="relative inline-block shrink-0">
+      <div
+        className="mj-av"
+        style={{
+          width: size,
+          height: size,
+          background: `linear-gradient(160deg, hsl(${hue} 52% 62%), hsl(${hue} 48% 40%))`,
+          borderColor: color,
+        }}
+        aria-hidden
+      >
+        <span style={{ fontSize: size * 0.42 }}>{initial}</span>
+      </div>
+      {dot && (
+        <span
+          className={`mj-online-dot ${dot === 'off' ? 'mj-online-dot-off' : ''}`}
+          title={dot === 'on' ? 'Друг в сети' : 'Друг не в сети'}
+        />
+      )}
+    </span>
   );
 }
 
@@ -46,13 +57,19 @@ export function VersusBar() {
   const leaguePoints = useGame((s) => s.league.points);
   if (!session?.battle) return null;
   const b = session.battle;
+  const online = !!b.online;
   const myLeague = leagueIndexForPoints(leaguePoints);
   const mePct = Math.min(100, (b.myPairsDone / b.totalPairs) * 100);
   const botPct = Math.min(
     100,
-    ((b.botPairsDone + b.botProgress) / b.totalPairs) * 100,
+    ((b.botPairsDone + (online ? 0 : b.botProgress)) / b.totalPairs) * 100,
   );
   const low = b.timeLeftMs < 15000;
+  const friendDot = b.online
+    ? b.online.friendOnline
+      ? ('on' as const)
+      : ('off' as const)
+    : undefined;
 
   return (
     <header className="mj-versus z-20 shrink-0 px-3 pb-1.5 pt-[max(0.55rem,env(safe-area-inset-top))]">
@@ -92,7 +109,7 @@ export function VersusBar() {
           </div>
         </div>
 
-        {/* соперник */}
+        {/* соперник (друг в онлайн-матче) */}
         <div className="mj-vside mj-vside-right">
           <div className="mj-vinfo mj-vinfo-right">
             <span className="mj-vname">{b.opponent.name}</span>
@@ -109,6 +126,7 @@ export function VersusBar() {
             hue={b.opponent.hue}
             initial={b.opponent.name[0]}
             leagueIndex={b.opponent.leagueIndex}
+            dot={friendDot}
           />
         </div>
       </div>

@@ -9,6 +9,7 @@
 import { useEffect } from 'react';
 import { useGame, type BonusItem, type MatchResult } from '@/lib/game/store';
 import { LEAGUES, leagueIndexForPoints, leagueProgress } from '@/lib/game/league';
+import { clearCreds } from '@/lib/rooms/roomApi';
 import { confetti } from '@/lib/game/fx';
 import { playTrophy } from '@/lib/sound';
 import { Trophy, Lightbulb, Shuffle, Swords } from 'lucide-react';
@@ -18,6 +19,9 @@ const REASON_TEXT: Record<MatchResult['reason'], string> = {
   opponent: 'Соперник собрал первым',
   timeout: 'Время вышло',
   tray: 'Нет места',
+  oppTray: 'Соперник: нет места',
+  left: 'Соперник вышел',
+  disconnect: 'Соперник отключился',
 };
 
 function BonusChip({ kind, delay }: { kind: BonusItem; delay: number }) {
@@ -42,21 +46,29 @@ export function BattleResult() {
 
   const res = session?.battle?.result ?? null;
   const bonuses = session?.bonusGrant ?? [];
-
+  const online = session?.mode === 'online';
   const won = res?.outcome === 'win';
+  // друга в комнате уже нет — продолжать матч не с кем
+  const oppGone =
+    !!res && (res.reason === 'left' || res.reason === 'disconnect');
 
   useEffect(() => {
     if (!res) return;
     if (won) {
       confetti();
-      const t1 = window.setTimeout(() => playTrophy(), 900);
-      const t2 = window.setTimeout(() => useGame.getState().nextLevel(), 7500);
-      return () => {
-        window.clearTimeout(t1);
-        window.clearTimeout(t2);
-      };
     }
-  }, [res, won]);
+    const t1 = window.setTimeout(() => playTrophy(), 900);
+    // автопереход: в боте — после победы; в онлайн — если друг ещё
+    // в комнате и никто не нажал кнопку (кто первый — того и воля)
+    const autoMs = online && !oppGone ? 12000 : won ? 7500 : 0;
+    const t2 = autoMs
+      ? window.setTimeout(() => useGame.getState().nextLevel(), autoMs)
+      : 0;
+    return () => {
+      window.clearTimeout(t1);
+      if (t2) window.clearTimeout(t2);
+    };
+  }, [res, won, online, oppGone]);
 
   if (!res) return null;
 
@@ -143,15 +155,26 @@ export function BattleResult() {
         )}
 
         <div className="mt-4 flex items-center justify-center gap-3">
-          <button
-            className="mj-btn-secondary"
-            onClick={restartLevel}
-          >
-            Реванш
-          </button>
-          <button className="mj-btn" onClick={nextLevel}>
-            Дальше
-          </button>
+          {oppGone ? (
+            <button
+              className="mj-btn"
+              onClick={() => {
+                clearCreds();
+                useGame.setState({ session: null, showMenu: true });
+              }}
+            >
+              В меню
+            </button>
+          ) : (
+            <>
+              <button className="mj-btn-secondary" onClick={restartLevel}>
+                Реванш
+              </button>
+              <button className="mj-btn" onClick={nextLevel}>
+                Дальше
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

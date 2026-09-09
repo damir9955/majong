@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useGame } from '@/lib/game/store';
 import { LEAGUES, leagueIndexForPoints } from '@/lib/game/league';
+import { getSavedName } from '@/lib/rooms/roomApi';
 import { playVersus, playCount } from '@/lib/sound';
 import { Search } from 'lucide-react';
 
@@ -17,14 +18,19 @@ function SideCard({
   name,
   leagueIndex,
   delay,
+  chip,
+  chipColor,
 }: {
   hue: number;
   initial: string;
   name: string;
   leagueIndex: number;
   delay: number;
+  /** свой чип вместо лиги (напр. «друг» в онлайн-матче) */
+  chip?: string;
+  chipColor?: string;
 }) {
-  const color = LEAGUES[leagueIndex].color;
+  const color = chipColor ?? LEAGUES[leagueIndex].color;
   return (
     <div className="mj-vs-side" style={{ animationDelay: `${delay}ms` }}>
       <div
@@ -39,7 +45,7 @@ function SideCard({
       </div>
       <b className="mj-vs-name">{name}</b>
       <span className="mj-league-chip" style={{ borderColor: color, color }}>
-        {LEAGUES[leagueIndex].name}
+        {chip ?? LEAGUES[leagueIndex].name}
       </span>
     </div>
   );
@@ -48,7 +54,11 @@ function SideCard({
 export function MatchIntro() {
   const session = useGame((s) => s.session);
   const leaguePoints = useGame((s) => s.league.points);
-  const [phase, setPhase] = useState<'search' | 'vs' | 'count'>('search');
+  // онлайн: соперник уже найден (комната) — радар поиска не нужен
+  const online = session?.mode === 'online';
+  const [phase, setPhase] = useState<'search' | 'vs' | 'count'>(
+    () => (useGame.getState().session?.mode === 'online' ? 'vs' : 'search'),
+  );
   const [count, setCount] = useState(3);
   const timers = useRef<number[]>([]);
 
@@ -120,6 +130,7 @@ export function MatchIntro() {
 
   // VS-карточка
   if (phase === 'vs') {
+    const myName = online ? getSavedName() || 'Ты' : 'Вы';
     return (
       <div
         className="mj-overlay mj-intro"
@@ -131,10 +142,12 @@ export function MatchIntro() {
           <div className="flex items-center gap-3">
             <SideCard
               hue={150}
-              initial="Я"
-              name="Вы"
+              initial={myName[0] ?? 'Я'}
+              name={myName}
               leagueIndex={leagueIndexForPoints(leaguePoints)}
               delay={0}
+              chip={online ? 'ты' : undefined}
+              chipColor={online ? '#7fd4c1' : undefined}
             />
             <span className="mj-vs-badge">VS</span>
             <SideCard
@@ -143,10 +156,12 @@ export function MatchIntro() {
               name={b.opponent.name}
               leagueIndex={b.opponent.leagueIndex}
               delay={120}
+              chip={online ? 'друг' : undefined}
+              chipColor={online ? '#e6b84a' : undefined}
             />
           </div>
           <p className="mt-5 text-xs text-stone-300/70">
-            Собери доску быстрее соперника
+            {online ? 'Собери доску быстрее друга' : 'Собери доску быстрее соперника'}
           </p>
         </div>
       </div>
