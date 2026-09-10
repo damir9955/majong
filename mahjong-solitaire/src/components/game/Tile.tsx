@@ -1,11 +1,12 @@
 'use client';
 
 /**
- * Плитка доски: классическая «костяшка» — мятно-зелёное тело
- * с заметной толщиной (боковая грань) и светлая грань с тонкой
- * тёмно-зелёной рамкой (рисуется в TileFace). Позиционированием
- * и полётами управляет Board напрямую через DOM (React не пишет
- * transform/transition/display). Занятые плитки НИЧЕМ не выделены.
+ * Плитка доски = ФОТО-КАРТИНКА (Task 25): настоящий снимок кости
+ * заливает всю плитку, рисованного тела больше нет. Сверху — лишь
+ * лёгкая тень по краям (белое не сливается) и мягкий контакт со
+ * столом. Позиционированием и полётами управляет Board напрямую
+ * через DOM (React не пишет transform/transition/display). Занятые
+ * плитки НИЧЕМ не выделены.
  *
  * Рубашка: concealed=true — плитка лежит лицом вниз (тёмная
  * «ткань» с золотым орнаментом). Переворот — 3D-поворот
@@ -44,8 +45,8 @@ interface Props {
 function TileInner({ v, registerEl }: Props) {
   const { tile } = v;
   const def = getTileDef(tile.defId);
-  const radius = Math.max(5, v.width * 0.12);
-  const depth = Math.max(2, v.width * 0.09);
+  const radius = Math.max(5, v.width * 0.11);
+  const depth = Math.max(2, v.width * 0.06);
 
   const cls = [
     'mj-tile',
@@ -74,15 +75,15 @@ function TileInner({ v, registerEl }: Props) {
         zIndex: v.zIndex,
         borderRadius: radius,
         display: v.gone ? 'none' : undefined,
-        // «настоящая» костяшка: тёплая кость, видимый боковой срез
-        // (жёсткая серо-кремовая кромка снизу = толщина), мягкий
-        // контакт с доской и широкая амбиентная тень
-        boxShadow: `inset 0 1.5px 0 rgba(255,255,255,.72), inset 0 -2px 2px rgba(112,92,58,.22), 0 ${depth}px ${Math.max(2, depth * 0.35)}px 0 rgba(118,106,88,.62), 0 ${depth + 3}px ${depth * 7}px rgba(0,0,0,.28)`,
+        // лёгкая тень по краям картинки-плитки: тонкая кромка
+        // (белое по белому не сливается) + мягкий контакт со столом
+        // + широкое спокойное затенение под плиткой
+        boxShadow: `inset 0 0 0 1px rgba(56,45,26,.16), 0 ${Math.max(1, depth * 0.35)}px ${Math.max(2, depth * 0.9)}px rgba(0,0,0,.24), 0 ${depth + 4}px ${depth * 6}px rgba(0,0,0,.20)`,
         animationDelay: `${v.enterDelay}ms`,
       }}
     >
       <div className="mj-flipper">
-        <div className="mj-face" style={{ borderRadius: radius * 0.78 }}>
+        <div className="mj-face" style={{ borderRadius: radius }}>
           <TileFace defId={tile.defId} />
         </div>
         <div className="mj-back" style={{ borderRadius: radius }} />

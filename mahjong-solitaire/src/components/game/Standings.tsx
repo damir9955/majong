@@ -160,7 +160,7 @@ export function Standings({ onClose }: { onClose: () => void }) {
 
       <div className="flex items-center gap-2">
         <Trophy className="h-6 w-6 text-[#e6b84a]" />
-        <p className="text-lg font-bold tracking-[0.25em] text-amber-200/85 sm:text-2xl">
+        <p className="text-lg font-bold tracking-[0.25em] mj-screen-title sm:text-2xl">
           {t('st.title').toUpperCase()}
         </p>
       </div>

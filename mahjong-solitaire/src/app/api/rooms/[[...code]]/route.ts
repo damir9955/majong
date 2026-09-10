@@ -145,7 +145,8 @@ async function handleCodePost(req: Request, code: string) {
   }
 
   if (action === 'next' || action === 'rematch') {
-    const res = advanceRoom(c, action);
+    const kind = action as 'next' | 'rematch';
+    const res = advanceRoom(c, playerId, kind);
     if ('error' in res) {
       if (res.error === 'not_found') return err(404, 'ROOM_NOT_FOUND');
       if (res.error === 'empty') return err(410, 'ROOM_EMPTY');

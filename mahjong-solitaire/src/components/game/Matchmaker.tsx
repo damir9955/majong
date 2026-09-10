@@ -1,10 +1,10 @@
 'use client';
 
 /**
- * Быстрый матч против реального человека: очередь на сервере,
- * подбор по уровню (±2), при несовпадении — средний уровень.
- * Если людей мало и кто-то ждёт дольше 25 секунд — соединяем
- * любых ждущих. Пока ищем — радар и отмена.
+ * Быстрый матч против реального человека (Task 25): просто
+ * «найти игру» — уровень больше НЕ важен. Соединяем с любым,
+ * кто тоже в автопоиске, а если таких нет — присоединяемся
+ * к первой открытой комнате. Пока ищем — радар и отмена.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -149,7 +149,7 @@ export function Matchmaker({ onClose }: { onClose: () => void }) {
               {t('mm.searching')}
             </p>
             <p className="text-sm font-semibold text-stone-600">
-              {t('mm.level', { n: useGame.getState().level })}
+              {t('mm.anyLevel')}
             </p>
             <p className="mj-room-hint text-center">
               {waited >= 25 ? t('mm.waited') : t('mm.hint')}
@@ -176,7 +176,7 @@ export function Matchmaker({ onClose }: { onClose: () => void }) {
       </button>
 
       <div className="flex flex-col items-center gap-2">
-        <p className="text-lg font-bold tracking-[0.3em] text-amber-200/85 sm:text-2xl">
+        <p className="text-lg font-bold tracking-[0.3em] mj-screen-title sm:text-2xl">
           {t('opp.human').toUpperCase()}
         </p>
         <p className="mj-room-hint text-center">{t('mm.hint')}</p>

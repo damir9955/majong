@@ -48,6 +48,10 @@ interface Room {
   timeTotalMs: number;
   result: { winnerId: string; reason: RoomFinishReason; at: number } | null;
   createdAt: number;
+  /* Task 25: реванш/следующий уровень — только по согласию ОБоИХ.
+   * playerId → чем согласен ('rematch' | 'next'); когда оба
+   * согласились одинаково — матч стартует */
+  advanceBy: Map<string, 'rematch' | 'next'>;
 }
 
 /* ---------- константы (синхронизированы с режимом «1 на 1») ---------- */
@@ -56,9 +60,12 @@ interface Room {
 const INTRO_BUDGET_MS = 8000;
 /** «в сети»: поллинг жив */
 const PRESENCE_MS = 12000;
-/** так долго нет ответа игрока → победа соперника по отключению.
- *  10 секунд: соперника нет давно — ты не должен играть вхолостую */
-const ONLINE_GRACE_MS = 10000;
+/* Так долго нет ответа игрока → победа соперника по отключению.
+ *  30 секунд (Task 25): перезагрузка страницы/переключение
+ *  приложения НЕ должны обрывать матч ложным проигрышем — игрок
+ *  возвращается и игра продолжается. Настоящий «выход» приходит
+ *  отдельным событием leave и решает мгновенно. */
+const ONLINE_GRACE_MS = 30000;
 /** время на пару — как в матче против бота */
 const TIME_PER_PAIR_MS = 4500;
 const TIME_MIN_MS = 90000;
@@ -77,10 +84,9 @@ const CODE_LEN = 5;
 
 /* ---------- матчмейкинг «быстрый матч» ---------- */
 
-/** ищем соперника с уровнем ± LEVEL_WINDOW; дальше — кого ждём долго */
-const LEVEL_WINDOW = 2;
-/** оба ждут дольше этого → соединяем любых (мало людей) */
-const MATCH_RELAX_MS = 25000;
+/* Task 25: автопоиск БЕЗ ограничения по уровню — просто «найти
+ * игру»: соединяем любых ждущих (кто раньше встал в очередь),
+ * а если очереди нет — присоединяемся к ПЕРВОЙ открытой комнате. */
 /** тикет, который так долго не поллили, выпадает из очереди */
 const TICKET_TTL_MS = 20000;
 
@@ -169,6 +175,10 @@ function view(room: Room): RoomView {
       ? { winnerId: room.result.winnerId, reason: room.result.reason }
       : null,
     visibility: room.visibility,
+    advanceOffers: [...room.advanceBy.entries()].map(([playerId, kind]) => ({
+      playerId,
+      kind,
+    })),
   };
 }
 
@@ -267,6 +277,7 @@ export function createRoom(
     timeTotalMs: timeForLevel(level),
     result: null,
     createdAt: now(),
+    advanceBy: new Map(),
   };
   rooms.set(code, room);
   return { room };
@@ -383,6 +394,7 @@ export function syncRoom(code: string, body: Record<string, unknown>): {
     timeTotalMs,
     result: null,
     createdAt: now(),
+    advanceBy: new Map(),
   };
   rooms.set(code, room);
   return { room };
@@ -460,15 +472,32 @@ export function reportFinish(
   return view(room);
 }
 
-/** следующий уровень («Дальше») или повтор того же («Реванш») */
+/** согласие на реванш/следующий уровень (Task 25). Матч
+ *  стартует, только когда ОБА игрока согласились одинаково.
+ *  Один согласился → view.advanceOffers покажет это второму
+ *  (у того — вопрос «соперник предлагает реванш, согласен?»). */
 export function advanceRoom(
   codeRaw: string,
+  playerId: unknown,
   kind: 'next' | 'rematch',
 ): { room: Room } | { error: 'not_found' | 'not_now' | 'empty' } {
   const room = rooms.get(codeRaw);
   if (!room) return { error: 'not_found' };
   if (room.status !== 'result') return { error: 'not_now' };
   if (room.players.length < 2) return { error: 'empty' };
+  if (typeof playerId === 'string') {
+    const p = findPlayer(room, playerId);
+    if (p) {
+      p.lastSeen = now();
+      room.advanceBy.set(playerId, kind);
+    }
+  }
+  // оба согласны одинаково? → старт нового матча
+  const [a, b] = room.players;
+  const ka = a && room.advanceBy.get(a.id);
+  const kb = b && room.advanceBy.get(b.id);
+  if (!(ka && kb && ka === kb)) return { room };
+  room.advanceBy.clear();
   if (kind === 'next') room.level = clamp(room.level + 1, 1, 999);
   room.seed = newSeed();
   room.result = null;
@@ -492,6 +521,7 @@ export function leaveRoom(
   const room = rooms.get(codeRaw);
   if (!room) return { error: 'not_found' };
   room.players = room.players.filter((p) => p.id !== playerId);
+  room.advanceBy.delete(String(playerId));
   if (room.players.length === 0) {
     rooms.delete(codeRaw);
     return { ok: true };
@@ -501,14 +531,12 @@ export function leaveRoom(
   return { ok: true };
 }
 
-/* ---------- матчмейкинг «быстрый матч» ---------- */
+/* ---------- матчмейкинг «быстрый матч» (Task 25) ---------- */
 
-/** уровень комнаты для пары: средний (люди на разных уровнях) */
-const pairLevel = (a: number, b: number) =>
-  clamp(Math.round((a + b) / 2), 1, 999);
-
+/** соединяем двух ждущих: уровень — того, кто раньше встал в очередь
+ *  (автопоиск больше НЕ фильтрует по уровню) */
 function pairTickets(a: Ticket, b: Ticket) {
-  const level = pairLevel(a.level, b.level);
+  const level = clamp(a.level, 1, 999);
   const { room } = createRoom(a.name, level);
   room.seed = newSeed();
   // хост — кто раньше встал в очередь
@@ -530,28 +558,46 @@ function pairTickets(a: Ticket, b: Ticket) {
   b.paired = { code: room.code, playerId: joiner.id, view: view(room) };
 }
 
-/** попробовать соединить ждущих: сначала близкие уровни, потом любые
- *  (если кто-то ждёт дольше MATCH_RELAX_MS — людей мало, соединяем) */
+/** присоединить ждущий тикет к первой открытой комнате (или
+ *  вернуть null, если открытых нет) — «подключение к нужной игре» */
+function joinFirstOpenRoom(tk: Ticket): boolean {
+  const room = [...rooms.values()]
+    .filter(
+      (r) =>
+        r.status === 'waiting' &&
+        r.visibility === 'open' &&
+        r.players.length === 1,
+    )
+    .sort((a, b) => a.createdAt - b.createdAt)[0];
+  if (!room) return false;
+  const joiner: RoomPlayer = {
+    id: rndId(),
+    name: sanitizeName(tk.name),
+    hue: tk.hue,
+    score: 0,
+    pairsDone: 0,
+    lastSeen: now(),
+    finished: null,
+  };
+  room.players.push(joiner);
+  room.status = 'playing';
+  room.startedAt = now() + INTRO_BUDGET_MS;
+  tk.paired = { code: room.code, playerId: joiner.id, view: view(room) };
+  return true;
+}
+
+/** попробовать соединить ждущих: ЛЮБЫЕ два тикета (кто раньше —
+ *  тот и уровень), остался один — может, есть открытая комната */
 function tryMatchAll() {
-  const waiting = [...tickets.values()].filter((t) => !t.paired);
-  for (let i = 0; i < waiting.length; i++) {
-    const a = waiting[i];
-    if (a.paired) continue;
-    let best: Ticket | null = null;
-    let bestD = Infinity;
-    for (let j = i + 1; j < waiting.length; j++) {
-      const b = waiting[j];
-      if (b.paired) continue;
-      const d = Math.abs(a.level - b.level);
-      const waited =
-        Math.max(0, now() - a.createdAt) > MATCH_RELAX_MS ||
-        Math.max(0, now() - b.createdAt) > MATCH_RELAX_MS;
-      if (d < bestD && (d <= LEVEL_WINDOW || waited)) {
-        best = b;
-        bestD = d;
-      }
-    }
-    if (best) pairTickets(a, best);
+  const waiting = [...tickets.values()]
+    .filter((t) => !t.paired)
+    .sort((a, b) => a.createdAt - b.createdAt);
+  for (let i = 0; i + 1 < waiting.length; i += 2) {
+    pairTickets(waiting[i], waiting[i + 1]);
+  }
+  if (waiting.length % 2 === 1) {
+    const t = waiting[waiting.length - 1];
+    if (t && !t.paired) joinFirstOpenRoom(t);
   }
 }
 

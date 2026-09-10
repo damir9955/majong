@@ -217,12 +217,22 @@ export function Board() {
       live.add(mp[1]);
     }
     const animating = fl.current.state;
+    // ПРОМЕЖУТОК между плитками (Task 25): каждая картинка чуть
+    // меньше своей клетки и стоит по центру — плитки не «впритык»
+    const GAP = 0.06;
+    const draw = 1 - GAP;
     return tiles.map((t) => ({
       tile: t,
-      left: t.z * LAYER_OFF_X * geom.tileW + (t.x - bounds.minX) * geom.ux,
-      top: t.z * LAYER_OFF_Y * geom.tileW + (t.y - bounds.minY) * geom.uy,
-      width: geom.tileW,
-      height: geom.tileH,
+      left:
+        t.z * LAYER_OFF_X * geom.tileW +
+        (t.x - bounds.minX) * geom.ux +
+        geom.tileW * (GAP / 2),
+      top:
+        t.z * LAYER_OFF_Y * geom.tileW +
+        (t.y - bounds.minY) * geom.uy +
+        geom.tileH * (GAP / 2),
+      width: geom.tileW * draw,
+      height: geom.tileH * draw,
       zIndex: t.z * 1000 + (t.y - bounds.minY),
       invalid: t.id === invalidId,
       entering,

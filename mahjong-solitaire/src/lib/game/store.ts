@@ -34,6 +34,7 @@ import { showToast, floatScore } from './fx';
 import { makeOpponent, leagueIndexForPoints, type Opponent } from './league';
 import {
   apiAdvance,
+  apiLeave,
   apiReportFinish,
   clearCreds,
   getSavedCreds,
@@ -73,6 +74,28 @@ export interface FriendRecord {
 
 /** режим игры */
 export type GameMode = 'classic' | 'battle' | 'online';
+
+/** тема стола — 6 штук «от реалистичной до простой» (Task 25) */
+export type TableTheme =
+  | 'emerald'
+  | 'wood'
+  | 'walnut'
+  | 'night'
+  | 'paper'
+  | 'mint';
+
+export const TABLE_THEMES: TableTheme[] = [
+  'emerald',
+  'wood',
+  'walnut',
+  'night',
+  'paper',
+  'mint',
+];
+
+export function normalizeTheme(v: unknown): TableTheme {
+  return TABLE_THEMES.includes(v as TableTheme) ? (v as TableTheme) : 'emerald';
+}
 
 export type MatchReason =
   | 'cleared'
@@ -139,6 +162,12 @@ export interface Battle {
     friendId?: string;
     friendName?: string;
     friendHue?: number;
+    /** моё согласие на реванш/дальше (Task 25: оба должны
+     *  согласиться — иначе новый матч не стартует) */
+    myAdvance?: 'rematch' | 'next' | null;
+    /** согласие соперника (для диалога «соперник предлагает
+     *  реванш — согласен?») */
+    oppAdvance?: 'rematch' | 'next' | null;
   };
 }
 
@@ -188,7 +217,7 @@ interface GameState {
   hydrated: boolean;
   /** текущий бесконечный уровень */
   level: number;
-  settings: { sound: boolean };
+  settings: { sound: boolean; theme: TableTheme };
   tutorialSeen: boolean;
   session: Session | null;
   /** меню открыто, но партия СОХРАНЕНА — продолжится по кнопке */
@@ -223,6 +252,8 @@ interface GameState {
   restartLevel: () => void;
   nextLevel: () => void;
   setSound: (v: boolean) => void;
+  /** тема стола (фон + цвета текста) */
+  setTheme: (t: TableTheme) => void;
   markTutorialSeen: () => void;
   /** выдать 1 бонус за просмотр рекламы (в рамках лимита) */
   grantAdBonus: (kind: AdBonusKind) => boolean;
@@ -231,6 +262,10 @@ interface GameState {
   answerLevelEntry: (restart: boolean) => void;
   /** сбросить устаревшую онлайн-партию (комнаты больше нет) */
   dropOnlineSession: (code?: string) => void;
+
+  /** выйти из онлайн-матча СОГЛАСНО (после подтверждения):
+   *  сопернику — победа, мне — поражение, комната покидается */
+  forfeitOnline: () => void;
   /** создать/пересоздать онлайн-сессию из состояния комнаты */
   startOnlineSession: (
     view: RoomView,
@@ -931,7 +966,7 @@ export const useGame = create<GameState>()(
     (set, get) => ({
       hydrated: false,
       level: 1,
-      settings: { sound: true },
+      settings: { sound: true, theme: 'emerald' },
       tutorialSeen: false,
       session: null,
       showMenu: false,
@@ -1453,16 +1488,21 @@ export const useGame = create<GameState>()(
       restartLevel: () => {
         const st = get();
         const mode = st.session?.mode ?? st.lastMode;
-        // онлайн «Реванш» — решение на сервере: пересоздаст доску обоим
+        // онлайн «Реванш» — согласие на сервере: матч стартует,
+        //  когда второй игрок тоже согласится
         if (mode === 'online' && st.session?.battle?.online) {
           const { code, playerId } = st.session.battle.online;
-          void apiAdvance(code, playerId, 'rematch').catch((e) => {
-            showToast(
-              e instanceof RoomError && e.code === 'ROOM_EMPTY'
-                ? trNow('toast.friendLeft')
-                : trNow('toast.roomGone'),
-            );
-          });
+          void apiAdvance(code, playerId, 'rematch')
+            .then((view) => {
+              if (view) useGame.getState().applyRoomView(view);
+            })
+            .catch((e) => {
+              showToast(
+                e instanceof RoomError && e.code === 'ROOM_EMPTY'
+                  ? trNow('toast.friendLeft')
+                  : trNow('toast.roomGone'),
+              );
+            });
           return;
         }
         set({
@@ -1473,16 +1513,20 @@ export const useGame = create<GameState>()(
       nextLevel: () => {
         const st = get();
         const mode = st.session?.mode ?? st.lastMode;
-        // онлайн «Дальше» — решение на сервере: уровень поднимется обоим
+        // онлайн «Дальше» — согласие на сервере (оба должны согласиться)
         if (mode === 'online' && st.session?.battle?.online) {
           const { code, playerId } = st.session.battle.online;
-          void apiAdvance(code, playerId, 'next').catch((e) => {
-            showToast(
-              e instanceof RoomError && e.code === 'ROOM_EMPTY'
-                ? trNow('toast.friendLeft')
-                : trNow('toast.roomGone'),
-            );
-          });
+          void apiAdvance(code, playerId, 'next')
+            .then((view) => {
+              if (view) useGame.getState().applyRoomView(view);
+            })
+            .catch((e) => {
+              showToast(
+                e instanceof RoomError && e.code === 'ROOM_EMPTY'
+                  ? trNow('toast.friendLeft')
+                  : trNow('toast.roomGone'),
+              );
+            });
           return;
         }
         const level = st.level + 1;
@@ -1503,6 +1547,10 @@ export const useGame = create<GameState>()(
 
       setSound: (v) => {
         set({ settings: { ...get().settings, sound: v } });
+      },
+
+      setTheme: (t) => {
+        set({ settings: { ...get().settings, theme: t } });
       },
 
       markTutorialSeen: () => set({ tutorialSeen: true }),
@@ -1552,6 +1600,29 @@ export const useGame = create<GameState>()(
           return;
         }
         if (creds && (!target || creds.code === target)) clearCreds();
+      },
+
+      /** выйти из онлайн-матча после подтверждения: соперник
+       *  получает победу («вышел»), мне засчитывается поражение
+       *  (трофеи/лига/таблица друзей) — и сразу в меню */
+      forfeitOnline: () => {
+        const s = get().session;
+        const on = s?.battle?.online;
+        if (!s || s.mode !== 'online' || !on) {
+          set({ showMenu: true });
+          return;
+        }
+        // сообщаем серверу (не ждём — сеть может уже висеть)
+        void apiLeave(on.code, on.playerId).catch(() => {});
+        const b = s.battle;
+        if (s.status === 'play' && b && !b.result) {
+          settleOnline('lose', 'left', {
+            score: b.botScore,
+            pairsDone: b.botPairsDone,
+          });
+        }
+        clearCreds();
+        set({ session: null, showMenu: true });
       },
 
       /* ============ онлайн-комната «С другом» ============ */
@@ -1612,6 +1683,8 @@ export const useGame = create<GameState>()(
             friendId: friend?.id,
             friendName: friend?.name,
             friendHue: friend?.hue,
+            myAdvance: null,
+            oppAdvance: null,
           },
         };
         const base = createSession(view.level, 0, undefined, 'online', {
@@ -1706,6 +1779,36 @@ export const useGame = create<GameState>()(
           get().startOnlineSession(view, creds.playerId, { intro: false });
         }
         applyOnlineResult(view);
+        // синхронизируем согласия на реванш/следующий уровень:
+        // «я согласился — ждём соперника» / «соперник предлагает —
+        // спросить игрока» (Task 25: оба должны согласиться)
+        const cur = get().session;
+        const on = cur?.battle?.online;
+        if (
+          cur &&
+          cur.mode === 'online' &&
+          cur.battle &&
+          on &&
+          on.code === view.code
+        ) {
+          const myOff =
+            view.advanceOffers?.find((o) => o.playerId === creds.playerId)
+              ?.kind ?? null;
+          const oppOff =
+            view.advanceOffers?.find((o) => o.playerId !== creds.playerId)
+              ?.kind ?? null;
+          if (on.myAdvance !== myOff || on.oppAdvance !== oppOff) {
+            set({
+              session: {
+                ...cur,
+                battle: {
+                  ...cur.battle,
+                  online: { ...on, myAdvance: myOff, oppAdvance: oppOff },
+                },
+              },
+            });
+          }
+        }
       },
     }),
     {
@@ -1726,7 +1829,7 @@ export const useGame = create<GameState>()(
         const p = persisted as
           | {
               level?: number;
-              settings?: { sound?: boolean };
+              settings?: { sound?: boolean; theme?: string };
               tutorialSeen?: boolean;
               bank?: { hints?: number; shuffles?: number };
               league?: {
@@ -1746,7 +1849,7 @@ export const useGame = create<GameState>()(
           | undefined;
         const base = {
           level: p?.level ?? p?.progress?.unlockedLevel ?? 1,
-          settings: { sound: p?.settings?.sound ?? true },
+          settings: { sound: p?.settings?.sound ?? true, theme: normalizeTheme(p?.settings?.theme) },
           tutorialSeen: p?.tutorialSeen ?? false,
           bank: {
             hints: p?.bank?.hints ?? 0,

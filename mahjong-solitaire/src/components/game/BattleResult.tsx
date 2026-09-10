@@ -2,12 +2,20 @@
 
 /**
  * Итог матча 1v1: победа/поражение, сравнение очков, трофеи,
- * прогресс лиги и кнопки «Реванш»/«Дальше». После победы —
- * автопереход на следующий уровень. Если друга в комнате нет —
- * только «В меню» (комната зачищена, никаких «вернуться в матч»).
+ * прогресс лиги и кнопки.
+ *
+ * ОНЛАЙН (Task 25): новый матч — только по согласию ОБоИХ.
+ *  — нажал «Реванш» → «Ждём согласия соперника…»;
+ *  — соперник нажал раньше → вопрос «соперник предлагает
+ *    реванш — согласен?» ([Согласиться] / [Отказаться]);
+ *  — оба согласились → сервер стартует матч автоматически.
+ * Автоперехода в онлайн больше нет (только в матче с ботом).
+ *
+ * Бот: [Реванш] / [Дальше], автопереход на следующий уровень
+ * после победы. Если друга в комнате нет — только «В меню».
  */
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useGame, type BonusItem, type MatchResult } from '@/lib/game/store';
 import {
   LEAGUES,
@@ -15,10 +23,10 @@ import {
   leagueProgress,
 } from '@/lib/game/league';
 import { useT, useLang, leagueName } from '@/lib/i18n';
-import { clearCreds } from '@/lib/rooms/roomApi';
+import { apiLeave, clearCreds } from '@/lib/rooms/roomApi';
 import { confetti } from '@/lib/game/fx';
-import { playTrophy } from '@/lib/sound';
-import { Trophy, Lightbulb, Shuffle, Swords } from 'lucide-react';
+import { playTrophy, buzz } from '@/lib/sound';
+import { Trophy, Lightbulb, Shuffle, Swords, Hourglass } from 'lucide-react';
 
 function BonusChip({ kind, delay }: { kind: BonusItem; delay: number }) {
   const t = useT();
@@ -42,6 +50,9 @@ export function BattleResult() {
   const restartLevel = useGame((s) => s.restartLevel);
   const t = useT();
   const lang = useLang((s) => s.lang);
+  // «Отказаться» от предложения реванша — прячем вопрос,
+  // обычные кнопки остаются доступны
+  const [declined, setDeclined] = useState(false);
 
   const res = session?.battle?.result ?? null;
   const bonuses = session?.bonusGrant ?? [];
@@ -51,15 +62,24 @@ export function BattleResult() {
   const oppGone =
     !!res && (res.reason === 'left' || res.reason === 'disconnect');
 
+  const on = session?.battle?.online;
+  const myAdvance = on?.myAdvance ?? null;
+  const oppAdvance = on?.oppAdvance ?? null;
+  // соперник уже предложил реванш, а я ещё не отвечал
+  const askAccept =
+    online && !oppGone && oppAdvance === 'rematch' && !myAdvance && !declined;
+  // я предложил — жду согласия соперника
+  const waitingConsent =
+    online && !oppGone && myAdvance === 'rematch' && !oppAdvance;
+
   useEffect(() => {
     if (!res) return;
     if (won) {
       confetti();
     }
     const t1 = window.setTimeout(() => playTrophy(), 900);
-    // автопереход: в боте — после победы; в онлайн — если друг ещё
-    // в комнате и никто не нажал кнопку (кто первый — того и воля)
-    const autoMs = online && !oppGone ? 12000 : won ? 7500 : 0;
+    // автопереход — только матч с ботом (в онлайн решают игроки)
+    const autoMs = !online && won ? 7500 : 0;
     const t2 = autoMs
       ? window.setTimeout(() => useGame.getState().nextLevel(), autoMs)
       : 0;
@@ -67,9 +87,19 @@ export function BattleResult() {
       window.clearTimeout(t1);
       if (t2) window.clearTimeout(t2);
     };
-  }, [res, won, online, oppGone]);
+  }, [res, won, online]);
 
   if (!res) return null;
+
+  /** выйти из комнаты после итога: другу сразу «ушёл», мне — в меню */
+  const exitRoom = () => {
+    const onl = useGame.getState().session?.battle?.online;
+    if (onl) {
+      void apiLeave(onl.code, onl.playerId).catch(() => {});
+    }
+    clearCreds();
+    useGame.setState({ session: null, showMenu: true });
+  };
 
   const leagueIdx = leagueIndexForPoints(league.points);
   const cur = LEAGUES[leagueIdx];
@@ -154,17 +184,71 @@ export function BattleResult() {
           </div>
         )}
 
+        {/* ---- вопрос о реванше: соперник уже согласен ---- */}
+        {askAccept && (
+          <div className="mj-rematch-ask mt-4" data-testid="mj-rematch-ask">
+            <p className="text-[15px] font-bold text-stone-800">
+              {t('rem.offer')}
+            </p>
+            <div className="mt-3 flex items-center justify-center gap-3">
+              <button
+                className="mj-btn"
+                data-testid="mj-rematch-accept"
+                onClick={() => {
+                  buzz(15);
+                  restartLevel();
+                }}
+              >
+                {t('rem.accept')}
+              </button>
+              <button
+                className="mj-btn mj-btn-ghost"
+                data-testid="mj-rematch-decline"
+                onClick={() => {
+                  buzz(10);
+                  setDeclined(true);
+                }}
+              >
+                {t('rem.decline')}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ---- я предложил — ждём согласия соперника ---- */}
+        {waitingConsent && (
+          <p
+            className="mt-4 flex items-center justify-center gap-2 text-sm font-bold text-stone-700"
+            data-testid="mj-rematch-waiting"
+          >
+            <Hourglass className="h-4 w-4 animate-pulse text-amber-600" />
+            {t('rem.waiting')}
+          </p>
+        )}
+
         <div className="mt-4 flex items-center justify-center gap-3">
           {oppGone ? (
-            <button
-              className="mj-btn"
-              onClick={() => {
-                clearCreds();
-                useGame.setState({ session: null, showMenu: true });
-              }}
-            >
+            <button className="mj-btn" onClick={exitRoom}>
               {t('res.menu')}
             </button>
+          ) : online ? (
+            <>
+              {!myAdvance && (
+                <button
+                  className="mj-btn-secondary"
+                  data-testid="mj-btn-rematch"
+                  onClick={() => {
+                    buzz(15);
+                    restartLevel();
+                  }}
+                >
+                  {t('res.rematch')}
+                </button>
+              )}
+              <button className="mj-btn mj-btn-ghost" onClick={exitRoom}>
+                {t('res.menu')}
+              </button>
+            </>
           ) : (
             <>
               <button className="mj-btn-secondary" onClick={restartLevel}>

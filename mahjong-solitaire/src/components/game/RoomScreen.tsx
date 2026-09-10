@@ -479,7 +479,7 @@ export function RoomScreen({ onClose }: { onClose: () => void }) {
               <TileFace defId="drg-2" />
             </div>
           </div>
-          <p className="text-lg font-bold tracking-[0.3em] text-amber-200/85 sm:text-2xl">
+          <p className="text-lg font-bold tracking-[0.3em] mj-screen-title sm:text-2xl">
             {t('room.title')}
           </p>
           <p className="mj-room-hint text-center">{t('room.subtitle')}</p>

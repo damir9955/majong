@@ -47,6 +47,9 @@ export interface RoomView {
   result: RoomResultView | null;
   /** открытая игра видна в общем списке, закрытая — только по коду */
   visibility?: 'open' | 'closed';
+  /** кто уже согласился на реванш/следующий уровень (Task 25:
+   *  новый матч стартует ТОЛЬКО когда согласны ОБА) */
+  advanceOffers?: { playerId: string; kind: 'rematch' | 'next' }[];
 }
 
 /** запись в списке открытых игр (лобби) */

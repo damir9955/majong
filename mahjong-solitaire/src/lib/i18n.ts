@@ -53,17 +53,43 @@ const RU: Record<string, string> = {
   'settings.on': 'Вкл',
   'settings.off': 'Выкл',
 
-  // выбор соперника
-  'opp.title': 'Против кого играть?',
-  'opp.computer': 'С компьютером',
-  'opp.computerSub': 'Соперник найден сразу',
-  'opp.human': 'С человеком',
-  'opp.humanSub': 'Поиск по интернету · близкий уровень',
+  // выбор темы стола (Task 25: 6 тем «от реалистичной до простой»)
+  'settings.theme': 'Тема стола',
+  'theme.emerald': 'Фетр',
+  'theme.wood': 'Дерево',
+  'theme.walnut': 'Орех',
+  'theme.night': 'Ночь',
+  'theme.paper': 'Пергамент',
+  'theme.mint': 'Мята',
+
+  // «1 на 1»: всё в одном месте (Task 25)
+  'one.title': 'Против кого играть?',
+  'one.find': 'Найти игру',
+  'one.findSub': 'Автопоиск соперника — уровень не важен',
+  'one.code': 'По коду',
+  'one.codeSub': 'Открытые игры · вход по коду',
+  'one.bot': 'С компьютером',
+  'one.botSub': 'Соперник найден сразу',
+
+  // подтверждение выхода из онлайн-матча (Task 25)
+  'exit.title': 'Выйти из матча?',
+  'exit.text': 'Матч будет зачтён как поражение',
+  'exit.yes': 'Выйти',
+  'exit.no': 'Остаться',
+
+  // реванш по согласию обоих (Task 25)
+  'rem.waiting': 'Ждём согласия соперника…',
+  'rem.offer': 'Соперник предлагает реванш — согласен?',
+  'rem.accept': 'Согласиться',
+  'rem.decline': 'Отказаться',
+
+  // соперник потерял связь
+  'vs.offline': 'Соперник потерял связь — ждём…',
 
   // матчмейкинг
   'mm.searching': 'Ищем соперника…',
-  'mm.level': 'Твой уровень: {n}',
-  'mm.hint': 'Соединяем игроков с близким уровнем',
+  'mm.anyLevel': 'Уровень не важен',
+  'mm.hint': 'Соединяем с любым свободным игроком или первой открытой комнатой',
   'mm.waited': 'Ждём чуть дольше — людей сейчас мало',
   'mm.cancel': 'Отмена',
   'mm.name': 'Твоё имя',
@@ -255,15 +281,42 @@ const EN: Record<string, string> = {
   'settings.on': 'On',
   'settings.off': 'Off',
 
-  'opp.title': 'Choose your opponent',
-  'opp.computer': 'vs Computer',
-  'opp.computerSub': 'Opponent found instantly',
-  'opp.human': 'vs Real player',
-  'opp.humanSub': 'Online search · similar level',
+  // table themes (Task 25)
+  'settings.theme': 'Table theme',
+  'theme.emerald': 'Felt',
+  'theme.wood': 'Wood',
+  'theme.walnut': 'Walnut',
+  'theme.night': 'Night',
+  'theme.paper': 'Paper',
+  'theme.mint': 'Mint',
+
+  // «1 на 1» — всё в одном месте (Task 25)
+  'one.title': 'Choose your opponent',
+  'one.find': 'Find a game',
+  'one.findSub': 'Auto-match with any player — level does not matter',
+  'one.code': 'By code',
+  'one.codeSub': 'Open games · join by code',
+  'one.bot': 'vs Computer',
+  'one.botSub': 'Opponent found instantly',
+
+  // подтверждение выхода из онлайн-матча (Task 25)
+  'exit.title': 'Leave the match?',
+  'exit.text': 'The match will count as a loss',
+  'exit.yes': 'Leave',
+  'exit.no': 'Stay',
+
+  // реванш по согласию (Task 25)
+  'rem.waiting': 'Waiting for the opponent to accept…',
+  'rem.offer': 'Opponent offers a rematch — accept?',
+  'rem.accept': 'Accept',
+  'rem.decline': 'Decline',
+
+  // соперник потерял связь
+  'vs.offline': 'Opponent lost connection — waiting…',
 
   'mm.searching': 'Looking for an opponent…',
-  'mm.level': 'Your level: {n}',
-  'mm.hint': 'Pairing players of similar level',
+  'mm.anyLevel': 'Any level works',
+  'mm.hint': 'Matching with any free player or the first open room',
   'mm.waited': 'Waiting a bit longer — few players right now',
   'mm.cancel': 'Cancel',
   'mm.name': 'Your name',
