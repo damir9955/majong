@@ -143,6 +143,10 @@ body {
     linear-gradient(180deg, #1e4a35 0%, #122e1f 100%);
   --mj-fg: #f3ead0;
   --mj-title: rgba(253, 230, 167, 0.88);
+  --mj-title-sh:
+    0 1px 1px rgba(0, 0, 0, 0.62),
+    0 2px 5px rgba(0, 0, 0, 0.5),
+    0 0 20px rgba(0, 0, 0, 0.4);
   --mj-vin: rgba(1, 10, 6, 0.26);
   --mj-topbar: linear-gradient(180deg, rgba(3, 16, 31, 0.42), rgba(3, 16, 31, 0));
 }
@@ -152,7 +156,11 @@ body[data-mj-theme='wood'] {
     url('/tex/light-wood.webp') center / cover no-repeat,
     linear-gradient(180deg, #d8b98c 0%, #b3905f 100%);
   --mj-fg: #3f3122;
-  --mj-title: rgba(94, 58, 22, 0.95);
+  --mj-title: rgba(74, 44, 16, 0.97);
+  --mj-title-sh:
+    0 1px 0 rgba(255, 252, 240, 0.85),
+    0 0 3px rgba(255, 250, 230, 0.9),
+    0 0 16px rgba(255, 246, 214, 0.8);
   --mj-vin: rgba(74, 52, 26, 0.14);
   --mj-topbar: linear-gradient(180deg, rgba(74, 52, 26, 0.14), rgba(74, 52, 26, 0));
 }
@@ -163,6 +171,10 @@ body[data-mj-theme='walnut'] {
     linear-gradient(180deg, #4c352a 0%, #2a1c14 100%);
   --mj-fg: #f0e4cd;
   --mj-title: rgba(253, 230, 167, 0.88);
+  --mj-title-sh:
+    0 1px 1px rgba(0, 0, 0, 0.62),
+    0 2px 5px rgba(0, 0, 0, 0.5),
+    0 0 20px rgba(0, 0, 0, 0.4);
   --mj-vin: rgba(12, 6, 3, 0.3);
   --mj-topbar: linear-gradient(180deg, rgba(8, 4, 2, 0.4), rgba(8, 4, 2, 0));
 }
@@ -171,6 +183,10 @@ body[data-mj-theme='night'] {
   --mj-bg: linear-gradient(180deg, #232830 0%, #161a20 100%);
   --mj-fg: #e8e6df;
   --mj-title: rgba(240, 236, 225, 0.92);
+  --mj-title-sh:
+    0 1px 1px rgba(0, 0, 0, 0.62),
+    0 2px 5px rgba(0, 0, 0, 0.5),
+    0 0 20px rgba(0, 0, 0, 0.4);
   --mj-vin: rgba(0, 0, 0, 0.22);
   --mj-topbar: linear-gradient(180deg, rgba(0, 0, 0, 0.32), rgba(0, 0, 0, 0));
 }
@@ -179,6 +195,10 @@ body[data-mj-theme='paper'] {
   --mj-bg: linear-gradient(180deg, #f5eeda 0%, #e9dfc4 100%);
   --mj-fg: #4a4030;
   --mj-title: rgba(96, 66, 30, 0.95);
+  --mj-title-sh:
+    0 1px 0 rgba(255, 252, 240, 0.85),
+    0 0 3px rgba(255, 250, 230, 0.9),
+    0 0 16px rgba(255, 246, 214, 0.8);
   --mj-vin: rgba(96, 70, 40, 0.1);
   --mj-topbar: linear-gradient(180deg, rgba(96, 70, 40, 0.1), rgba(96, 70, 40, 0));
 }
@@ -187,6 +207,10 @@ body[data-mj-theme='mint'] {
   --mj-bg: linear-gradient(180deg, #dcede3 0%, #bfddca 100%);
   --mj-fg: #2e4739;
   --mj-title: rgba(34, 82, 58, 0.95);
+  --mj-title-sh:
+    0 1px 0 rgba(255, 252, 240, 0.85),
+    0 0 3px rgba(255, 250, 230, 0.9),
+    0 0 16px rgba(255, 246, 214, 0.8);
   --mj-vin: rgba(30, 60, 45, 0.09);
   --mj-topbar: linear-gradient(180deg, rgba(30, 60, 45, 0.1), rgba(30, 60, 45, 0));
 }
@@ -212,22 +236,88 @@ body[data-mj-theme='mint'] {
 }
 
 /* крупный заголовок-экрана прямо на столе (МЕНЮ/КОМНАТА/ПОИСК) —
-   цвет зависит от темы (на светлых фонах — тёмный) */
+   цвет зависит от темы (на светлых фонах — тёмный).
+   Task 32: тень в несколько слоёв — надпись читается и на
+   фототворе дерева (раньше «МАДЖОНГ» сливалась с фоном) */
 .mj-screen-title {
-  color: var(--mj-title, rgba(253, 230, 167, 0.88));
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  color: var(--mj-title, rgba(253, 232, 175, 0.95));
+  text-shadow: var(--mj-title-sh,
+    0 1px 1px rgba(0, 0, 0, 0.62),
+    0 2px 5px rgba(0, 0, 0, 0.5),
+    0 0 20px rgba(0, 0, 0, 0.4));
 }
 
 /* плитка-«картинка» (Task 25): фото кости занимает ВСЮ плитку
    от края до края — рисованной кости больше НЕТ. Лёгкая тень
-   по краям (белое не сливается) задаётся в Tile.tsx */
+   по краям (белое не сливается) задаётся в Tile.tsx.
+   overflow: НЕТ — 3D-грани блока (Task 28) выступают за плитку */
 .mj-tile {
   background: transparent;
   cursor: pointer;
   transition: filter 0.18s ease;
   touch-action: none;
-  overflow: hidden;
   perspective: 700px;
+}
+
+/* ---- 3D-блок (Task 28): правая и нижняя грани ----
+   Свет сверху-слева: нижняя грань тёплая терракотовая
+   (ловит тёплый свет), правая — темнее, «в тени». Угловая
+   грань — самый тёмный дальний угол блока. Грани выступают
+   за пределы плитки и закругляются по силуэту лицевой кости */
+.mj-side {
+  position: absolute;
+  pointer-events: none;
+}
+/* грани наезжают на лицо на 1px и прячутся ПОД ним (лицо
+   непрозрачно и рисуется позже) — субпиксельных белых щелей
+   на стыке не остаётся ни при каком масштабе */
+.mj-side-r {
+  top: 0;
+  left: calc(100% - 1px);
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    #d3ba94 0%,
+    #b58c60 55%,
+    #8a6543 100%
+  );
+  box-shadow:
+    inset 1px 0 0 rgba(58, 44, 24, 0.22),
+    inset -1px 0 0 rgba(255, 240, 214, 0.12);
+}
+.mj-side-b {
+  top: calc(100% - 1px);
+  left: 0;
+  width: 100%;
+  background: linear-gradient(
+    180deg,
+    #e2c9a2 0%,
+    #d2a06c 55%,
+    #b3835a 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(58, 44, 24, 0.20),
+    inset 0 -1px 0 rgba(255, 240, 214, 0.14);
+}
+.mj-side-c {
+  top: calc(100% - 1px);
+  left: calc(100% - 1px);
+  background: linear-gradient(135deg, #c39468 0%, #7d5c3c 100%);
+}
+/* затемнение накрытой кости: тень от блока сверху — чуть
+   заметная у верхне-левого края, к открытому краю сходит
+   на нет (плитки на разных уровнях читаются сразу) */
+.mj-cover-shade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    135deg,
+    rgba(52, 40, 20, 0.22) 0%,
+    rgba(52, 40, 20, 0.11) 45%,
+    rgba(52, 40, 20, 0.03) 100%
+  );
+  box-shadow: inset 0 0 0 1px rgba(56, 45, 26, 0.10);
 }
 
 /* ---- рубашка (переворот) ---- */
@@ -470,69 +560,20 @@ body[data-mj-theme='mint'] {
    ЗАМЕТНО КРУПНЕЕ, чем раньше (слоты ~40px на телефоне) —
    кости в лотке хорошо читаются. Высота ограничена и шириной,
    и ВЫСОТОЙ экрана — в альбомной ориентации лоток не
-   съедает доску.
-   БЕЗ текстуры дерева: в wood.webp есть вертикальные тёмные
-   волокна — при растяжении на широкую низкую зону они читались
-   как ДВЕ щели, делящие лоток на «три доски» (путало игроков:
-   казалось, мест только три). Теперь фон — чистый тёмный
-   градиент, а число мест честно показывают гнёзда ниже. */
+   съедает доску. */
 .mj-tray-zone {
-  position: relative;
   width: min(94vw, calc((clamp(62px, min(14vw, 16vh), 118px) - 14px) * 3.125 + 28px));
   height: clamp(62px, min(14vw, 16vh), 118px);
   border-radius: 14px;
   background:
-    radial-gradient(120% 90% at 50% 0%, rgba(56, 36, 16, 0.35), transparent 60%),
-    linear-gradient(180deg, rgba(24, 15, 7, 0.5), rgba(7, 4, 2, 0.66));
+    linear-gradient(180deg, rgba(20, 13, 6, 0.22), rgba(6, 4, 2, 0.5)),
+    url('/tex/wood.webp') center / cover;
   box-shadow:
     inset 0 5px 16px rgba(0, 0, 0, 0.72),
     inset 0 -1px 0 rgba(255, 235, 190, 0.12),
     0 1px 0 rgba(255, 214, 130, 0.2);
   border: 1px solid rgba(170, 140, 80, 0.5);
   transition: border-color 0.25s ease;
-}
-
-/* ЧЕТЫРЕ посадочных гнезда — зеркало геометрии traySlots.ts:
-   те же отступы (7px сверху/снизу, 8px по бокам), тот же зазор
-   4px и то же соотношение сторон кости 1:1.28. Каждое гнездо —
-   лёгкая «утопленная» ячейка: сразу видно, что лоток вмещает
-   ровно ЧЕТЫРЕ кости. Прилетевшие кости садятся точно на
-   гнёзда (Board считает координаты той же формулой). */
-.mj-tray-sockets {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 7px 8px;
-  pointer-events: none;
-}
-
-.mj-tray-sockets i {
-  display: block;
-  flex: 1 1 0;
-  min-width: 0;
-  aspect-ratio: 1 / 1.28;
-  border-radius: 7px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.26), rgba(0, 0, 0, 0.12));
-  box-shadow:
-    inset 0 2px 5px rgba(0, 0, 0, 0.42),
-    inset 0 0 0 1px rgba(255, 236, 200, 0.08);
-}
-
-/* тревога/переполнение — гнёзда подкрашиваются в тон зоны,
-   чтобы свечение не спорило с ячейками */
-.mj-tray.warn .mj-tray-sockets i {
-  box-shadow:
-    inset 0 2px 5px rgba(0, 0, 0, 0.42),
-    inset 0 0 0 1px rgba(217, 160, 56, 0.22);
-}
-
-.mj-tray.full .mj-tray-sockets i {
-  box-shadow:
-    inset 0 2px 5px rgba(0, 0, 0, 0.42),
-    inset 0 0 0 1px rgba(226, 86, 86, 0.26);
 }
 
 /* третья плитка — мягкое золотое свечение */
@@ -1442,114 +1483,6 @@ body[data-mj-theme='mint'] {
   color: #9aa8a0;
 }
 
-/* ================= Счёт серии (онлайн, подряд с одним rival) ================= */
-
-/* карточка-полоса на итоговом экране: аватары, большие цифры,
-   лидеру — корона над аватаром и золотая цифра */
-.mj-series {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-  padding: 9px 20px 11px;
-  border-radius: 16px;
-  background:
-    radial-gradient(120% 130% at 50% 0%, rgba(217, 160, 56, 0.1), transparent 55%),
-    rgba(31, 44, 38, 0.06);
-  border: 1px solid rgba(217, 160, 56, 0.28);
-}
-
-.mj-series-title {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.24em;
-  text-transform: uppercase;
-  color: #a8863c;
-}
-
-.mj-series-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.mj-series-av-wrap {
-  position: relative;
-  display: inline-block;
-}
-
-.mj-series-av {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 999px;
-  border: 2px solid rgba(255, 255, 255, 0.75);
-  box-shadow: 0 2px 6px rgba(31, 44, 38, 0.28);
-  color: #fff;
-  font-size: 15px;
-  font-weight: 800;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-}
-
-/* лидер серии: аватар чуть «дороже» — золотая кайма + свечение */
-.mj-series-av.lead {
-  border-color: #e9b95c;
-  box-shadow:
-    0 0 0 3px rgba(233, 185, 92, 0.25),
-    0 2px 8px rgba(180, 130, 40, 0.4);
-}
-
-/* корона лидера — маленькая, сидит сверху-справа от аватара */
-.mj-series-crown {
-  position: absolute;
-  top: -9px;
-  right: -7px;
-  width: 15px;
-  height: 15px;
-  color: #e9a83c;
-  fill: #f7d488;
-  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
-  transform: rotate(18deg);
-}
-
-.mj-series-n {
-  font-size: 30px;
-  font-weight: 900;
-  line-height: 1;
-  color: #6a7a72;
-}
-
-/* цифра лидера — золото */
-.mj-series-n.lead {
-  color: #cf9a2e;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.4);
-}
-
-.mj-series-sep {
-  font-size: 18px;
-  font-weight: 700;
-  color: #9aa8a0;
-  transform: translateY(-2px);
-}
-
-/* мини-счёт серии в VersusBar (во время матча, со 2-й игры):
-   крошечная золотая строка под шкалами гонки */
-.mj-series-mini {
-  margin-top: 3px;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: #caa14e;
-  opacity: 0.92;
-  white-space: nowrap;
-}
-
 .mj-res-league {
   background: rgba(31, 44, 38, 0.05);
   border-radius: 16px;
@@ -2256,3 +2189,212 @@ body[data-mj-theme='mint'] {
 }
 
 /* cache-bust: t21 */
+
+/* ================= Task 32: экран «1 на 1» и счёт серии ================= */
+
+/* ГЛАВНАЯ кнопка «ИГРАТЬ» — зелёная, крупная, с иконкой Play:
+   первое, что видит игрок; всё остальное — вторично */
+.mj-play-big {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+  padding: 16px 20px;
+  border-radius: 22px;
+  background:
+    repeating-linear-gradient(93deg, rgba(255, 255, 255, 0.05) 0 2px, transparent 2px 7px),
+    linear-gradient(168deg, #3f9a7c 0%, #2f7a60 48%, #256449 100%);
+  border: 1px solid rgba(0, 0, 0, 0.32);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -3px 0 rgba(0, 0, 0, 0.28),
+    0 7px 0 #1c4436,
+    0 14px 26px rgba(0, 0, 0, 0.42);
+  color: #fff;
+  cursor: pointer;
+  transition: transform 0.08s ease, box-shadow 0.08s ease;
+}
+.mj-play-big:active {
+  transform: translateY(3px);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.25),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.28),
+    0 3px 0 #1c4436,
+    0 7px 14px rgba(0, 0, 0, 0.36);
+}
+.mj-play-big:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.mj-play-big-ico {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.1));
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 4px 10px rgba(0, 0, 0, 0.25);
+}
+
+/* чип имени игрока: аватар + имя + карандашик (правка в один тап) */
+.mj-name-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 6px;
+  border-radius: 999px;
+  background: linear-gradient(168deg, rgba(255, 251, 238, 0.95), rgba(244, 237, 219, 0.92));
+  border: 1px solid rgba(150, 125, 78, 0.55);
+  box-shadow: inset 0 1px 0 #fffdf5, 0 4px 10px rgba(0, 0, 0, 0.25);
+  font-size: 14px;
+  font-weight: 800;
+  color: #43503f;
+  cursor: pointer;
+}
+.mj-name-chip:active {
+  transform: scale(0.97);
+}
+.mj-name-chip-av {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 900;
+  color: #fff;
+  background: linear-gradient(160deg, hsl(150 45% 55%), hsl(150 48% 38%));
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+}
+
+/* зелёная пульсирующая точка + счётчик открытых игр */
+.mj-live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+  color: #2f6e58;
+  background: rgba(111, 208, 182, 0.22);
+  border: 1px solid rgba(47, 110, 88, 0.35);
+}
+.mj-live-badge i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #34d399;
+  animation: mj-live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes mj-live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.55); }
+  50% { box-shadow: 0 0 0 5px rgba(52, 211, 153, 0); }
+}
+
+/* вторичные карточки-кнопки («По коду», «С компьютером») — компактнее */
+.mj-mode-card-sm {
+  padding: 11px 12px;
+  border-radius: 16px;
+  gap: 10px;
+}
+.mj-mode-ico-sm {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mj-mode-card-sm > span:last-child {
+  min-width: 0;
+}
+
+/* ---- СЧЁТ СЕРИИ ПОБЕД (Task 32): табло дуэли на экране итога ---- */
+.mj-series {
+  border-radius: 16px;
+  padding: 10px 14px 12px;
+  background:
+    repeating-linear-gradient(93deg, rgba(120, 100, 50, 0.04) 0 2px, transparent 2px 6px),
+    linear-gradient(170deg, rgba(253, 246, 228, 0.96), rgba(240, 231, 206, 0.94));
+  border: 1px solid rgba(150, 125, 78, 0.55);
+  box-shadow: inset 0 1px 0 #fffdf5, 0 6px 14px rgba(0, 0, 0, 0.22);
+}
+.mj-series-cap {
+  text-align: center;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: #8a7a5c;
+}
+.mj-series-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 4px;
+}
+.mj-series-side {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 30px;
+  font-weight: 900;
+  color: #4a5548;
+  line-height: 1;
+}
+.mj-series-av {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 900;
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.35), 0 3px 7px rgba(0, 0, 0, 0.28);
+}
+.mj-series-dots {
+  font-size: 24px;
+  font-weight: 900;
+  color: #b3a382;
+}
+/* ведущий в серии — число золотое с тёплым свечением */
+.mj-series-lead-n {
+  color: #b8860b;
+  text-shadow: 0 1px 0 #fffdf5, 0 0 14px rgba(184, 134, 11, 0.45);
+}
+.mj-series-lead {
+  margin-top: 3px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 800;
+  color: #6d7a68;
+}
+
+/* мини-чип серии на панели матча: «2:1» под таймером */
+.mj-series-chip {
+  display: inline-block;
+  margin-top: 1px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+  color: #f5e7c0;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(245, 231, 192, 0.25);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
+}
+
+/* cache-bust: t32 */

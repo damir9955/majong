@@ -72,11 +72,6 @@ export function VersusBar() {
       ? ('on' as const)
       : ('off' as const)
     : undefined;
-  /** СЧЁТ СЕРИИ с этим соперником: со второго матча, когда счёт
-   *  уже открыт (в первом — 0:0, не шумим) */
-  const sMy = b.online?.myWins ?? 0;
-  const sOpp = b.online?.oppWins ?? 0;
-  const showSeries = !!b.online && sMy + sOpp > 0;
 
   return (
     <header className="mj-versus z-20 shrink-0">
@@ -100,6 +95,17 @@ export function VersusBar() {
           <div className={`mj-timer tabular-nums ${low ? 'mj-timer-low' : ''}`}>
             {fmtTime(b.timeLeftMs)}
           </div>
+          {/* счёт серии (Task 32): маленькое «2:1» под таймером —
+              только в онлайн-матче и только если серия уже пошла */}
+          {online && b.online && b.online.myWins + b.online.friendWins > 0 && (
+            <span
+              className="mj-series-chip tabular-nums"
+              data-testid="mj-series-chip"
+              title={t('series.title')}
+            >
+              {b.online.myWins}:{b.online.friendWins}
+            </span>
+          )}
           <div className="mj-race" aria-label="Прогресс гонки">
             <div className="mj-race-row">
               <div
@@ -114,16 +120,6 @@ export function VersusBar() {
               />
             </div>
           </div>
-          {/* мини-счёт СЕРИИ (кто сколько матчей выиграл) */}
-          {showSeries && (
-            <span
-              className="mj-series-mini"
-              title={t('series.score')}
-              data-testid="mj-series-mini"
-            >
-              {t('series.title')} {sMy} : {sOpp}
-            </span>
-          )}
         </div>
 
         {/* соперник (друг в онлайн-матче) */}

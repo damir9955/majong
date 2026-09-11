@@ -1,8 +1,10 @@
 {
-  "tasks": {
-    "dev": "deno run --allow-net --allow-read --allow-write --allow-env --unstable-kv --watch main.ts",
-    "start": "deno run --allow-net --allow-read --allow-write --allow-env --unstable-kv main.ts",
-    "check": "deno check main.ts"
+  "compilerOptions": {
+    "lib": ["deno.ns", "deno.unstable", "dom"]
   },
-  "unstable": ["kv"]
+  "tasks": {
+    "dev": "deno run --unstable-kv --allow-net --allow-env main.ts",
+    "dev-memory": "MJ_KV=memory deno run --allow-net --allow-env main.ts",
+    "check": "deno check main.ts"
+  }
 }

@@ -69,7 +69,23 @@ const RU: Record<string, string> = {
   'one.code': 'По коду',
   'one.codeSub': 'Открытые игры · вход по коду',
   'one.bot': 'С компьютером',
-  'one.botSub': 'Соперник найден сразу',
+  'one.botSub': 'Соперник сразу',
+
+  // новый экран «1 на 1» (Task 32): играть сразу, минимум выбора
+  'duel.play': 'Играть',
+  'duel.playSub': 'Случайный соперник — уровень не важен',
+  'duel.codeSub': 'Код или своя игра',
+  'duel.codeTitle': 'По коду',
+  'duel.codeText': 'Введи код друга или создай свою игру',
+  'duel.createOpen': 'Создать игру',
+  'duel.saveName': 'Сохранить',
+  'duel.openEmptyHint': 'Открытых игр нет — нажми «Играть» или создай свою',
+
+  // счёт серии побед с одним соперником (Task 32)
+  'series.title': 'Серия',
+  'series.lead': 'Ты ведёшь +{n}',
+  'series.behind': 'Соперник ведёт +{n}',
+  'series.equal': 'Счёт равный',
 
   // подтверждение выхода из онлайн-матча (Task 25)
   'exit.title': 'Выйти из матча?',
@@ -200,9 +216,6 @@ const RU: Record<string, string> = {
   'res.lose': 'Поражение',
   'res.match': 'матч · уровень {n}',
   'res.rematch': 'Реванш',
-  'res.time': 'Время победителя: {t}',
-  'series.title': 'Серия',
-  'series.score': 'Счёт серии',
   'res.reason.cleared': 'Доска собрана',
   'res.reason.opponent': 'Соперник собрал первым',
   'res.reason.timeout': 'Время вышло',
@@ -316,7 +329,23 @@ const EN: Record<string, string> = {
   'one.code': 'By code',
   'one.codeSub': 'Open games · join by code',
   'one.bot': 'vs Computer',
-  'one.botSub': 'Opponent found instantly',
+  'one.botSub': 'Instant opponent',
+
+  // new 1v1 screen (Task 32): play instantly, minimal choices
+  'duel.play': 'Play',
+  'duel.playSub': 'Random opponent — any level',
+  'duel.codeSub': 'Join by code or host your own',
+  'duel.codeTitle': 'By code',
+  'duel.codeText': "Enter a friend's code or create your own game",
+  'duel.createOpen': 'Create game',
+  'duel.saveName': 'Save',
+  'duel.openEmptyHint': 'No open games right now — tap Play or create your own',
+
+  // win series score with one opponent (Task 32)
+  'series.title': 'Series',
+  'series.lead': 'You lead +{n}',
+  'series.behind': 'Opponent leads +{n}',
+  'series.equal': 'Series tied',
 
   // подтверждение выхода из онлайн-матча (Task 25)
   'exit.title': 'Leave the match?',
@@ -441,9 +470,6 @@ const EN: Record<string, string> = {
   'res.lose': 'Defeat',
   'res.match': 'match · level {n}',
   'res.rematch': 'Rematch',
-  'res.time': 'Winner’s time: {t}',
-  'series.title': 'Series',
-  'series.score': 'Series score',
   'res.reason.cleared': 'Board cleared',
   'res.reason.opponent': 'Opponent cleared first',
   'res.reason.timeout': "Time's up",

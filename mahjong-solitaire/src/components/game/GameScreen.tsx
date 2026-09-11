@@ -19,8 +19,7 @@ import { VersusBar } from './VersusBar';
 import { MatchIntro } from './MatchIntro';
 import { BattleResult } from './BattleResult';
 import { ChallengeBanner } from './ChallengeBanner';
-import { RoomScreen } from './RoomScreen';
-import { Matchmaker } from './Matchmaker';
+import { DuelScreen } from './DuelScreen';
 import { Standings } from './Standings';
 import { AdModal } from './AdModal';
 import { setSoundEnabled, buzz } from '@/lib/sound';
@@ -34,10 +33,11 @@ import {
   clearCreds,
   getSavedCreds,
   getSavedName,
-  onLobby,
-  onNetError,
-  onRoomView,
   saveCreds,
+  subscribeEvent,
+  subscribeLobby,
+  subscribeRoom,
+  warmupConnection,
 } from '@/lib/rooms/roomApi';
 import { RoomError, type OpenRoomInfo, type RoomView } from '@/lib/rooms/types';
 import {
@@ -185,88 +185,6 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** выбор режима «1 на 1» (Task 25): всё в одном месте —
- *  автопоиск соперника, игра по коду, компьютер. Минимум кнопок */
-function OneOnOne({
-  onPick,
-  onClose,
-}: {
-  onPick: (kind: 'find' | 'code' | 'bot') => void;
-  onClose: () => void;
-}) {
-  const t = useT();
-  const rows: { kind: 'find' | 'code' | 'bot'; Icon: typeof Globe2; grad: string; title: string; sub: string; test: string }[] = [
-    {
-      kind: 'find',
-      Icon: Globe2,
-      grad: 'linear-gradient(160deg, #6fd0b6, #1f8f7a)',
-      title: t('one.find'),
-      sub: t('one.findSub'),
-      test: 'mj-one-find',
-    },
-    {
-      kind: 'code',
-      Icon: KeyRound,
-      grad: 'linear-gradient(160deg, #f2b25c, #c07a2a)',
-      title: t('one.code'),
-      sub: t('one.codeSub'),
-      test: 'mj-one-code',
-    },
-    {
-      kind: 'bot',
-      Icon: Bot,
-      grad: 'linear-gradient(160deg, #b8c3d0, #7a8aa0)',
-      title: t('one.bot'),
-      sub: t('one.botSub'),
-      test: 'mj-one-bot',
-    },
-  ];
-  return (
-    <div className="mj-overlay">
-      <div className="mj-card relative w-full max-w-sm p-6">
-        <button
-          type="button"
-          className="mj-close-x"
-          onClick={onClose}
-          aria-label={t('room.back')}
-        >
-          <X className="h-5 w-5" />
-        </button>
-        <h2 className="text-2xl font-black text-[#22432e]">{t('one.title')}</h2>
-        <div className="mt-4 flex flex-col gap-3">
-          {rows.map(({ kind, Icon, grad, title, sub, test }) => (
-            <button
-              key={kind}
-              className="mj-mode-card"
-              data-testid={test}
-              onClick={() => onPick(kind)}
-            >
-              <span
-                className="mj-mode-ico"
-                style={{
-                  background: grad,
-                  boxShadow:
-                    'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
-                }}
-              >
-                <Icon className="h-7 w-7 text-white sm:h-9 sm:w-9" />
-              </span>
-              <span>
-                <b className="block text-lg font-black text-stone-800 sm:text-xl">
-                  {title}
-                </b>
-                <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
-                  {sub}
-                </span>
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ---------- Экран выбора режима ---------- */
 
 /** Ждущие игроки внизу главного меню (Task 28): живая полоска
@@ -281,8 +199,11 @@ function WaitingPlayers({ hidden }: { hidden: boolean }) {
   const [replaceWarn, setReplaceWarn] = useState(false);
   const pendingRef = useRef('');
 
-  // лобби: живой список открытых игр — пуши Deno-сервера
-  useEffect(() => onLobby(setRooms), []);
+  // лобби открытых игр — живая подписка (WebSocket, ~2 c)
+  useEffect(() => {
+    const off = subscribeLobby((list) => setRooms(list));
+    return off;
+  }, []);
 
   const doJoin = async (roomCode: string) => {
     if (joining) return;
@@ -312,7 +233,7 @@ function WaitingPlayers({ hidden }: { hidden: boolean }) {
           ? t('room.full')
           : t('room.network'),
       );
-      // список обновится сам: лобби живёт подпиской
+      // список открытых игр обновится сам (подписка на лобби)
     } finally {
       setJoining('');
     }
@@ -440,75 +361,58 @@ function ReturnPrompt({
     if (stopped) return;
     let alive = true;
     let askedKey = '';
-    /** реакция на вид комнаты (пуш или ответ запроса) */
-    const handle = (v: RoomView) => {
-      if (!alive) return;
-      const creds = getSavedCreds();
-      if (!creds || v.code !== creds.code) return;
-      if (!v.players.some((p) => p.id === creds.playerId)) {
-        // нас уже нет в комнате — память устарела
-        clearCreds();
-        return;
-      }
-      const s = useGame.getState().session;
-      // живая онлайн-партия: кнопка «Продолжить матч» уже в меню
-      if (s && s.mode === 'online' && s.status === 'play') return;
-      if (v.status === 'playing') {
-        const key = `${v.code}:playing`;
-        if (askedKey !== key) {
-          askedKey = key;
-          setView(v);
-          setKind('playing');
-        }
-        return;
-      }
-      if (v.status === 'waiting' && v.players[0]?.id === creds.playerId) {
-        const key = `${v.code}:waiting`;
-        if (askedKey !== key) {
-          askedKey = key;
-          setView(v);
-          setKind('waiting');
-        }
-        return;
-      }
-      if (v.status === 'result') {
-        // матч закончился без нас — показываем честный итог
-        useGame.getState().applyRoomView(v);
-      }
-    };
-    // пуши сервера: состояние комнаты приходит само
-    const offView = onRoomView(handle);
-    // стартовая проверка + страховка раз в 8с (комната могла
-    // исчезнуть, пока мы не были подключены)
     const check = async () => {
       const creds = getSavedCreds();
       if (!creds) return;
       const s = useGame.getState().session;
+      // живая онлайн-партия: кнопка «Продолжить матч» уже в меню
       if (s && s.mode === 'online' && s.status === 'play') return;
       try {
         const v = await apiPollRoom(creds.code, creds.playerId);
-        if (alive) handle(v);
-      } catch (e) {
-        // комната исчезла — память больше не нужна.
-        // Сеть моргнула — креды НЕ трогаем, повторим позже.
-        if (
-          alive &&
-          e instanceof RoomError &&
-          e.code === 'ROOM_NOT_FOUND'
-        ) {
+        if (!alive) return;
+        if (!v.players.some((p) => p.id === creds.playerId)) {
+          // нас уже нет в комнате — память устарела
           clearCreds();
-          const s2 = useGame.getState().session;
-          if (s2 && s2.mode === 'online' && s2.battle?.online?.code === creds.code) {
+          return;
+        }
+        if (v.status === 'playing') {
+          const key = `${v.code}:playing`;
+          if (askedKey !== key) {
+            askedKey = key;
+            setView(v);
+            setKind('playing');
+          }
+          return;
+        }
+        if (v.status === 'waiting' && v.players[0]?.id === creds.playerId) {
+          const key = `${v.code}:waiting`;
+          if (askedKey !== key) {
+            askedKey = key;
+            setView(v);
+            setKind('waiting');
+          }
+          return;
+        }
+        if (v.status === 'result') {
+          // матч закончился без нас — показываем честный итог
+          useGame.getState().applyRoomView(v);
+        }
+      } catch (e) {
+        // комната исчезла (404) — память больше не нужна.
+        // Сеть просто моргнула — креды НЕ трогаем, повторим позже.
+        if (e instanceof RoomError && e.code === 'ROOM_NOT_FOUND') {
+          clearCreds();
+          const s = useGame.getState().session;
+          if (s && s.mode === 'online' && s.battle?.online?.code === creds.code) {
             useGame.setState({ session: null });
           }
         }
       }
     };
     void check();
-    const iv = window.setInterval(() => void check(), 8000);
+    const iv = window.setInterval(() => void check(), 3000);
     return () => {
       alive = false;
-      offView();
       window.clearInterval(iv);
     };
   }, [stopped]);
@@ -1078,6 +982,12 @@ function LevelEntryDialog() {
 
 /* ---------- Экран игры ---------- */
 
+/* «Сердцебиение» из Web Worker (Task 28): у СКРЫТОЙ вкладки
+   браузер душит таймеры страницы (до ~1 раза в минуту) — соперник
+   решил бы, что мы пропали, и получил бы ложную победу. Таймеры
+   воркера не дросселируются: присутствие живо, пока вкладка
+   открыта. Воркер шлёт «пустой» поллинг (без прогресса —
+   сервер обновляет только lastSeen). */
 export function GameScreen() {
   const session = useGame((s) => s.session);
   const showMenu = useGame((s) => s.showMenu);
@@ -1090,8 +1000,6 @@ export function GameScreen() {
   // «1 на 1» (Task 25): всё в одном месте — автопоиск, игра по
   //  коду, компьютер; «С другом» больше НЕ отдельная кнопка меню.
   //  Вход в закрытую игру — ТОЛЬКО по коду приглашения (без ссылок)
-  const [roomOpen, setRoomOpen] = useState(false);
-  const [mmOpen, setMmOpen] = useState(false);
   const [oneOpen, setOneOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [standingsOpen, setStandingsOpen] = useState(false);
@@ -1110,69 +1018,99 @@ export function GameScreen() {
     return () => window.clearInterval(iv);
   }, []);
 
-  /* ---------- онлайн-комната: ПУШИ сервера + страховка ----------
-   * Живёт и в меню — присутствие игрока нужно другу, матч не
-   * останавливается. WebSocket держит связь и в свёрнутой вкладке
-   * (сервер сам шлёт мини-сердцебиения) — воркер больше не нужен.
-   * Обрыв — транспорт переподключается и возвращает в ту же
-   * комнату (hello по uid устройства): матч продолжается. */
+  /* ---------- онлайн-комната: пуши + лёгкий поллинг ----------
+   * Сервер (Deno KV) сам пушит вьюхи на каждое изменение комнаты
+   * и событие «соперник собрал пару». Клиент лишь: применяет пуши,
+   * раз в 4 c шлёт свой прогресс (заодно присутствие), а в свёрнутой
+   * вкладке отвечает на серверный hb — матч не умирает по
+   * ложному «дисконнекту» (Task 32: воркер больше не нужен). */
   const isOnline = session?.mode === 'online';
   const sid = session?.sid;
+  const missesRef = useRef(0);
   useEffect(() => {
-    if (!isOnline) return;
+    if (!isOnline) {
+      missesRef.current = 0;
+      return;
+    }
+    let alive = true;
 
-    // вид комнаты: ходы соперника, итоги, присутствие — всё пушем
-    const offView = onRoomView((view) => {
+    // пуши вьюх: старт, итог, прогресс соперника, присутствие
+    const offView = subscribeRoom((view) => {
       const creds = getSavedCreds();
-      if (creds && view.code === creds.code) {
-        useGame.getState().applyRoomView(view);
-      }
+      if (!creds || creds.code !== view.code) return;
+      if (!view.players.some((p) => p.id === creds.playerId)) return;
+      missesRef.current = 0;
+      useGame.getState().applyRoomView(view);
     });
 
-    // комната окончательно исчезла (сервер удалил) — прибираемся
-    const offErr = onNetError((code) => {
-      if (code !== 'ROOM_NOT_FOUND') return;
-      const creds = getSavedCreds();
-      if (!creds) return;
+    // «соперник собрал пару» — мгновенно, не дожидаясь вьюхи
+    const offEvent = subscribeEvent((e) => {
       const s = useGame.getState().session;
-      if (s && s.mode === 'online' && s.battle?.online?.code === creds.code) {
-        showToast(trNow('room.closed'));
-        useGame.getState().dropOnlineSession(creds.code);
-      }
+      const b = s?.battle;
+      if (!s || !b || s.mode !== 'online' || !b.online) return;
+      if (b.online.friendId !== e.playerId) return;
+      if (e.score <= b.botScore && e.pairsDone <= b.botPairsDone) return;
+      useGame.setState({
+        session: {
+          ...s,
+          battle: {
+            ...b,
+            botScore: Math.max(b.botScore, e.score),
+            botPairsDone: Math.max(b.botPairsDone, e.pairsDone),
+          },
+        },
+      });
     });
 
-    // страховка: раз в 5с свежий вид + попутный отчёт прогресса
-    // (если пуш потерялся при обрыве — view-запрос всё выравнивает)
-    const safety = () => {
+    // лёгкий поллинг: прогресс + присутствие (сервер пишет lastSeen)
+    const poll = async () => {
       const creds = getSavedCreds();
       const s = useGame.getState().session;
       if (!creds || !s?.battle?.online || s.battle.online.code !== creds.code)
         return;
-      void apiPollRoom(creds.code, creds.playerId, {
-        score: s.battle.myScore,
-        pairsDone: s.battle.myPairsDone,
-      })
-        .then((view) => {
-          const c2 = getSavedCreds();
-          if (c2 && view.code === c2.code) {
-            useGame.getState().applyRoomView(view);
+      try {
+        const view = await apiPollRoom(creds.code, creds.playerId, {
+          score: s.battle.myScore,
+          pairsDone: s.battle.myPairsDone,
+        });
+        if (!alive) return;
+        missesRef.current = 0;
+        useGame.getState().applyRoomView(view);
+      } catch (e) {
+        if (!alive) return;
+        const code =
+          e && typeof e === 'object' && 'code' in e
+            ? String((e as { code?: unknown }).code)
+            : '';
+        if (code === 'ROOM_NOT_FOUND') {
+          missesRef.current++;
+          // комната в KV не теряется при смене изолята, но на всякий
+          // случай даём 3 попытки прежде чем прощаться
+          if (missesRef.current >= 3) {
+            missesRef.current = 0;
+            showToast(trNow('room.closed'));
+            useGame.getState().dropOnlineSession(creds.code);
           }
-        })
-        .catch(() => {});
+        }
+        // сеть моргнула — ждём следующий тик
+      }
     };
-    const iv = window.setInterval(safety, 5000);
+    void poll();
+    const iv = window.setInterval(() => void poll(), 4000);
 
-    // вернулись во вкладку — сразу синхронизируемся
     const onVis = () => {
-      if (document.visibilityState === 'visible') safety();
+      if (document.visibilityState === 'visible') void poll();
     };
+    const onNet = () => void poll();
     document.addEventListener('visibilitychange', onVis);
-
+    window.addEventListener('online', onNet);
     return () => {
+      alive = false;
       offView();
-      offErr();
+      offEvent();
       window.clearInterval(iv);
       document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('online', onNet);
     };
   }, [isOnline, sid]);
 
@@ -1197,16 +1135,12 @@ export function GameScreen() {
     setSoundEnabled(useGame.getState().settings.sound);
   }, [session?.sid]);
 
-  if (roomOpen) {
-    return <RoomScreen onClose={() => setRoomOpen(false)} />;
-  }
-
-  if (mmOpen) {
-    return <Matchmaker onClose={() => setMmOpen(false)} />;
-  }
-
   if (standingsOpen) {
     return <Standings onClose={() => setStandingsOpen(false)} />;
+  }
+
+  if (oneOpen) {
+    return <DuelScreen onClose={() => setOneOpen(false)} />;
   }
 
   if (showMenu || !session) {
@@ -1220,26 +1154,10 @@ export function GameScreen() {
         {/* устройство помнит живую комнату — предлагаем вернуться
             в незаконченный матч или начать новую (Task 28) */}
         <ReturnPrompt
-          onOpenRooms={() => setRoomOpen(true)}
+          onOpenRooms={() => setOneOpen(true)}
           onOpenOne={() => setOneOpen(true)}
         />
         {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
-        {oneOpen && (
-          <OneOnOne
-            onPick={(kind) => {
-              setOneOpen(false);
-              if (kind === 'find') {
-                setMmOpen(true);
-              } else if (kind === 'code') {
-                setRoomOpen(true);
-              } else {
-                buzz(15);
-                useGame.getState().startMode('battle');
-              }
-            }}
-            onClose={() => setOneOpen(false)}
-          />
-        )}
       </>
     );
   }

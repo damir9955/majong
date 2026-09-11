@@ -38,7 +38,6 @@ import {
   apiReportFinish,
   clearCreds,
   getSavedCreds,
-  onMatchEvent,
   sendMatchEvent,
 } from '@/lib/rooms/roomApi';
 import { RoomError, type RoomView } from '@/lib/rooms/types';
@@ -150,33 +149,28 @@ export interface Battle {
   /** timestamp последнего тика */
   lastTickAt: number;
   result: MatchResult | null;
-  /** онлайн-комната (режим «С другом»): соперник — реальный
-   *  друг, его счёт/прогресс приходят с Deno-сервера WebSocket-
-   *  пушами (события «пара собрана» — мгновенно, без поллинга) */
+  /** онлайн-комната (режим «С другом»): соперник — реальный друг,
+   *  его счёт/прогресс приходят с сервера пуушами и поллингом. */
   online?: {
     code: string;
     playerId: string;
     seed: number;
-    /** друг на связи (WebSocket жив — пуш сервера) */
+    /** друг на связи (свежий поллинг) */
     friendOnline: boolean;
     hostId?: string;
     friendId?: string;
     friendName?: string;
     friendHue?: number;
-    /** АВТОРИТАРНОЕ время победителя от сервера (мс) —
-     *  показывается в итогах матча (reason='cleared') */
-    finalTimeMs?: number | null;
+    /** счёт СЕРИИ побед с этим соперником (Task 32: растёт
+     *  на сервере, живёт, пока в комнате одни и те же игроки) */
+    myWins: number;
+    friendWins: number;
     /** моё согласие на реванш/дальше (Task 25: оба должны
      *  согласиться — иначе новый матч не стартует) */
     myAdvance?: 'rematch' | 'next' | null;
     /** согласие соперника (для диалога «соперник предлагает
      *  реванш — согласен?») */
     oppAdvance?: 'rematch' | 'next' | null;
-    /** СЧЁТ СЕРИИ с этим соперником (побед в матчах этой комнаты).
-     *  Ведёт сервер (winsBy), переживает реванш — «кто сколько
-     *  раз выиграл», пока оба играют друг с другом */
-    myWins?: number;
-    oppWins?: number;
   };
 }
 
@@ -652,6 +646,10 @@ function removePair(
   // ни плиток в лотке
   const boardEmpty = tiles.every((t) => t.removed);
   const won = tray.length === 0 && boardEmpty;
+  // онлайн: мгновенная релея сопернику — «я собрал пару»
+  if (s.mode === 'online' && battle) {
+    sendMatchEvent(residentId, arrivingId, battle.myScore, battle.myPairsDone);
+  }
   const seq = s.matchedSeq + 1;
   // снятие костей могло открыть рубашки ПОД ними — переворачиваем
   const newlyRevealed = autoRevealFrom(tiles, s);
@@ -694,12 +692,6 @@ function removePair(
     const cur = useGame.getState().session;
     const unstuck = cur ? unstuckSession(cur) : null;
     if (unstuck) set({ session: unstuck });
-  }
-  // СОБЫТИЕ МАТЧА: онлайн — сообщаем серверу короткое событие
-  // {tile1Id, tile2Id} (без координат!) — сервер переслёт
-  // сопернику и запомнит прогресс; ВРЕМЯ матча считает сервер
-  if (battle?.online && s.mode === 'online' && !won) {
-    sendMatchEvent(residentId, arrivingId, battle.myScore, battle.myPairsDone);
   }
   later(1600, () => {
     const cur = useGame.getState().session;
@@ -933,28 +925,13 @@ function finishOnline(
   );
 }
 
-/** серверный финал: результат принёс пуш комнаты */
+/** серверный финал: результат принёс поллинг комнаты */
 function applyOnlineResult(view: RoomView): void {
   const s = useGame.getState().session;
   const creds = getSavedCreds();
   if (!s || s.mode !== 'online' || !s.battle?.online || !view.result) return;
   if (s.battle.online.code !== view.code) return;
   if (!creds || !view.players.some((p) => p.id === creds.playerId)) return;
-
-  // АВТОРИТАРНОЕ ВРЕМЯ ПОБЕДИТЕЛЯ — от часов сервера (до всех
-  // дедуп-проверок: время должно дойти даже при повторном пше)
-  const finalMs = view.result.finalTimeMs ?? null;
-  if (s.battle.online.finalTimeMs !== finalMs) {
-    useGame.setState({
-      session: {
-        ...s,
-        battle: {
-          ...s.battle,
-          online: { ...s.battle.online, finalTimeMs: finalMs },
-        },
-      },
-    });
-  }
 
   const friend = view.players.find((p) => p.id !== creds.playerId);
   const won = view.result.winnerId === creds.playerId;
@@ -1713,12 +1690,10 @@ export const useGame = create<GameState>()(
             friendId: friend?.id,
             friendName: friend?.name,
             friendHue: friend?.hue,
-            finalTimeMs: view.result?.finalTimeMs ?? null,
+            myWins: view.players.find((p) => p.id === playerId)?.wins ?? 0,
+            friendWins: friend?.wins ?? 0,
             myAdvance: null,
             oppAdvance: null,
-            // счёт серии от сервера (реконнект в комнату — счёт жив)
-            myWins: view.players.find((p) => p.id === playerId)?.wins ?? 0,
-            oppWins: friend?.wins ?? 0,
           },
         };
         const base = createSession(view.level, 0, undefined, 'online', {
@@ -1798,9 +1773,10 @@ export const useGame = create<GameState>()(
                         friendId: friend?.id,
                         friendName: friend?.name,
                         friendHue: friend?.hue,
-                        myWins: view.players.find((p) => p.id === creds.playerId)
-                          ?.wins ?? b.online.myWins ?? 0,
-                        oppWins: friend?.wins ?? b.online.oppWins ?? 0,
+                        myWins:
+                          view.players.find((p) => p.id === creds.playerId)
+                            ?.wins ?? b.online.myWins,
+                        friendWins: friend?.wins ?? b.online.friendWins,
                       }
                     : b.online,
                 },
@@ -1834,15 +1810,15 @@ export const useGame = create<GameState>()(
           const oppOff =
             view.advanceOffers?.find((o) => o.playerId !== creds.playerId)
               ?.kind ?? null;
-          // СЧЁТ СЕРИИ: свежие победы (итоговый экран показывает
-          // «кто сколько раз выиграл» в этой комнате)
-          const myW = view.players.find((p) => p.id === creds.playerId)?.wins ?? on.myWins ?? 0;
-          const oppW = view.players.find((p) => p.id !== creds.playerId)?.wins ?? on.oppWins ?? 0;
+          const meW = view.players.find((p) => p.id === creds.playerId)?.wins;
+          const friend2 = view.players.find((p) => p.id !== creds.playerId);
+          const myWins = meW ?? on.myWins;
+          const friendWins = friend2?.wins ?? on.friendWins;
           if (
             on.myAdvance !== myOff ||
             on.oppAdvance !== oppOff ||
-            on.myWins !== myW ||
-            on.oppWins !== oppW
+            on.myWins !== myWins ||
+            on.friendWins !== friendWins
           ) {
             set({
               session: {
@@ -1853,8 +1829,8 @@ export const useGame = create<GameState>()(
                     ...on,
                     myAdvance: myOff,
                     oppAdvance: oppOff,
-                    myWins: myW,
-                    oppWins: oppW,
+                    myWins,
+                    friendWins,
                   },
                 },
               },
@@ -1948,34 +1924,6 @@ export const useGame = create<GameState>()(
   ),
 );
 
-/* ============ события матча соперника (WebSocket-пуши) ============
- * Сервер переслал «соперник собрал пару {tile1Id, tile2Id}» —
- * прогресс соперника на нашей верхней панели прыгает МГНОВЕННО,
- * не дожидаясь полного вида комнаты. Свои события отфильтрованы
- * (playerId === мой) — иначе прогресс дёргался бы дважды. */
-if (typeof window !== 'undefined') {
-  onMatchEvent((ev) => {
-    const s = useGame.getState().session;
-    const on = s?.battle?.online;
-    if (!s || !on || s.mode !== 'online' || s.status !== 'play') return;
-    if (ev.playerId === on.playerId) return; // своё — уже и так посчитано
-    if (ev.playerId !== on.friendId) return; // не из нашей комнаты
-    const b = s.battle;
-    if (!b) return;
-    if (ev.pairsDone <= b.botPairsDone && ev.score <= b.botScore) return;
-    useGame.setState({
-      session: {
-        ...s,
-        battle: {
-          ...b,
-          botScore: Math.max(b.botScore, ev.score),
-          botPairsDone: Math.max(b.botPairsDone, ev.pairsDone),
-        },
-      },
-    });
-  });
-}
-
 /** Отладочный доступ для e2e-тестов (только в dev-сборке) */
 if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
   (window as unknown as Record<string, unknown>).__mjDebug = {
@@ -2020,17 +1968,6 @@ if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
         if (cand) moves.push([tid, cand.id]);
       }
       return moves;
-    },
-    /** тесты: id свободных (не заблокированных) живых плиток */
-    freeIds: () => {
-      const s = useGame.getState().session;
-      return s ? freeTiles(s.tiles).map((t) => t.id) : [];
-    },
-    /** тесты: matchKey плитки (группы цветов/сезонов совпадают) */
-    matchKey: (id: number) => {
-      const s = useGame.getState().session;
-      const t = s ? s.tiles.find((x) => x.id === id) : null;
-      return t ? getTileDef(t.defId).matchKey : null;
     },
     tap: (id: number) => useGame.getState().tapTile(id),
     /** тесты: немедленный финал текущей партии (поражение по лотку) */

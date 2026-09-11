@@ -1,184 +1,162 @@
 /**
- * ============================================================================
- *  МАДЖОНГ-ДУЭЛИ — сервер на Deno Deploy (WebSocket)
- * ============================================================================
+ * МАДЖОНГ · мультиплеер-сервер v2 (Deno Deploy: WebSocket + Deno KV).
  *
- *  ЗАЧЕМ: Vercel serverless убивает процесс без активности — поллинг
- *  обрывался, матч «зависал». Deno Deploy держит WebSocket сколько
- *  нужно, а состояние живёт в Deno KV (переживает рестарты изолятов).
+ * ЗАЧЕМ v2: прошлая версия хранила комнаты только в KV и падала
+ * в двух местах: (1) приветствие с устаревшими кредами получало
+ * push err ROOM_NOT_FOUND и клиент показывал «игра больше не
+ * существует» ещё до всякой игры; (2) свежесозданная комната
+ * иногда была невидима из другого изолята (репликация KV) —
+ * вход по коду падал с «не найдено». Теперь: join с ретраями,
+ * hello БЕЗ страшных ошибок, счёт серии побед (wins), гигиена
+ * очереди матчмейкинга.
  *
- *  АРХИТЕКТУРА (событийная модель + авторитарный сервер):
- *   — КЛИЕНТЫ играют каждый свою доску, сгенерированную по СИДУ
- *     (seed) — сид выдаёт сервер при старте матча → раскладки
- *     идентичны у обоих (движок клиентов детерминирован).
- *   — СОБЫТИЯ: клиент при сборе пары шлёт короткое событие
- *     { t:'event', tile1Id, tile2Id, score, pairsDone } — сервер
- *     заносит прогресс в KV и пересылает событие сопернику (его
- *     прогресс-бар прыгает мгновенно, без поллинга).
- *   — ВРЕМЯ АВТОРИТАРНО: сервер сам пишет startedAt по своим часам;
- *     на «я прошёл» (finish) сам считает разницу → finalTimeMs
- *     уходит обоим. Накрутить таймер на телефоне нельзя.
- *   — РЕКОННЕКТ: обрыв связи ≠ выход. Сокет закрылся — игрок
- *     числится «не в сети» (банер сопернику), но место в комнате
- *     держится 30 секунд. Клиент молча переподключается и делает
- *     hello с тем же uid → комната та же, матч продолжается.
+ * АРХИТЕКТУРА (несколько изолятов Deno Deploy):
+ *  - состояние комнат и тикетов — ТОЛЬКО в KV (ключи ['room',code],
+ *    ['mm',id]); изменение — через atomic CAS (конфликты ретраим);
+ *  - каждый изолят держит свои сокеты и для каждой комнаты с
+ *    локальным сокетом подписан kv.watch → мгновенный кросс-изолятный
+ *    push вьюхи сопернику (и событие «соперник собрал пару»);
+ *  - лобби открытых игр — лёгкий поллинг KV (2 c) только если
+ *    есть подписчики;
+ *  - «сердцебиение» игрока = любые сообщения (view/event) пишут
+ *    lastSeen в комнату; свипер изолята раз в 1.5 c досматривает
+ *    авт-исходы (тайм-аут, дисконнект 30 c) и чистит мёртвое;
+ *  - janitor (раз в ~5 мин) удаляет протухшие комнаты из KV.
  *
- *  КРОСС-ИЗОЛЯТНОСТЬ (Deno Deploy крутит несколько изолятов):
- *   — Комнаты и тикеты матчмейкинга лежат в Deno KV — единственный
- *     источник правды; изменения идут через atomic CAS (без гонок).
- *   — kv.watch() — веерная рассылка: изолят следит за комнатами,
- *     в которых есть ЕГО сокеты; любое изменение комнаты (хоть с
- *     другого изолята) прилетает watcher'у → вид летит клиентам.
- *   — Присутствие (кто онлайн) — BroadcastChannel: каждый изолят
- *     раз в 2с объявляет список своих uid; все складывают в общую
- *     карту. Онлайн = uid есть в свежих объявлениях.
- *   — Личные адресные сообщения (матчмейкинг «нашли пару») —
- *     BroadcastChannel 'mj-notify' по uid + локальная доставка
- *     (свой контекст BroadcastChannel НЕ получает свои сообщения).
+ * ПРОТОКОЛ (JSON поверх WS; rid — идемпотентность запрос-ответ):
+ *  ← {t:'hello', uid, name, code?, playerId?}   представиться/вернуться
+ *  → {t:'hello', ok}  (+ {t:'room'} если комната жива; если мертва —
+ *     НИКАКИХ ошибок: клиент сам спросит view и молча почистит креды)
+ *  ← {t:'lobby', on}                подписка на список открытых игр
+ *  → {t:'lobby', rooms:[...]}       (каждые ~2 c и сразу по подписке)
+ *  ← {t:'create', name, level, visibility}   создать игру
+ *  → {t:'room', view, playerId}
+ *  ← {t:'join', code, name}        вход по коду (с ретраями свежей комнаты)
+ *  → {t:'room', view, playerId} | {t:'err', code}
+ *  ← {t:'view', score?, pairsDone?}           прогресс + присутствие
+ *  → {t:'room', view}
+ *  ← {t:'event', kind:'match', tile1Id, tile2Id, score, pairsDone}
+ *  → {t:'event', kind:'match', playerId, ...} сопернику (мгновенно)
+ *  ← {t:'finish', reason:'cleared'|'tray', score, pairsDone}
+ *  → {t:'room', view}                        (итог + счёт серии wins)
+ *  ← {t:'advance', kind:'rematch'|'next'}    реванш/след. уровень (оба!)
+ *  → {t:'room', view} | {t:'err', code:'ROOM_EMPTY'}
+ *  ← {t:'leave'}                             выйти (сопернику — победа)
+ *  ← {t:'match', name, level}                быстрый матч: в очередь
+ *  → {t:'mm', status:'search'} | {t:'room', view, playerId}
+ *  ← {t:'match-heart'} / {t:'match-leave'}   держать/убрать тикет
+ *  ← {t:'ping'} → {t:'pong'}                 живость соединения
+ *  сервер шлёт {t:'hb'} каждые 25 c (клиент молча игнорирует)
  *
- *  БЕЗ KV-БАЗЫ: в новом дашборде Deno Deploy базу надо создавать
- *  и привязывать к проекту вручную. Если её нет — сервер НЕ
- *  падает, а работает в памяти процесса (MemoryKv ниже): играть
- *  можно, но комнаты не переживут рестарт изолята.
+ * СЧЁТ СЕРИИ (wins): у каждого игрока в комнате есть счётчик побед;
+ * растёт при любом исходе в его пользу (cleared/tray/timeout/
+ * disconnect/left), НЕ сбрасывается при реванше и «дальше» —
+ * серия живёт, пока в комнате одни и те же два игрока.
  *
- *  ЗАПУСК ЛОКАЛЬНО:  deno task dev   (порт 8080, KV в ./deno-kv)
- *  ДЕПЛОЙ:          deno deployctl deploy (см. README.md)
+ * ЗАПУСК: локально  deno run --unstable-kv --allow-net --allow-env main.ts
+ *          на Deploy без флагов (KV там стабилен). MJ_KV=memory —
+ *          аварийный режим без KV (один изолят, только для отладки).
  */
 
-/* ============================ константы ============================ */
+/* ============================== КОНСТАНТЫ ============================== */
+
+const ISOLATE = crypto.randomUUID().slice(0, 8);
+const PORT = Number(Deno.env.get('PORT') ?? 8080);
 
 /** запас на интро-карточку и отсчёт 3-2-1 у обоих игроков */
 const INTRO_BUDGET_MS = 8000;
-/** uid считается «в сети», пока его объявляли не позже этого */
-const PRESENCE_FRESH_MS = 7000;
-/** так долго нет игрока (сокет закрыт и не вернулся) → победа
- *  соперника по отключению. Короткие обрывы НЕ рвут матч */
+/** «в сети»: игрок давал о себе знать не позже этого */
+const PRESENCE_MS = 8000;
+/** так долго нет вестей → победа соперника по отключению
+ *  (30 c: перезагрузка страницы НЕ должна рвать матч ложно) */
 const ONLINE_GRACE_MS = 30000;
 /** время на пару — как в матче против бота */
 const TIME_PER_PAIR_MS = 4500;
-const TIME_MIN_MS = 90000;
-const TIME_MAX_MS = 270000;
+const TIME_MIN_MS = 90_000;
+const TIME_MAX_MS = 270_000;
 /** комнаты живут 6 часов, «ожидание друга» — час */
 const ROOM_TTL_MS = 6 * 60 * 60 * 1000;
 const WAITING_TTL_MS = 60 * 60 * 1000;
-/** создатель «ждущей» комнаты пропал — убираем игру из лобби */
-const WAITING_HOST_STALE_MS = 45 * 1000;
+/** создатель ждущей комнаты пропал — убираем игру из лобби */
+const WAITING_HOST_STALE_MS = 45_000;
 /** максимум записей в списке открытых игр */
 const OPEN_LIST_MAX = 30;
-/** тикет матчмейкинга: носителя нет в сети дольше этого → выброс */
-const TICKET_STALE_MS = 25 * 1000;
-/** период объявления присутствия (мс) */
-const PRESENCE_TICK_MS = 2000;
-/** период обновления лобби (мс) */
-const LOBBY_TICK_MS = 2000;
-/** период серверного sweeper'а (мс) */
-const SWEEP_TICK_MS = 1000;
-
+/** тикет матчмейкинга без признаков жизни столько — выпадает */
+const TICKET_TTL_MS = 15_000;
+/** ретраи чтения свежей комнаты (репликация KV между изолятами) */
+const FRESH_ROOM_RETRIES = 4;
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // без I O 0 1
 const CODE_LEN = 5;
 
-/* ============================ раскладки ============================ */
+/** пары по уровню (цикл 10 уровней — 10 схем, см. layouts.ts) */
+const PAIRS_BY_LEVEL = [14, 20, 22, 32, 36, 18, 21, 26, 32, 40];
 
-/** (id, сложность, число плиток) — зеркала src/lib/mahjong/layouts.ts;
- *  серверу нужен только размер доски (для времени на матч) */
-const LAYOUTS: { id: string; difficulty: number; tiles: number }[] = [
-  { id: 'spire', difficulty: 1, tiles: 28 },
-  { id: 'stele', difficulty: 1, tiles: 36 },
-  { id: 'gate', difficulty: 2, tiles: 40 },
-  { id: 'stairs', difficulty: 2, tiles: 42 },
-  { id: 'cross', difficulty: 3, tiles: 44 },
-  { id: 'pyramid', difficulty: 3, tiles: 52 },
-  { id: 'bastion', difficulty: 4, tiles: 64 },
-  { id: 'palace', difficulty: 4, tiles: 64 },
-  { id: 'crown', difficulty: 5, tiles: 72 },
-  { id: 'fortress', difficulty: 5, tiles: 80 },
-];
+/* =============================== ТИПЫ =============================== */
 
-/** сколько плиток у уровня (детерминированно, как у клиентов) */
-function tilesForLevel(level: number): number {
-  const d = Math.min(5, Math.max(1, ((level - 1) % 5) + 1));
-  const bucket = LAYOUTS.filter((l) => l.difficulty === d);
-  if (bucket.length === 0) return LAYOUTS[0].tiles;
-  const cycle = Math.floor((level - 1) / 5);
-  return bucket[cycle % bucket.length].tiles;
-}
+type RoomFinishReason =
+  | 'cleared'
+  | 'tray'
+  | 'timeout'
+  | 'disconnect'
+  | 'left';
 
-function timeForLevel(level: number): number {
-  const pairs = tilesForLevel(level) / 2;
-  return Math.min(TIME_MAX_MS, Math.max(TIME_MIN_MS, pairs * TIME_PER_PAIR_MS));
-}
-
-/* ============================ типы ============================ */
-
-type RoomStatus = 'waiting' | 'playing' | 'result';
-type FinishReason = 'cleared' | 'tray' | 'timeout' | 'disconnect' | 'left';
-
-interface RoomPlayer {
+interface PlayerState {
   id: string;
-  /** устройство игрока (привязка места в комнате — реконнект) */
-  uid: string;
   name: string;
   hue: number;
   score: number;
   pairsDone: number;
+  lastSeen: number;
   finished: 'cleared' | 'tray' | null;
+  /** счёт серии побед с этим соперником */
+  wins: number;
 }
 
-interface RoomResult {
-  winnerId: string;
-  reason: FinishReason;
-  /** АВТОРИТАРНОЕ время победителя (мс от старта отсчёта) */
-  finalTimeMs: number | null;
+interface RoomEventInfo {
+  playerId: string;
+  tile1Id: number;
+  tile2Id: number;
+  score: number;
+  pairsDone: number;
   at: number;
 }
 
-interface RoomDoc {
-  /** версия для CAS (растёт при каждом изменении) */
-  v: number;
+interface RoomState {
   code: string;
   level: number;
   seed: number;
-  status: RoomStatus;
+  status: 'waiting' | 'playing' | 'result';
   hostId: string;
   visibility: 'open' | 'closed';
-  /** epoch-ms старта отсчёта (с запасом на интро) — ПО ЧАСАМ СЕРВЕРА */
   startedAt: number;
   timeTotalMs: number;
   createdAt: number;
-  result: RoomResult | null;
-  players: RoomPlayer[];
-  /** СЧЁТ СЕРИИ: сколько матчей в этой комнате выиграл каждый
-   *  игрок (playerId → победы). НЕ сбрасывается на реванше/
-   *  следующем уровне — серия живёт, пока оба играют друг с
-   *  другом; выход игрока убивает комнату */
-  winsBy: Record<string, number>;
-  /** согласия на реванш/следующий уровень: playerId → kind */
+  players: PlayerState[];
+  result: { winnerId: string; reason: RoomFinishReason } | null;
+  /** playerId → 'rematch' | 'next' (согласия на продолжение) */
   advanceBy: Record<string, 'rematch' | 'next'>;
-  /** последнее событие «пара собрана» (для мгновенного релея) */
-  lastEvent: {
-    seq: number;
-    playerId: string;
-    tile1Id: number;
-    tile2Id: number;
-    score: number;
-    pairsDone: number;
-  } | null;
+  /** последнее событие «собрал пару» — доехать до соперника */
+  lastEvent: RoomEventInfo | null;
 }
 
-interface TicketDoc {
-  uid: string;
+interface TicketState {
+  id: string;
   name: string;
   hue: number;
   level: number;
   createdAt: number;
   lastSeen: number;
-  paired: { code: string; playerId: string } | null;
+  /** подобрали: комната готова */
+  paired: {
+    code: string;
+    playerId: string;
+  } | null;
 }
 
-/* публичный вид комнаты — то же самое, что видит клиент */
+/** публичное состояние комнаты — то, что видит клиент */
 interface RoomView {
   code: string;
-  status: RoomStatus;
+  status: 'waiting' | 'playing' | 'result';
   level: number;
   seed: number;
   hostId: string;
@@ -193,10 +171,9 @@ interface RoomView {
     pairsDone: number;
     online: boolean;
     finished: 'cleared' | 'tray' | null;
-    /** побед в СЕРИИ этой комнаты (сколько матчей выиграл) */
     wins: number;
   }[];
-  result: { winnerId: string; reason: FinishReason; finalTimeMs: number | null } | null;
+  result: { winnerId: string; reason: RoomFinishReason } | null;
   visibility: 'open' | 'closed';
   advanceOffers: { playerId: string; kind: 'rematch' | 'next' }[];
 }
@@ -210,173 +187,201 @@ interface OpenRoomInfo {
   players: number;
 }
 
-/* ============================ KV / каналы ============================ */
+/* ====================== KV-АБСТРАКЦИЯ (с фолбэком) ====================== */
 
-/* -- ФОЛБЭК НА ПАМЯТЬ -------------------------------------------------
- * В новом дашборде Deno Deploy KV-база НЕ создаётся автоматически:
- * пока она не привязана к приложению, Deno.openKv() бросает
- * TypeError ("no KV Database is attached to this app") и деплой
- * умирает на старте. Мы ловим ошибку и продолжаем работать поверх
- * обычной Map — с теми же семантиками, что использует этот сервер
- * (get / set / delete / list / atomic CAS).
- *
- * Ограничения режима памяти: состояние НЕ переживает рестарт
- * изолята, изоляты не видят комнаты друг друга. Правильный режим —
- * привязать KV-базу: dash.deno.com → проект → Settings → Databases
- * → Create/Attach → Redeploy (подробно в README.md). Принудительно
- * включить память для отладки — переменная окружения MJ_KV=memory. */
-
-interface KvEntryLike<T> {
-  key: readonly unknown[];
+type KvKey = unknown[];
+interface KvEntry<T> {
+  key: KvKey;
   value: T | null;
-  versionstamp: string | null;
+  versionstamp: string;
 }
-
-interface KvCheck {
-  key: readonly unknown[];
-  versionstamp: string | null;
+interface KvListSelector {
+  prefix: KvKey;
 }
-
+interface KvCommitResult {
+  ok: boolean;
+}
 interface KvAtomic {
-  check(...items: KvCheck[]): KvAtomic;
-  set(key: readonly unknown[], value: unknown): KvAtomic;
-  delete(key: readonly unknown[]): KvAtomic;
-  commit(): Promise<{ ok: boolean }>;
+  check(entry: KvEntry<unknown>): KvAtomic;
+  set(key: KvKey, value: unknown): KvAtomic;
+  delete(key: KvKey): KvAtomic;
+  commit(): Promise<KvCommitResult>;
 }
-
-/** минимальное подмножество KV-API, нужное этому серверу */
-interface KvLike {
-  get<T>(key: readonly unknown[]): Promise<KvEntryLike<T>>;
-  set(key: readonly unknown[], value: unknown): Promise<{ ok: boolean }>;
-  delete(key: readonly unknown[]): Promise<void>;
-  list<T>(selector: { prefix: readonly unknown[] }): AsyncIterable<{
-    key: readonly unknown[];
-    value: T;
-    versionstamp: string;
-  }>;
+interface Kv {
+  get<T>(key: KvKey): Promise<KvEntry<T> | null>;
+  set(key: KvKey, value: unknown): Promise<KvCommitResult>;
+  delete(key: KvKey): Promise<KvCommitResult>;
+  list<T>(selector: KvListSelector, opts?: { limit?: number }): AsyncIterable<KvEntry<T>>;
   atomic(): KvAtomic;
+  /** подписка на массив ключей: снапшот + каждое изменение */
+  watch(keys: KvKey[]): ReadableStream<KvEntry<unknown>[]>;
 }
 
-/** KV поверх Map: те же семантики для одного процесса */
-class MemoryKv implements KvLike {
-  #store = new Map<string, { key: readonly unknown[]; value: unknown; vs: string }>();
-  #n = 0;
+let kvMode: 'deno' | 'memory' = 'deno';
 
-  #ks(key: readonly unknown[]): string {
-    // «string:room|string:CODE» — типовой префикс, чтобы
-    // prefix ['room'] не зацепил случайно ключ ['rooms']
+/** KV поверх Map — аварийный режим (нет базы у приложения) и локальные
+ *  тесты. Семантики те же: versionstamp монотонный, CAS честный. */
+class MemoryKv implements Kv {
+  #data = new Map<string, { value: unknown; vs: string }>();
+  #vs = 0;
+  #watchers = new Map<string, Set<() => void>>();
+  #ks(key: KvKey): string {
     return key.map((p) => `${typeof p}:${String(p)}`).join('|');
   }
-
   #bump(): string {
-    return `m${++this.#n}`;
+    this.#vs += 2;
+    return String(this.#vs).padStart(16, '0') + '0000';
   }
-
-  async get<T>(key: readonly unknown[]): Promise<KvEntryLike<T>> {
-    const e = this.#store.get(this.#ks(key));
-    return e
-      ? { key: e.key, value: e.value as T, versionstamp: e.vs }
-      : { key, value: null, versionstamp: null };
-  }
-
-  async set(key: readonly unknown[], value: unknown): Promise<{ ok: boolean }> {
-    const ks = this.#ks(key);
-    const e = this.#store.get(ks);
-    if (e) {
-      e.value = value;
-      e.vs = this.#bump();
-    } else {
-      this.#store.set(ks, { key, value, vs: this.#bump() });
+  async #fire(keys: KvKey[]): Promise<void> {
+    // уведомляем всех, кто смотрит ЛЮБОЙ из изменённых ключей
+    const cbs = new Set<() => void>();
+    for (const k of keys) {
+      for (const cb of this.#watchers.get(this.#ks(k)) ?? []) cbs.add(cb);
     }
+    for (const cb of cbs) cb();
+  }
+  async get<T>(key: KvKey): Promise<KvEntry<T> | null> {
+    const hit = this.#data.get(this.#ks(key));
+    if (!hit) return null;
+    return { key, value: hit.value as T, versionstamp: hit.vs };
+  }
+  async set(key: KvKey, value: unknown): Promise<KvCommitResult> {
+    const ks = this.#ks(key);
+    const vs = this.#bump();
+    this.#data.set(ks, { value, vs });
+    await this.#fire([key]);
     return { ok: true };
   }
-
-  async delete(key: readonly unknown[]): Promise<void> {
-    this.#store.delete(this.#ks(key));
+  async delete(key: KvKey): Promise<KvCommitResult> {
+    const ks = this.#ks(key);
+    const had = this.#data.delete(ks);
+    if (had) await this.#fire([key]);
+    return { ok: true };
   }
-
   async *list<T>(
-    selector: { prefix: readonly unknown[] },
-  ): AsyncGenerator<{ key: readonly unknown[]; value: T; versionstamp: string }> {
-    const p = this.#ks(selector.prefix);
-    for (
-      const ks of [...this.#store.keys()]
-        .filter((k) => k === p || k.startsWith(p + '|'))
-        .sort()
-    ) {
-      const e = this.#store.get(ks)!;
-      yield { key: e.key, value: e.value as T, versionstamp: e.vs };
+    selector: KvListSelector,
+    opts?: { limit?: number },
+  ): AsyncIterable<KvEntry<T>> {
+    const prefix = this.#ks(selector.prefix) + '|';
+    let n = 0;
+    for (const [ks, hit] of [...this.#data.entries()].sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    )) {
+      if (!ks.startsWith(prefix)) continue;
+      if (opts?.limit && n >= opts.limit) return;
+      n++;
+      const key = ks.split('|').map((p) => {
+        const [type, ...rest] = p.split(':');
+        const raw = rest.join(':');
+        return type === 'number' ? Number(raw) : raw;
+      });
+      yield { key, value: hit.value as T, versionstamp: hit.vs };
     }
   }
-
   atomic(): KvAtomic {
-    const ksOf = (k: readonly unknown[]) => this.#ks(k);
-    const store = this.#store;
-    const bump = () => this.#bump();
-    const checks: KvCheck[] = [];
-    const ops: (() => void)[] = [];
+    const ops: {
+      kind: 'check' | 'set' | 'delete';
+      entry?: KvEntry<unknown>;
+      key?: KvKey;
+      value?: unknown;
+    }[] = [];
+    const self = this;
     return {
-      check(...items) {
-        checks.push(...items);
+      check(entry: KvEntry<unknown>) {
+        ops.push({ kind: 'check', entry });
         return this;
       },
-      set(key, value) {
-        ops.push(() => {
-          const ks = ksOf(key);
-          const e = store.get(ks);
-          if (e) {
-            e.value = value;
-            e.vs = bump();
-          } else {
-            store.set(ks, { key, value, vs: bump() });
-          }
-        });
+      set(key: KvKey, value: unknown) {
+        ops.push({ kind: 'set', key, value });
         return this;
       },
-      delete(key) {
-        ops.push(() => store.delete(ksOf(key)));
+      delete(key: KvKey) {
+        ops.push({ kind: 'delete', key });
         return this;
       },
-      async commit() {
-        // проверки и применение без await между ними — атомарно
-        // в пределах одного процесса (JS однопотен)
-        for (const c of checks) {
-          const e = store.get(ksOf(c.key));
-          if ((e ? e.vs : null) !== c.versionstamp) return { ok: false };
+      async commit(): Promise<KvCommitResult> {
+        for (const op of ops) {
+          if (op.kind !== 'check' || !op.entry || !op.entry.key) continue;
+          const cur = self.#data.get(self.#ks(op.entry.key));
+          const curVs = cur ? cur.vs : null;
+          if (curVs !== (op.entry.versionstamp ?? null)) return { ok: false };
         }
-        for (const op of ops) op();
+        const touched: KvKey[] = [];
+        for (const op of ops) {
+          if (op.kind === 'set' && op.key) {
+            const vs = self.#bump();
+            self.#data.set(self.#ks(op.key), { value: op.value, vs });
+            touched.push(op.key);
+          } else if (op.kind === 'delete' && op.key) {
+            if (self.#data.delete(self.#ks(op.key))) touched.push(op.key);
+          }
+        }
+        await self.#fire(touched);
         return { ok: true };
       },
     };
   }
+  watch(keys: KvKey[]): ReadableStream<KvEntry<unknown>[]> {
+    const snapshot = () =>
+      keys.map((k) => {
+        const hit = this.#data.get(this.#ks(k));
+        return {
+          key: k,
+          value: hit ? hit.value : null,
+          versionstamp: hit ? hit.vs : '00000000000000000000',
+        };
+      });
+    let fire: (() => void) | null = null;
+    return new ReadableStream({
+      start: (ctrl) => {
+        ctrl.enqueue(snapshot());
+        fire = () => ctrl.enqueue(snapshot());
+        for (const k of keys) {
+          const set = this.#watchers.get(this.#ks(k)) ?? new Set();
+          set.add(fire);
+          this.#watchers.set(this.#ks(k), set);
+        }
+      },
+      cancel: () => {
+        if (!fire) return;
+        for (const k of keys) {
+          const set = this.#watchers.get(this.#ks(k));
+          if (set) {
+            set.delete(fire);
+            if (set.size === 0) this.#watchers.delete(this.#ks(k));
+          }
+        }
+      },
+    });
+  }
 }
 
-/** чем храним состояние — видно в /health */
-let kvMode: 'deno' | 'memory' = 'deno';
-
-/** открыть KV; если к приложению не привязана база (типичная
- *  ситуация в новом дашборде Deno Deploy) — не умирать, а
- *  перейти на память процесса */
-async function openKvSafe(): Promise<KvLike> {
+/** открыть KV, не уронив сервер: без базы работаем в памяти */
+async function openKvSafe(): Promise<Kv> {
   if (Deno.env.get('MJ_KV') === 'memory') {
-    console.warn('[kv] MJ_KV=memory — принудительный режим памяти');
     kvMode = 'memory';
+    console.warn('[kv] MJ_KV=memory — режим памяти (один изолят, для отладки)');
     return new MemoryKv();
   }
   try {
-    return await Deno.openKv() as unknown as KvLike;
+    const real = await Deno.openKv();
+    const wrap = real as unknown as Kv;
+    // sanity: все методы на месте?
+    if (
+      typeof wrap.get !== 'function' ||
+      typeof wrap.atomic !== 'function' ||
+      typeof wrap.watch !== 'function'
+    ) {
+      throw new Error('kv api mismatch');
+    }
+    return wrap;
   } catch (err) {
     console.warn(
       '[kv] Deno.openKv() не смог открыться: ' +
         (err instanceof Error ? err.message : String(err)),
     );
     console.warn(
-      '[kv] Работаем в РЕЖИМЕ ПАМЯТИ: сервер жив и игры работают, ' +
-        'но комнаты сбросятся при рестарте изолята.',
-    );
-    console.warn(
-      '[kv] Починка: dash.deno.com → проект → Settings → Databases → ' +
-        'создать и привязать KV-базу → Redeploy (подробно: README.md).',
+      '[kv] Работаем в РЕЖИМЕ ПАМЯТИ — комнаты сбросятся при рестарте изолята.',
     );
     kvMode = 'memory';
     return new MemoryKv();
@@ -385,256 +390,20 @@ async function openKvSafe(): Promise<KvLike> {
 
 const kv = await openKvSafe();
 
-const ISOLATE = crypto.randomUUID();
-
-/** объявления присутствия: каждый изолят перечисляет свои uid'ы */
-const presenceChan = new BroadcastChannel('mj-presence');
-/** адресные сообщения конкретному uid (матчмейкинг) */
-const notifyChan = new BroadcastChannel('mj-notify');
-
-/** uid → когда его последний раз объявлял «свой» изолят */
-const presence = new Map<string, number>();
-
-/* ============================ соединения ============================ */
-
-interface Conn {
-  socket: WebSocket;
-  uid: string;
-  name: string;
-  roomCode: string | null;
-  playerId: string | null;
-  /** клиент хочет обновления лобби */
-  lobby: boolean;
-}
-
-const conns = new Map<WebSocket, Conn>();
-const connsByUid = new Map<string, Conn>();
-
-function send(conn: Conn, msg: Record<string, unknown>) {
-  try {
-    if (conn.socket.readyState === WebSocket.OPEN) {
-      conn.socket.send(JSON.stringify(msg));
-    }
-  } catch {
-    // сокет уже мёртв — почистится в onclose
-  }
-}
-
-function detachConn(conn: Conn) {
-  if (conn.roomCode) {
-    const w = roomWatchers.get(conn.roomCode);
-    if (w) {
-      w.refs.delete(conn.socket);
-      if (w.refs.size === 0) stopWatcher(conn.roomCode);
-    }
-  }
-  conn.roomCode = null;
-  conn.playerId = null;
-}
-
-/** прикрепить соединение к комнате (+следить за её изменениями) */
-function attachConn(conn: Conn, code: string, playerId: string) {
-  detachConn(conn);
-  conn.roomCode = code;
-  conn.playerId = playerId;
-  ensureWatcher(code).refs.add(conn.socket);
-}
-
-/* ============================ watchers (веер KV) ============================ */
-
-/** период опроса документа комнаты (мс): изменения с ЛЮБОГО
- *  изолята доходят клиентам максимум за это время. Мутации этого
- *  изолята доставляются сразу — deliverDoc ниже */
-const WATCH_POLL_MS = 500;
-
-interface Watcher {
-  refs: Set<WebSocket>;
-  stopped: boolean;
-  lastVersionstamp: string | null;
-  lastEventSeq: number;
-  /** последний известный документ (для просмотров присутствия) */
-  lastDoc: RoomDoc | null;
-  /** сигнатура онлайн-флагов последнего отправленного вида */
-  lastOnlineSig: string;
-}
-
-const roomWatchers = new Map<string, Watcher>();
-
-function ensureWatcher(code: string): Watcher {
-  let w = roomWatchers.get(code);
-  if (w) return w;
-  w = {
-    refs: new Set(),
-    stopped: false,
-    lastVersionstamp: null,
-    lastEventSeq: 0,
-    lastDoc: null,
-    lastOnlineSig: '',
-  };
-  roomWatchers.set(code, w);
-  runWatcher(code, w);
-  return w;
-}
-
-function stopWatcher(code: string) {
-  const w = roomWatchers.get(code);
-  if (!w) return;
-  w.stopped = true;
-  roomWatchers.delete(code);
-}
-
-/** сигнатура «кто онлайн» — меняется при обрыве/возврате игроков */
-function onlineSig(doc: RoomDoc): string {
-  return doc.players.map((p) => (isOnline(p.uid) ? '1' : '0')).join('');
-}
-
-/** доставить свежий документ комнаты локальным сокетам:
- *  новый вид + событие «пара собрана». Обновляет счётчик событий,
- *  чтобы одно и то же не уходило дважды */
-function deliverDoc(code: string, w: Watcher, doc: RoomDoc | null) {
-  if (roomWatchers.get(code) !== w) return;
-  if (!doc) {
-    // комнату удалили (вышли все / TTL) — локальным скажем честно
-    for (const s of [...w.refs]) {
-      const c = conns.get(s);
-      if (c && c.roomCode === code) {
-        send(c, { t: 'err', code: 'ROOM_NOT_FOUND' });
-        detachConn(c);
-      }
-    }
-    if (w.refs.size === 0) stopWatcher(code);
-    return;
-  }
-  w.lastDoc = doc;
-  w.lastOnlineSig = onlineSig(doc);
-  const view = viewOf(doc);
-  for (const s of w.refs) {
-    const c = conns.get(s);
-    if (c && c.roomCode === code) send(c, { t: 'room', view });
-  }
-  // событие «пара собрана» — релей обоим (клиент фильтрует своё)
-  if (doc.lastEvent && doc.lastEvent.seq > w.lastEventSeq) {
-    w.lastEventSeq = doc.lastEvent.seq;
-    const ev = {
-      t: 'event',
-      kind: 'match',
-      playerId: doc.lastEvent.playerId,
-      tile1Id: doc.lastEvent.tile1Id,
-      tile2Id: doc.lastEvent.tile2Id,
-      score: doc.lastEvent.score,
-      pairsDone: doc.lastEvent.pairsDone,
-    };
-    for (const s of w.refs) {
-      const c = conns.get(s);
-      if (c && c.roomCode === code) send(c, ev);
-    }
-  }
-}
-
-/** сразу показать локальным клиентам результат мутации этого
- *  изолята — без ожидания поллинга (0 мс вместо ≤500 мс) */
-function deliverLocal(code: string, doc: RoomDoc | null) {
-  const w = roomWatchers.get(code);
-  if (!w) return;
-  if (doc) w.lastVersionstamp = `local-${doc.v}`;
-  deliverDoc(code, w, doc);
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** следим за документом комнаты: опрашиваем версию в KV — любое
- *  изменение (хоть с другого изолята) → новый вид всем ЛОКАЛЬНЫМ
- *  сокетам этой комнаты */
-async function runWatcher(code: string, w: Watcher) {
-  while (!w.stopped) {
-    try {
-      const entry = await kv.get<RoomDoc>(['room', code]);
-      const vs = entry.versionstamp;
-      // «local-N» ставится deliverLocal — первая реальная версия
-      // из KV всё равно отличается → одно лишнее отправление вида
-      // (безвредно: applyRoomView у клиента идемпотентен)
-      if (vs !== w.lastVersionstamp) {
-        w.lastVersionstamp = vs;
-        deliverDoc(code, w, entry.value ?? null);
-      }
-    } catch {
-      // временный сбой KV — следующий тик
-    }
-    await sleep(WATCH_POLL_MS);
-  }
-}
-
-/* ============================ присутствие ============================ */
-
-function localUids(): string[] {
-  return [...connsByUid.keys()];
-}
-
-/** присутствие изменилось → перепушить виды комнат, где поменялись
- *  онлайн-флаги (банер «соперник потерял связь» появляется вовремя,
- *  а возврат игрока — сразу виден) */
-function refreshPresenceViews() {
-  for (const [code, w] of [...roomWatchers]) {
-    if (!w.lastDoc || w.refs.size === 0) continue;
-    const sig = onlineSig(w.lastDoc);
-    if (sig !== w.lastOnlineSig) {
-      deliverDoc(code, w, w.lastDoc);
-    }
-  }
-}
-
-function announcePresence() {
-  presenceChan.postMessage({ i: ISOLATE, uids: localUids() });
-  const now = Date.now();
-  for (const uid of localUids()) presence.set(uid, now);
-}
-
-presenceChan.onmessage = (ev) => {
-  const data = ev.data as { i?: string; uids?: string[] };
-  if (!data || data.i === ISOLATE || !Array.isArray(data.uids)) return;
-  const now = Date.now();
-  for (const uid of data.uids) presence.set(uid, now);
-};
-
-/** онлайн = uid объявлялся недавно (свой или чужой изолят) */
-function isOnline(uid: string): boolean {
-  const at = presence.get(uid);
-  return at != null && Date.now() - at < PRESENCE_FRESH_MS;
-}
-
-/** давно пропал? (для отключений и чистки лобби/тикетов) */
-function goneMs(uid: string): number {
-  const at = presence.get(uid);
-  return at == null ? Infinity : Date.now() - at;
-}
-
-/* ============================ адресные уведомления ============================ */
-
-/** доставить сообщение устройству uid: локально + во все изоляты */
-function notifyUid(uid: string, msg: Record<string, unknown>) {
-  const c = connsByUid.get(uid);
-  if (c) send(c, msg);
-  notifyChan.postMessage({ uid, msg });
-}
-
-notifyChan.onmessage = (ev) => {
-  const data = ev.data as { uid?: string; msg?: Record<string, unknown> };
-  if (!data?.uid || !data.msg) return;
-  const c = connsByUid.get(data.uid);
-  if (c) send(c, data.msg);
-};
-
-/* ============================ helpers ============================ */
+/* ============================ УТИЛИТЫ ============================ */
 
 const now = () => Date.now();
-const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
-
 const rndId = () =>
-  Array.from({ length: 8 }, () => Math.floor(Math.random() * 36).toString(36)).join('');
-
+  Array.from({ length: 8 }, () => Math.floor(Math.random() * 36).toString(36))
+    .join('');
 const rndHue = () => Math.floor(Math.random() * 360);
+const clamp = (n: number, lo: number, hi: number) =>
+  Math.min(hi, Math.max(lo, n));
 
-const newSeed = () => Math.floor(Math.random() * 0x7fffffff);
+function timeForLevel(level: number): number {
+  const pairs = PAIRS_BY_LEVEL[(clamp(level, 1, 999) - 1) % PAIRS_BY_LEVEL.length];
+  return clamp(pairs * TIME_PER_PAIR_MS, TIME_MIN_MS, TIME_MAX_MS);
+}
 
 function sanitizeName(raw: unknown): string {
   const s = typeof raw === 'string' ? raw.trim().replace(/\s+/g, ' ') : '';
@@ -645,798 +414,1204 @@ function sanitizeName(raw: unknown): string {
 function normalizeCode(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const c = raw.trim().toUpperCase();
-  return c.length === CODE_LEN && [...c].every((ch) => CODE_CHARS.includes(ch)) ? c : null;
+  return c.length === CODE_LEN && [...c].every((ch) => CODE_CHARS.includes(ch))
+    ? c
+    : null;
 }
 
-function viewOf(doc: RoomDoc): RoomView {
-  return {
-    code: doc.code,
-    status: doc.status,
-    level: doc.level,
-    seed: doc.seed,
-    hostId: doc.hostId,
-    timeTotalMs: doc.timeTotalMs,
-    startedAt: doc.startedAt,
-    serverNow: now(),
-    players: doc.players.map((p) => ({
-      id: p.id,
-      name: p.name,
-      hue: p.hue,
-      score: Math.round(p.score),
-      pairsDone: p.pairsDone,
-      online: isOnline(p.uid),
-      finished: p.finished,
-      wins: doc.winsBy?.[p.id] ?? 0,
-    })),
-    result: doc.result
-      ? {
-        winnerId: doc.result.winnerId,
-        reason: doc.result.reason,
-        finalTimeMs: doc.result.finalTimeMs,
-      }
-      : null,
-    visibility: doc.visibility,
-    advanceOffers: Object.entries(doc.advanceBy).map(([playerId, kind]) => ({
-      playerId,
-      kind,
-    })),
-  };
+function newSeed(): number {
+  return Math.floor(Math.random() * 0x7fffffff);
 }
 
-/* ============================ мутации комнат (CAS) ============================ */
-
-const NO_CHANGE = Symbol('no-change');
-
-/**
- * Атомарно изменить документ комнаты: читаем → применяем fn →
- * CAS-коммит. Гонки между изолятами невозможны — проигравший
- * перечитывает и пробует снова. fn возвращает NO_CHANGE, если
- * менять ничего не нужно.
- */
-async function mutateRoom<T = unknown>(
-  code: string,
-  fn: (doc: RoomDoc) => T,
-): Promise<{ doc: RoomDoc; out: T } | null> {
-  for (let attempt = 0; attempt < 7; attempt++) {
-    const entry = await kv.get<RoomDoc>(['room', code]);
-    if (!entry.value) return null;
-    const draft = structuredClone(entry.value);
-    const out = fn(draft);
-    if (out === NO_CHANGE) return { doc: entry.value, out: out as never };
-    draft.v = (draft.v ?? 0) + 1;
-    const commit = await kv.atomic()
-      .check({ key: ['room', code], versionstamp: entry.versionstamp })
-      .set(['room', code], draft)
-      .commit();
-    if (commit.ok) return { doc: draft, out };
-    // конфликт: кто-то изменил раньше — перечитываем
-  }
-  return null;
-}
-
-async function getRoom(code: string): Promise<RoomDoc | null> {
-  const e = await kv.get<RoomDoc>(['room', code]);
-  return e.value ?? null;
-}
-
-/* ============================ лобби ============================ */
-
-async function buildLobby(): Promise<OpenRoomInfo[]> {
-  const out: OpenRoomInfo[] = [];
-  const t = now();
-  for await (const entry of kv.list<RoomDoc>({ prefix: ['room'] })) {
-    const r = entry.value;
-    if (r.status !== 'waiting' || r.visibility !== 'open') continue;
-    const host = r.players[0];
-    if (!host || r.players.length >= 2) continue;
-    if (t - r.createdAt > WAITING_TTL_MS) continue;
-    if (goneMs(host.uid) > WAITING_HOST_STALE_MS) continue;
-    out.push({
-      code: r.code,
-      level: r.level,
-      hostName: host.name,
-      hue: host.hue,
-      createdAt: r.createdAt,
-      players: r.players.length,
-    });
-  }
-  out.sort((a, b) => a.createdAt - b.createdAt);
-  return out.slice(0, OPEN_LIST_MAX);
-}
-
-async function pushLobby() {
-  const wantLobby = [...conns.values()].some((c) => c.lobby);
-  if (!wantLobby) return;
-  const rooms = await buildLobby();
-  for (const c of conns.values()) {
-    if (c.lobby) send(c, { t: 'lobby', rooms });
-  }
-}
-
-/* ============================ матчмейкинг ============================ */
-
-/** матчмейкинг СЕРИАЛИЗОВАН: два одновременных «найти игру» не
- *  должны проверить очередь до того, как оба тикета записаны */
-let matchmakingChain: Promise<void> = Promise.resolve();
-
-function scheduleMatchfinding(conn: Conn, rid?: number | string): Promise<void> {
-  matchmakingChain = matchmakingChain
-    .then(async () => {
-      await tryMatchAll();
-      // ответ просившему: нашли сразу или пока ищем
-      const fresh = await kv.get<TicketDoc>(['ticket', conn.uid]);
-      if (conn.roomCode) {
-        // подобрали! (push {t:'room'} уже ушёл через notifyUid) —
-        // подтвердим и ответом на запрос
-        const doc = await getRoom(conn.roomCode);
-        if (doc) send(conn, { t: 'room', view: viewOf(doc), playerId: conn.playerId, rid });
-        return;
-      }
-      if (!fresh.value?.paired) send(conn, { t: 'mm', status: 'search', rid });
-    })
-    .catch(() => {});
-  return matchmakingChain;
-}
-
-async function tryMatchAll(): Promise<void> {
-  const t = now();
-  const tickets: TicketDoc[] = [];
-  for await (const entry of kv.list<TicketDoc>({ prefix: ['ticket'] })) {
-    const tk = entry.value;
-    if (!tk.paired && t - tk.lastSeen < TICKET_STALE_MS) tickets.push(tk);
-  }
-  tickets.sort((a, b) => a.createdAt - b.createdAt);
-  // соединяем по двое: уровень — того, кто раньше встал в очередь
-  for (let i = 0; i + 1 < tickets.length; i += 2) {
-    const ok = await pairTickets(tickets[i], tickets[i + 1]);
-    if (!ok) return; // конфликт — попробуем при следующем вызове
-  }
-  // остался один — может, есть открытая комната?
-  if (tickets.length % 2 === 1) {
-    const tk = tickets[tickets.length - 1];
-    if (tk && !tk.paired) await joinFirstOpenRoom(tk);
-  }
-}
-
-/** создать комнату на двоих (мультиключевая транзакция:
- *  комната + оба тикета — либо всё, либо ничего) */
-async function pairTickets(a: TicketDoc, b: TicketDoc): Promise<boolean> {
-  const level = clamp(a.level, 1, 999);
-  const va = (await kv.get<TicketDoc>(['ticket', a.uid])).versionstamp;
-  const vb = (await kv.get<TicketDoc>(['ticket', b.uid])).versionstamp;
-  if (va === null || vb === null) return false; // тикет исчез — гонка
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const code = genCode();
-    const host: RoomPlayer = {
-      id: rndId(),
-      uid: a.uid,
-      name: a.name,
-      hue: a.hue,
-      score: 0,
-      pairsDone: 0,
-      finished: null,
-    };
-    const joiner: RoomPlayer = {
-      id: rndId(),
-      uid: b.uid,
-      name: b.name,
-      hue: b.hue,
-      score: 0,
-      pairsDone: 0,
-      finished: null,
-    };
-    const room: RoomDoc = {
-      v: 1,
-      code,
-      level,
-      seed: newSeed(),
-      status: 'playing',
-      hostId: host.id,
-      visibility: 'closed',
-      startedAt: now() + INTRO_BUDGET_MS,
-      timeTotalMs: timeForLevel(level),
-      createdAt: now(),
-      result: null,
-      players: [host, joiner],
-      winsBy: {},
-      advanceBy: {},
-      lastEvent: null,
-    };
-    const commit = await kv.atomic()
-      .check({ key: ['room', code], versionstamp: null }) // код свободен
-      .check({ key: ['ticket', a.uid], versionstamp: va })
-      .check({ key: ['ticket', b.uid], versionstamp: vb })
-      .set(['room', code], room)
-      .set(['ticket', a.uid], { ...a, paired: { code, playerId: host.id } })
-      .set(['ticket', b.uid], { ...b, paired: { code, playerId: joiner.id } })
-      .commit();
-    if (commit.ok) {
-      const view = viewOf(room);
-      notifyUid(a.uid, { t: 'room', view, playerId: host.id });
-      notifyUid(b.uid, { t: 'room', view, playerId: joiner.id });
-      // локальные подключения сразу прикрепляем к комнате
-      const pairs: [string, string][] = [[a.uid, host.id], [b.uid, joiner.id]];
-      for (const [uid, pid] of pairs) {
-        const c = connsByUid.get(uid);
-        if (c) attachConn(c, code, pid);
-      }
-      return true;
-    }
-    // конфликт (код занят/тикет изменился) — новая попытка
-  }
-  return false;
-}
-
-/** одиночный тикет подсоединяем к первой открытой ждущей комнате */
-async function joinFirstOpenRoom(tk: TicketDoc): Promise<boolean> {
-  const rooms: RoomDoc[] = [];
-  for await (const entry of kv.list<RoomDoc>({ prefix: ['room'] })) {
-    const r = entry.value;
-    if (r.status === 'waiting' && r.visibility === 'open' && r.players.length === 1) {
-      rooms.push(r);
-    }
-  }
-  rooms.sort((a, b) => a.createdAt - b.createdAt);
-  for (const r of rooms) {
-    const res = await mutateRoom(r.code, (doc) => {
-      if (doc.status !== 'waiting' || doc.players.length >= 2) return NO_CHANGE;
-      doc.players.push({
-        id: rndId(),
-        uid: tk.uid,
-        name: tk.name,
-        hue: tk.hue,
-        score: 0,
-        pairsDone: 0,
-        finished: null,
-      });
-      doc.status = 'playing';
-      doc.startedAt = now() + INTRO_BUDGET_MS;
-      return doc.players[doc.players.length - 1].id;
-    });
-    if (res) {
-      const view = viewOf(res.doc);
-      notifyUid(tk.uid, { t: 'room', view, playerId: res.out as string });
-      const c = connsByUid.get(tk.uid);
-      if (c) attachConn(c, r.code, res.out as string);
-      return true;
-    }
-  }
-  return false;
-}
-
-/* ============================ исходы ============================ */
-
-function finishRoom(doc: RoomDoc, winnerId: string, reason: FinishReason, finalTimeMs: number | null) {
-  if (doc.status !== 'playing' || doc.result) return false;
-  doc.status = 'result';
-  doc.result = { winnerId, reason, finalTimeMs, at: now() };
-  // СЕРИЯ: победа победителю матча (счёт живёт до выхода из комнаты)
-  doc.winsBy = doc.winsBy ?? {};
-  doc.winsBy[winnerId] = (doc.winsBy[winnerId] ?? 0) + 1;
-  return true;
-}
-
-/** авто-исходы: тайм-аут и долгое отсутствие игрока */
-async function autoFinish(code: string) {
-  const doc = await getRoom(code);
-  if (!doc || doc.status !== 'playing') return;
-  const t = now();
-  // отсчёт ещё не начался (интро) — отключения не засчитываем
-  if (t < doc.startedAt) return;
-  for (const p of doc.players) {
-    const other = doc.players.find((x) => x.id !== p.id);
-    if (other && goneMs(p.uid) > ONLINE_GRACE_MS) {
-      await mutateRoom(code, (d) =>
-        finishRoom(d, other.id, 'disconnect', null) ? true : NO_CHANGE
-      );
-      return;
-    }
-  }
-  if (t > doc.startedAt + doc.timeTotalMs) {
-    const [a, b] = doc.players;
-    if (!a || !b) return;
-    const winnerId = a.pairsDone !== b.pairsDone
-      ? (a.pairsDone > b.pairsDone ? a.id : b.id)
-      : (a.score >= b.score ? a.id : b.id);
-    await mutateRoom(code, (d) =>
-      finishRoom(d, winnerId, 'timeout', null) ? true : NO_CHANGE
-    );
-  }
-}
-
-/* ============================ sweeper ============================ */
-
-async function sweep() {
-  const t = now();
-  // локально наблюдаемые комнаты: авто-исходы
-  for (const code of [...roomWatchers.keys()]) {
-    await autoFinish(code);
-  }
-  // глобальная уборка (в т.ч. комнаты, на которые никто не смотрит)
-  for await (const entry of kv.list<RoomDoc>({ prefix: ['room'] })) {
-    const r = entry.value;
-    const code = r.code;
-    if (t - r.createdAt > ROOM_TTL_MS) {
-      await kv.delete(['room', code]);
-      continue;
-    }
-    if (r.status === 'waiting') {
-      let dead = t - r.createdAt > WAITING_TTL_MS;
-      const host = r.players[0];
-      if (!dead && host && goneMs(host.uid) > WAITING_HOST_STALE_MS) dead = true;
-      if (dead) {
-        await kv.delete(['room', code]);
-      }
-    }
-  }
-  // тикеты: носителя давно нет в сети — выбрасываем
-  for await (const entry of kv.list<TicketDoc>({ prefix: ['ticket'] })) {
-    const tk = entry.value;
-    if (tk.paired || t - tk.lastSeen > TICKET_STALE_MS) {
-      await kv.delete(['ticket', tk.uid]);
-    }
-  }
-}
-
-/* ============================ HTTP / WS ============================ */
-
-function genCode(): string {
+function newCode(): string {
   return Array.from(
     { length: CODE_LEN },
     () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)],
   ).join('');
 }
 
-async function handleWs(socket: WebSocket) {
-  const conn: Conn = {
-    socket,
-    uid: '',
-    name: 'Игрок',
-    roomCode: null,
-    playerId: null,
-    lobby: false,
-  };
-  conns.set(socket, conn);
+/** глубокая копия (KV-значения — плоский JSON, но advanceBy меняется) */
+function clone<T>(v: T): T {
+  return structuredClone(v);
+}
 
-  socket.onclose = () => {
-    conns.delete(socket);
-    if (conn.uid && connsByUid.get(conn.uid) === conn) {
-      connsByUid.delete(conn.uid);
-      announcePresence();
-      // соперник должен увидеть «не в сети» сразу, а не тиком лобби
-      refreshPresenceViews();
-    }
-    detachConn(conn);
-  };
-
-  socket.onerror = () => {
-    try {
-      socket.close();
-    } catch {
-      // ignore
-    }
-  };
-
-  socket.onmessage = async (ev) => {
-    let msg: Record<string, unknown>;
-    try {
-      msg = JSON.parse(String(ev.data));
-    } catch {
-      return;
-    }
-    try {
-      await handleMessage(conn, msg);
-    } catch (err) {
-      console.error('handler error:', err);
-      send(conn, { t: 'err', code: 'NETWORK' });
-    }
+/** публичная вьюха комнаты для клиента */
+function view(r: RoomState): RoomView {
+  const t = now();
+  return {
+    code: r.code,
+    status: r.status,
+    level: r.level,
+    seed: r.seed,
+    hostId: r.hostId,
+    timeTotalMs: r.timeTotalMs,
+    startedAt: r.startedAt,
+    serverNow: t,
+    players: r.players.map((p) => ({
+      id: p.id,
+      name: p.name,
+      hue: p.hue,
+      score: Math.round(p.score),
+      pairsDone: p.pairsDone,
+      online: t - p.lastSeen < PRESENCE_MS,
+      finished: p.finished,
+      wins: p.wins,
+    })),
+    result: r.result ? { ...r.result } : null,
+    visibility: r.visibility,
+    advanceOffers: Object.entries(r.advanceBy).map(([playerId, kind]) => ({
+      playerId,
+      kind,
+    })),
   };
 }
 
-async function handleMessage(conn: Conn, msg: Record<string, unknown>) {
-  const t = msg.t as string;
-  const rid = typeof msg.rid === 'number' || typeof msg.rid === 'string' ? msg.rid : undefined;
+/* ==================== СОКЕТЫ ИЗОЛЯТА + ПОДПИСКИ ==================== */
 
-  switch (t) {
-    /* ---------- приветствие (+реконнект) ---------- */
-    case 'hello': {
-      const uid = typeof msg.uid === 'string' && msg.uid.length >= 8 && msg.uid.length <= 64
-        ? msg.uid
-        : rndId();
-      const name = sanitizeName(msg.name);
-      // тот же uid уже сидит в этом изоляте — заменяем (старый сокет мёртв)
-      const prev = connsByUid.get(uid);
-      if (prev && prev !== conn) {
-        try {
-          prev.socket.close(4000, 'replaced');
-        } catch {
-          // ignore
+interface Sock {
+  ws: WebSocket;
+  uid: string;
+  name: string;
+  /** привязанная комната (code) и игрок */
+  roomCode: string | null;
+  playerId: string | null;
+  /** монотонный счётчик смены привязки: поздний hello
+   *  не затирает свежую привязку от create/join (гонка) */
+  bindEpoch: number;
+  /** подписан на лобби открытых игр */
+  lobby: boolean;
+  /** активный тикет матчмейкинга */
+  mmTicket: string | null;
+  alive: boolean;
+}
+
+const sockets = new Set<Sock>();
+
+/** атомарная смена привязки сокета к комнате (последний выигрывает) */
+function bindSock(s: Sock, code: string | null, pid: string | null): void {
+  s.bindEpoch++;
+  s.roomCode = code;
+  s.playerId = pid;
+}
+
+/** комната → {lastPushedVs, lastEventAt, watch} — подписка изолята */
+interface RoomWatch {
+  vs: string;
+  lastEventAt: number;
+  reader?: ReadableStreamDefaultReader<KvEntry<unknown>[]>;
+  refs: number;
+}
+const roomWatches = new Map<string, RoomWatch>();
+
+/** тикет матчмейкинга → подписка (когда «подобрали» из другого изолята) */
+const ticketWatches = new Map<
+  string,
+  ReadableStreamDefaultReader<KvEntry<unknown>[]>
+>();
+
+function send(s: Sock, m: Record<string, unknown>): void {
+  if (!s.alive) return;
+  try {
+    s.ws.send(JSON.stringify(m));
+  } catch {
+    // сокет уже мёртв — приберём на close
+  }
+}
+
+/** кому из локальных сокетов нужна эта комната */
+function localRoomSocks(code: string): Sock[] {
+  return [...sockets].filter((s) => s.roomCode === code);
+}
+
+/** подписаться на изменения комнаты (kv.watch) и разослать вьюхи */
+function ensureRoomWatch(code: string): void {
+  let w = roomWatches.get(code);
+  if (!w) {
+    w = { vs: '', lastEventAt: 0, refs: 0 };
+    roomWatches.set(code, w);
+  }
+  w.refs++;
+  if (w.reader) return;
+  try {
+    const stream = kv.watch([['room', code]]);
+    w.reader = stream.getReader();
+    const pump = async () => {
+      const rw = roomWatches.get(code);
+      const reader = rw?.reader;
+      if (!reader) return;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) return;
+          const entry = value?.[0];
+          if (!entry) continue;
+          const vs = entry.versionstamp;
+          const room = entry.value as RoomState | null;
+          const cur = roomWatches.get(code);
+          if (!cur) return;
+          if (vs === cur.vs) continue; // уже разослали это изменение
+          cur.vs = vs;
+          if (!room) continue; // комнату удалили — клиент узнает сам
+          const v = view(room);
+          const targets = localRoomSocks(code);
+          for (const s of targets) {
+            send(s, { t: 'room', view: v });
+            // событие «соперник собрал пару» — с дедупом по времени
+            if (
+              room.lastEvent &&
+              room.lastEvent.at > cur.lastEventAt &&
+              room.lastEvent.playerId !== s.playerId
+            ) {
+              send(s, {
+                t: 'event',
+                kind: 'match',
+                playerId: room.lastEvent.playerId,
+                tile1Id: room.lastEvent.tile1Id,
+                tile2Id: room.lastEvent.tile2Id,
+                score: room.lastEvent.score,
+                pairsDone: room.lastEvent.pairsDone,
+              });
+            }
+          }
+          if (room.lastEvent && room.lastEvent.at > cur.lastEventAt) {
+            cur.lastEventAt = room.lastEvent.at;
+          }
         }
-        conns.delete(prev.socket);
-        detachConn(prev);
+      } catch {
+        // watch умер (KV недоступен) — свипер продолжит раз в 1.5 c
+        const c = roomWatches.get(code);
+        if (c) c.reader = undefined;
       }
-      conn.uid = uid;
-      conn.name = name;
-      connsByUid.set(uid, conn);
-      send(conn, { t: 'hello', ok: true, uid, rid });
-      announcePresence();
-      // реконнект: устройство помнит комнату — возвращаем в неё
-      const code = normalizeCode(msg.code);
-      const playerId = typeof msg.playerId === 'string' ? msg.playerId : '';
-      if (code && playerId) {
-        const doc = await getRoom(code);
-        const me = doc?.players.find((p) => p.id === playerId);
-        if (doc && me && me.uid === uid) {
-          attachConn(conn, code, playerId);
-          send(conn, { t: 'room', view: viewOf(doc) });
+    };
+    void pump();
+  } catch {
+    // watch не поддерживается — свипер полингом раз в 1.5 c
+  }
+}
+
+function releaseRoomWatch(code: string): void {
+  const w = roomWatches.get(code);
+  if (!w) return;
+  w.refs = Math.max(0, w.refs - 1);
+  if (w.refs > 0) return;
+  roomWatches.delete(code);
+  try {
+    w.reader?.cancel();
+  } catch {
+    // ignore
+  }
+}
+
+/* ==================== ЧТЕНИЕ/ЗАПИСЬ КОМНАТ (CAS) ==================== */
+
+async function getRoom(code: string): Promise<RoomState | null> {
+  const e = await kv.get<RoomState>(['room', code]);
+  return e?.value ?? null;
+}
+
+/** чтение СВЕЖЕЙ комнаты: сразу после create KV на другом изоляте
+ *  может ещё не видеть ключ — короткие ретраи с паузами */
+async function getFreshRoom(code: string): Promise<RoomState | null> {
+  for (let i = 0; i < FRESH_ROOM_RETRIES; i++) {
+    const r = await getRoom(code);
+    if (r) return r;
+    if (i === FRESH_ROOM_RETRIES - 1) return null;
+    await new Promise((res) => setTimeout(res, 250 * (i + 1)));
+  }
+  return null;
+}
+
+/** изменить комнату через CAS; fn возвращает новое состояние,
+ *  'abort' — без изменений (успех без записи), 'delete' — удалить */
+async function mutateRoom(
+  code: string,
+  fn: (r: RoomState) => RoomState | 'abort' | 'delete',
+): Promise<{ ok: boolean; room: RoomState | null; changed?: boolean; deleted?: boolean }> {
+  for (let i = 0; i < 6; i++) {
+    const entry = await kv.get<RoomState>(['room', code]);
+    const cur = entry?.value ?? null;
+    if (!cur) return { ok: false, room: null };
+    const next = fn(clone(cur));
+    if (next === 'abort') return { ok: true, room: cur, changed: false };
+    if (next === 'delete') {
+      await kv.delete(['room', code]);
+      return { ok: true, room: null, deleted: true, changed: true };
+    }
+    const res = await kv.atomic()
+      .check(entry as KvEntry<unknown>)
+      .set(['room', code], next)
+      .commit();
+    if (res.ok) return { ok: true, room: next, changed: true };
+    // конфликт — перечитываем и пробуем снова
+  }
+  return { ok: false, room: null };
+}
+
+/** разослать вьюху локальным сокетам комнаты (свой вклад изолята) */
+function pushLocal(code: string, room: RoomState): void {
+  const w = roomWatches.get(code);
+  const v = view(room);
+  for (const s of localRoomSocks(code)) {
+    send(s, { t: 'room', view: v });
+    if (
+      room.lastEvent &&
+      (!w || room.lastEvent.at > w.lastEventAt) &&
+      room.lastEvent.playerId !== s.playerId
+    ) {
+      send(s, {
+        t: 'event',
+        kind: 'match',
+        playerId: room.lastEvent.playerId,
+        tile1Id: room.lastEvent.tile1Id,
+        tile2Id: room.lastEvent.tile2Id,
+        score: room.lastEvent.score,
+        pairsDone: room.lastEvent.pairsDone,
+      });
+    }
+  }
+  if (w && room.lastEvent && room.lastEvent.at > w.lastEventAt) {
+    w.lastEventAt = room.lastEvent.at;
+  }
+}
+
+/* ==================== АВТО-ИСХОДЫ И ЧИСТКА ==================== */
+
+/** применить к комнате авт-исходы; null — без изменений,
+ *  'delete' — комнату пора убрать */
+function autoRules(r: RoomState, t: number): RoomState | null | 'delete' {
+  if (t - r.createdAt > ROOM_TTL_MS) return 'delete';
+  if (r.status === 'waiting') {
+    if (t - r.createdAt > WAITING_TTL_MS) return 'delete';
+    const host = r.players[0];
+    if (host && t - host.lastSeen > WAITING_HOST_STALE_MS) return 'delete';
+    return null;
+  }
+  if (r.status !== 'playing') return null;
+  // отсчёт ещё не начался (интро) — отключения не засчитываем
+  if (t < r.startedAt) return null;
+  for (const p of r.players) {
+    const other = r.players.find((x) => x.id !== p.id);
+    if (other && t - p.lastSeen > ONLINE_GRACE_MS) {
+      return finishRoom(r, other.id, 'disconnect', t);
+    }
+  }
+  if (t > r.startedAt + r.timeTotalMs) {
+    const [a, b] = r.players;
+    if (!a || !b) return null;
+    const winnerId = a.pairsDone !== b.pairsDone
+      ? (a.pairsDone > b.pairsDone ? a.id : b.id)
+      : (a.score >= b.score ? a.id : b.id);
+    return finishRoom(r, winnerId, 'timeout', t);
+  }
+  return null;
+}
+
+function finishRoom(
+  r: RoomState,
+  winnerId: string,
+  reason: RoomFinishReason,
+  t: number,
+): RoomState {
+  if (r.status !== 'playing') return r;
+  const w = r.players.find((p) => p.id === winnerId);
+  if (w) w.wins += 1; // счёт серии побед
+  r.status = 'result';
+  r.result = { winnerId, reason };
+  r.lastEvent = null;
+  void t;
+  return r;
+}
+
+/** свипер: досматривает авт-исходы комнат с локальными сокетами.
+ *  Пушим локально ТОЛЬКО если watch недоступен (фолбэк). */
+async function sweep(): Promise<void> {
+  const t = now();
+  for (const code of [...roomWatches.keys()]) {
+    const res = await mutateRoom(code, (r) => autoRules(r, t) ?? 'abort');
+    if (!res.ok && res.room === null) {
+      // комнаты нет — уведомлять некого, убираем подписку если сокеты ушли
+      if (localRoomSocks(code).length === 0) releaseRoomWatch(code);
+      continue;
+    }
+    if (res.changed && res.room && !roomWatches.get(code)?.reader) {
+      pushLocal(code, res.room);
+    }
+  }
+  // тикеты: мёртвые — вон
+  try {
+    for await (const e of kv.list<TicketState>({ prefix: ['mm'] })) {
+      const tk = e.value;
+      if (tk && t - tk.lastSeen > TICKET_TTL_MS) await kv.delete(e.key);
+    }
+  } catch {
+    // KV моргнул — в следующий тик
+  }
+}
+
+/** janitor: протухшие комнаты ВСЕ (даже без локальных сокетов) */
+async function janitor(): Promise<void> {
+  const t = now();
+  try {
+    for await (const e of kv.list<RoomState>({ prefix: ['room'] })) {
+      const r = e.value;
+      if (!r) continue;
+      const next = autoRules(r, t);
+      if (next === 'delete') await kv.delete(e.key);
+      else if (next !== r) {
+        await kv.atomic().check(e as KvEntry<unknown>).set(e.key, next).commit();
+      }
+    }
+  } catch {
+    // KV моргнул — в следующий заход
+  }
+}
+
+/* ==================== ЛОББИ ОТКРЫТЫХ ИГР ==================== */
+
+async function listOpenRooms(): Promise<OpenRoomInfo[]> {
+  const t = now();
+  const out: OpenRoomInfo[] = [];
+  try {
+    for await (const e of kv.list<RoomState>({ prefix: ['room'] })) {
+      const r = e.value;
+      if (!r || r.status !== 'waiting' || r.visibility !== 'open') continue;
+      const host = r.players[0];
+      if (!host || r.players.length >= 2) continue;
+      if (t - host.lastSeen > WAITING_HOST_STALE_MS) continue;
+      out.push({
+        code: r.code,
+        level: r.level,
+        hostName: host.name,
+        hue: host.hue,
+        createdAt: r.createdAt,
+        players: r.players.length,
+      });
+    }
+  } catch {
+    // KV моргнул — покажем прошлый список
+  }
+  out.sort((a, b) => a.createdAt - b.createdAt);
+  return out.slice(0, OPEN_LIST_MAX);
+}
+
+let lobbyTimer: number | null = null;
+function ensureLobbyLoop(): void {
+  const need = [...sockets].some((s) => s.lobby);
+  if (!need) {
+    if (lobbyTimer !== null) {
+      clearInterval(lobbyTimer);
+      lobbyTimer = null;
+    }
+    return;
+  }
+  if (lobbyTimer !== null) return;
+  const tick = async () => {
+    if (![...sockets].some((s) => s.lobby)) return;
+    const rooms = await listOpenRooms();
+    for (const s of sockets) {
+      if (s.lobby) send(s, { t: 'lobby', rooms });
+    }
+  };
+  void tick();
+  lobbyTimer = setInterval(() => void tick(), 2000);
+}
+
+/* ==================== МАТЧМЕЙКИНГ ==================== */
+
+/** подпишись на свой тикет: когда другой изолят его «подберёт» —
+ *  пришлём сокету готовую комнату */
+function ensureTicketWatch(sock: Sock, ticketId: string): void {
+  if (ticketWatches.has(ticketId)) return;
+  try {
+    const reader = kv.watch([['mm', ticketId]]).getReader();
+    ticketWatches.set(ticketId, reader);
+    const pump = async () => {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        const tk = value?.[0]?.value as TicketState | null;
+        if (!tk || !tk.paired || !sock.alive) continue;
+        // подобрали! втаскиваем сокет в комнату
+        sock.mmTicket = null;
+        releaseTicketWatch(ticketId);
+        const room = await getFreshRoom(tk.paired.code);
+        if (!room) continue;
+        sock.roomCode = room.code;
+        sock.playerId = tk.paired.playerId;
+        ensureRoomWatch(room.code);
+        send(sock, { t: 'room', view: view(room), playerId: tk.paired.playerId });
+        return;
+      }
+    };
+    void pump();
+  } catch {
+    // без watch — клиент узнает по match-heart ответу
+  }
+}
+
+function releaseTicketWatch(ticketId: string): void {
+  const r = ticketWatches.get(ticketId);
+  if (!r) return;
+  ticketWatches.delete(ticketId);
+  try {
+    r.cancel();
+  } catch {
+    // ignore
+  }
+}
+
+async function dropTicket(sock: Sock): Promise<void> {
+  const id = sock.mmTicket;
+  sock.mmTicket = null;
+  if (id) {
+    releaseTicketWatch(id);
+    await kv.delete(['mm', id]).catch(() => {});
+  }
+}
+
+/** обновить lastSeen тикета (сокет жив — тикет жив) */
+async function touchTicket(sock: Sock): Promise<void> {
+  if (!sock.mmTicket) return;
+  const e = await kv.get<TicketState>(['mm', sock.mmTicket]);
+  if (!e?.value) {
+    // тикет протух и вычищен — пересоздадим из сокета
+    await createTicketFor(sock);
+    return;
+  }
+  await kv.atomic()
+    .check(e as KvEntry<unknown>)
+    .set(['mm', sock.mmTicket], { ...e.value, lastSeen: now() })
+    .commit()
+    .catch(() => {});
+}
+
+async function createTicketFor(sock: Sock): Promise<void> {
+  const id = rndId();
+  const tk: TicketState = {
+    id,
+    name: sock.name || 'Игрок',
+    hue: rndHue(),
+    level: 1,
+    createdAt: now(),
+    lastSeen: now(),
+    paired: null,
+  };
+  await kv.set(['mm', id], tk);
+  sock.mmTicket = id;
+  ensureTicketWatch(sock, id);
+}
+
+/** попробовать подобрать пары и подсадить одиночек в открытые игры */
+async function tryMatchAll(): Promise<void> {
+  const t = now();
+  const fresh: TicketState[] = [];
+  try {
+    for await (const e of kv.list<TicketState>({ prefix: ['mm'] })) {
+      const tk = e.value;
+      if (!tk || tk.paired) continue;
+      if (t - tk.lastSeen > TICKET_TTL_MS) {
+        await kv.delete(e.key);
+        continue;
+      }
+      fresh.push(tk);
+    }
+  } catch {
+    return;
+  }
+  fresh.sort((a, b) => a.createdAt - b.createdAt);
+  // пары из очереди
+  for (let i = 0; i + 1 < fresh.length; i += 2) {
+    const ok = await pairTickets(fresh[i], fresh[i + 1]);
+    if (ok) {
+      fresh.splice(i, 2);
+      i -= 2;
+    }
+  }
+  // одиночка — в первую открытую комнату
+  if (fresh.length > 0) await joinFirstOpenRoom(fresh[0]);
+}
+
+async function pairTickets(a: TicketState, b: TicketState): Promise<boolean> {
+  const code = newCode();
+  const room: RoomState = {
+    code,
+    level: clamp(a.level, 1, 999),
+    seed: newSeed(),
+    status: 'playing',
+    hostId: rndId(),
+    visibility: 'closed',
+    startedAt: now() + INTRO_BUDGET_MS,
+    timeTotalMs: timeForLevel(a.level),
+    createdAt: now(),
+    players: [],
+    result: null,
+    advanceBy: {},
+    lastEvent: null,
+  };
+  const hostId = room.hostId;
+  const guestId = rndId();
+  room.players = [
+    {
+      id: hostId,
+      name: a.name,
+      hue: a.hue,
+      score: 0,
+      pairsDone: 0,
+      lastSeen: now(),
+      finished: null,
+      wins: 0,
+    },
+    {
+      id: guestId,
+      name: b.name,
+      hue: b.hue,
+      score: 0,
+      pairsDone: 0,
+      lastSeen: now(),
+      finished: null,
+      wins: 0,
+    },
+  ];
+  const ea = await kv.get<TicketState>(['mm', a.id]);
+  const eb = await kv.get<TicketState>(['mm', b.id]);
+  if (!ea?.value || !eb?.value || ea.value.paired || eb.value.paired) {
+    return false;
+  }
+  const res = await kv.atomic()
+    .check(ea as KvEntry<unknown>)
+    .check(eb as KvEntry<unknown>)
+    .set(['mm', a.id], { ...ea.value, paired: { code, playerId: hostId } })
+    .set(['mm', b.id], { ...eb.value, paired: { code, playerId: guestId } })
+    .set(['room', code], room)
+    .commit();
+  return res.ok;
+}
+
+async function joinFirstOpenRoom(tk: TicketState): Promise<boolean> {
+  const t = now();
+  let target: { code: string; at: number } | null = null;
+  try {
+    const cands: { code: string; at: number }[] = [];
+    for await (const e of kv.list<RoomState>({ prefix: ['room'] })) {
+      const r = e.value;
+      if (!r || r.status !== 'waiting' || r.visibility !== 'open') continue;
+      if (r.players.length >= 2) continue;
+      const host = r.players[0];
+      if (!host || t - host.lastSeen > WAITING_HOST_STALE_MS) continue;
+      cands.push({ code: r.code, at: r.createdAt });
+    }
+    cands.sort((x, y) => x.at - y.at);
+    target = cands[0] ?? null;
+  } catch {
+    return false;
+  }
+  if (!target) return false;
+  const guestId = rndId();
+  const res = await mutateRoom(target.code, (r) => {
+    if (r.status !== 'waiting' || r.players.length >= 2) return 'abort';
+    r.players.push({
+      id: guestId,
+      name: tk.name,
+      hue: tk.hue,
+      score: 0,
+      pairsDone: 0,
+      lastSeen: now(),
+      finished: null,
+      wins: 0,
+    });
+    r.status = 'playing';
+    r.startedAt = now() + INTRO_BUDGET_MS;
+    return r;
+  });
+  if (!res.ok || !res.room) return false;
+  const et = await kv.get<TicketState>(['mm', tk.id]);
+  if (!et?.value || et.value.paired) return false;
+  await kv.atomic()
+    .check(et as KvEntry<unknown>)
+    .set(['mm', tk.id], { ...et.value, paired: { code: target.code, playerId: guestId } })
+    .commit();
+  return true;
+}
+
+/* ==================== ОБРАБОТКА СООБЩЕНИЙ ==================== */
+
+function errOf(s: Sock, m: Record<string, unknown>, code: string): void {
+  send(s, { t: 'err', code, rid: m.rid });
+}
+
+async function onMessage(s: Sock, raw: string): Promise<void> {
+  let m: Record<string, unknown>;
+  try {
+    m = JSON.parse(raw);
+    if (!m || typeof m !== 'object') return;
+  } catch {
+    return;
+  }
+  const t = typeof m.t === 'string' ? m.t : '';
+  switch (t) {
+    /* ---------- представиться/вернуться в комнату ---------- */
+    case 'hello': {
+      if (typeof m.uid === 'string' && m.uid.length > 0) s.uid = m.uid;
+      if (typeof m.name === 'string' && m.name.trim()) {
+        s.name = sanitizeName(m.name);
+      }
+      send(s, { t: 'hello', ok: true, uid: s.uid });
+      const code = normalizeCode(m.code);
+      const pid = typeof m.playerId === 'string' ? m.playerId : null;
+      if (code && pid) {
+        // заявляем права на смену привязки: если за время чтения KV
+        // сокет успел создать/войти в другую комнату — не трогаем её
+        const myEpoch = ++s.bindEpoch;
+        // комната жива? да — привязываемся и шлём вьюху;
+        // НЕТ — молчим: никаких страшных ошибок при приветствии
+        const room = await getFreshRoom(code);
+        if (s.bindEpoch !== myEpoch) return; // нас обогнали
+        if (room && room.players.some((p) => p.id === pid)) {
+          bindSock(s, room.code, pid);
+          ensureRoomWatch(room.code);
+          // прогреваем присутствие — перезагрузка не должна рвать матч
+          await mutateRoom(room.code, (r) => {
+            const p = r.players.find((x) => x.id === pid);
+            if (p) p.lastSeen = now();
+            return autoRules(r, now()) ?? 'abort';
+          }).catch(() => {});
+          send(s, { t: 'room', view: view(room) });
         } else {
-          send(conn, { t: 'err', code: 'ROOM_NOT_FOUND' });
+          bindSock(s, null, null);
         }
       }
       return;
     }
 
-    /* ---------- создать игру (хост) ---------- */
+    /* ---------- лобби открытых игр ---------- */
+    case 'lobby': {
+      s.lobby = m.on === true;
+      if (s.lobby) {
+        const rooms = await listOpenRooms();
+        send(s, { t: 'lobby', rooms, rid: m.rid });
+      }
+      ensureLobbyLoop();
+      return;
+    }
+
+    /* ---------- создать игру ---------- */
     case 'create': {
-      if (!conn.uid) return;
-      const name = sanitizeName(msg.name);
-      const level = clamp(Math.floor(Number(msg.level) || 1), 1, 999);
-      const visibility = msg.visibility === 'open' ? 'open' : 'closed';
-      const host: RoomPlayer = {
-        id: rndId(),
-        uid: conn.uid,
+      await dropTicket(s);
+      const name = sanitizeName(m.name);
+      const level = clamp(Math.floor(Number(m.level) || 1), 1, 999);
+      const visibility = m.visibility === 'open' ? 'open' : 'closed';
+      let code = '';
+      for (let i = 0; i < 5; i++) {
+        code = newCode();
+        const taken = await kv.get(['room', code]);
+        if (!taken?.value) break;
+        code = '';
+      }
+      if (!code) {
+        errOf(s, m, 'NETWORK');
+        return;
+      }
+      const hostId = rndId();
+      const room: RoomState = {
+        code,
+        level,
+        seed: newSeed(),
+        status: 'waiting',
+        hostId,
+        visibility,
+        startedAt: 0,
+        timeTotalMs: timeForLevel(level),
+        createdAt: now(),
+        players: [
+          {
+            id: hostId,
+            name,
+            hue: rndHue(),
+            score: 0,
+            pairsDone: 0,
+            lastSeen: now(),
+            finished: null,
+            wins: 0,
+          },
+        ],
+        result: null,
+        advanceBy: {},
+        lastEvent: null,
+      };
+      const res = await kv.atomic()
+        .check({
+          key: ['room', code],
+          value: null,
+          versionstamp: null as unknown as string,
+        })
+        .set(['room', code], room)
+        .commit();
+      if (!res.ok) {
+        errOf(s, m, 'NETWORK');
+        return;
+      }
+      s.name = name;
+      bindSock(s, code, hostId);
+      ensureRoomWatch(code);
+      send(s, { t: 'room', view: view(room), playerId: hostId, rid: m.rid });
+      return;
+    }
+
+    /* ---------- вход по коду (с ретраями свежей комнаты) ---------- */
+    case 'join': {
+      await dropTicket(s);
+      const code = normalizeCode(m.code);
+      if (!code) {
+        errOf(s, m, 'BAD_CODE');
+        return;
+      }
+      const name = sanitizeName(m.name);
+      const joinerId = rndId();
+      const joiner = () => ({
+        id: joinerId,
         name,
         hue: rndHue(),
         score: 0,
         pairsDone: 0,
-        finished: null,
-      };
-      let created: RoomDoc | null = null;
-      for (let attempt = 0; attempt < 5 && !created; attempt++) {
-        const code = genCode();
-        const room: RoomDoc = {
-          v: 1,
-          code,
-          level,
-          seed: newSeed(),
-          status: 'waiting',
-          hostId: host.id,
-          visibility,
-          startedAt: 0,
-          timeTotalMs: timeForLevel(level),
-          createdAt: now(),
-          result: null,
-          players: [host],
-          winsBy: {},
-          advanceBy: {},
-          lastEvent: null,
-        };
-        const commit = await kv.atomic()
-          .check({ key: ['room', code], versionstamp: null })
-          .set(['room', code], room)
-          .commit();
-        if (commit.ok) created = room;
-      }
-      if (!created) {
-        send(conn, { t: 'err', code: 'NETWORK', rid });
-        return;
-      }
-      attachConn(conn, created.code, host.id);
-      await pushLobby();
-      send(conn, { t: 'room', view: viewOf(created), playerId: host.id, rid });
-      return;
-    }
-
-    /* ---------- войти по коду / из лобби ---------- */
-    case 'join': {
-      if (!conn.uid) return;
-      const code = normalizeCode(msg.code);
-      if (!code) {
-        send(conn, { t: 'err', code: 'BAD_CODE', rid });
-        return;
-      }
-      const name = sanitizeName(msg.name);
-      const res = await mutateRoom(code, (doc) => {
-        if (doc.status !== 'waiting' || doc.players.length >= 2) return NO_CHANGE;
-        doc.players.push({
-          id: rndId(),
-          uid: conn.uid,
-          name,
-          hue: rndHue(),
-          score: 0,
-          pairsDone: 0,
-          finished: null,
-        });
-        doc.status = 'playing';
-        doc.startedAt = now() + INTRO_BUDGET_MS;
-        return doc.players[doc.players.length - 1].id;
-      });
-      if (!res || res.out === NO_CHANGE) {
-        const doc = await getRoom(code);
-        const err = doc
-          ? (doc.status !== 'waiting' || doc.players.length >= 2 ? 'ROOM_FULL' : 'NETWORK')
-          : 'ROOM_NOT_FOUND';
-        send(conn, { t: 'err', code: err, rid });
-        return;
-      }
-      const playerId = res.out as string;
-      attachConn(conn, code, playerId);
-      deliverLocal(code, res.doc); // хосту в этом изоляте — мгновенно
-      await pushLobby();
-      send(conn, { t: 'room', view: viewOf(res.doc), playerId, rid });
-      return;
-    }
-
-    /* ---------- состояние комнаты (+попутный прогресс) ---------- */
-    case 'view': {
-      const code = conn.roomCode;
-      if (!code) {
-        send(conn, { t: 'err', code: 'ROOM_NOT_FOUND', rid });
-        return;
-      }
-      const score = Number(msg.score);
-      const pairs = Number(msg.pairsDone);
-      const hasProgress = Number.isFinite(score) && Number.isFinite(pairs);
-      let doc: RoomDoc | null = null;
-      if (hasProgress && conn.playerId) {
-        const res = await mutateRoom(code, (d) => {
-          if (d.status !== 'playing') return NO_CHANGE;
-          const p = d.players.find((x) => x.id === conn.playerId);
-          if (!p) return NO_CHANGE;
-          p.score = clamp(score, 0, 10_000_000);
-          p.pairsDone = clamp(Math.floor(pairs), 0, 1000);
-          return true;
-        });
-        doc = res?.doc ?? null;
-      }
-      if (!doc) doc = await getRoom(code);
-      if (!doc) {
-        send(conn, { t: 'err', code: 'ROOM_NOT_FOUND', rid });
-        return;
-      }
-      send(conn, { t: 'room', view: viewOf(doc), rid });
-      return;
-    }
-
-    /* ---------- событие: пара собрана ---------- */
-    case 'event': {
-      const code = conn.roomCode;
-      if (!code || !conn.playerId || msg.kind !== 'match') return;
-      const tile1Id = Math.floor(Number(msg.tile1Id) || 0);
-      const tile2Id = Math.floor(Number(msg.tile2Id) || 0);
-      const score = clamp(Number(msg.score) || 0, 0, 10_000_000);
-      const pairsDone = clamp(Math.floor(Number(msg.pairsDone) || 0), 0, 1000);
-      const res = await mutateRoom(code, (doc) => {
-        if (doc.status !== 'playing') return NO_CHANGE;
-        const p = doc.players.find((x) => x.id === conn.playerId);
-        if (!p) return NO_CHANGE;
-        p.score = Math.max(p.score, score);
-        p.pairsDone = Math.max(p.pairsDone, pairsDone);
-        doc.lastEvent = {
-          seq: (doc.lastEvent?.seq ?? 0) + 1,
-          playerId: p.id,
-          tile1Id,
-          tile2Id,
-          score: p.score,
-          pairsDone: p.pairsDone,
-        };
-        return true;
-      });
-      if (res) deliverLocal(code, res.doc);
-      return;
-    }
-
-    /* ---------- финиш: собрал доску / переполнил лоток ----------
-     * ВРЕМЯ СЧИТАЕТ СЕРВЕР: now - startedAt → finalTimeMs */
-    case 'finish': {
-      const code = conn.roomCode;
-      if (!code || !conn.playerId) return;
-      const reason = msg.reason === 'cleared' ? 'cleared' : msg.reason === 'tray' ? 'tray' : null;
-      if (!reason) return;
-      const score = clamp(Number(msg.score) || 0, 0, 10_000_000);
-      const pairsDone = clamp(Math.floor(Number(msg.pairsDone) || 0), 0, 1000);
-      const res = await mutateRoom(code, (doc) => {
-        const p = doc.players.find((x) => x.id === conn.playerId);
-        if (!p) return NO_CHANGE;
-        p.score = Math.max(p.score, score);
-        p.pairsDone = Math.max(p.pairsDone, pairsDone);
-        p.finished = reason;
-        if (doc.status !== 'playing' || doc.result) return NO_CHANGE;
-        if (reason === 'cleared') {
-          // АВТОРИТАРНОЕ ВРЕМЯ: только часы сервера
-          const elapsed = clamp(now() - doc.startedAt, 0, doc.timeTotalMs + 5000);
-          finishRoom(doc, p.id, 'cleared', elapsed);
-        } else {
-          const other = doc.players.find((x) => x.id !== p.id);
-          if (other) finishRoom(doc, other.id, 'tray', null);
-        }
-        return true;
-      });
-      if (res) {
-        send(conn, { t: 'room', view: viewOf(res.doc), rid });
-        deliverLocal(code, res.doc);
-      }
-      return;
-    }
-
-    /* ---------- согласие на реванш / следующий уровень ---------- */
-    case 'advance': {
-      const code = conn.roomCode;
-      if (!code || !conn.playerId) return;
-      const kind = msg.kind === 'next' ? 'next' : msg.kind === 'rematch' ? 'rematch' : null;
-      if (!kind) return;
-      const res = await mutateRoom(code, (doc) => {
-        if (doc.status !== 'result') return NO_CHANGE;
-        if (doc.players.length < 2) return NO_CHANGE;
-        const prev = doc.advanceBy[conn.playerId!];
-        doc.advanceBy[conn.playerId!] = kind;
-        const [a, b] = doc.players;
-        const ka = doc.advanceBy[a.id];
-        const kb = doc.advanceBy[b.id];
-        if (!(ka && kb && ka === kb)) {
-          // голос записан, матч пока не стартует (соперник увидит
-          // предложение) — само по себе это изменение документа
-          return prev === kind ? NO_CHANGE : true;
-        }
-        // оба согласны одинаково → старт нового матча.
-        // СЧЁТ СЕРИИ (winsBy) НЕ сбрасываем: играем подряд с тем
-        // же человеком — счёт «кто сколько раз выиграл» копится
-        doc.advanceBy = {};
-        if (kind === 'next') doc.level = clamp(doc.level + 1, 1, 999);
-        doc.seed = newSeed();
-        doc.result = null;
-        doc.startedAt = now() + INTRO_BUDGET_MS;
-        doc.timeTotalMs = timeForLevel(doc.level);
-        doc.lastEvent = null;
-        for (const p of doc.players) {
-          p.score = 0;
-          p.pairsDone = 0;
-          p.finished = null;
-        }
-        doc.status = 'playing';
-        return true;
-      });
-      if (res) {
-        send(conn, { t: 'room', view: viewOf(res.doc), rid });
-        deliverLocal(code, res.doc);
-      }
-      return;
-    }
-
-    /* ---------- выход (сознательный) ---------- */
-    case 'leave': {
-      const code = conn.roomCode;
-      if (!code) {
-        send(conn, { t: 'ok', rid });
-        return;
-      }
-      const meId = conn.playerId;
-      detachConn(conn);
-      if (!meId) {
-        send(conn, { t: 'ok', rid });
-        return;
-      }
-      const res = await mutateRoom(code, (doc) => {
-        const wasPlaying = doc.status === 'playing';
-        doc.players = doc.players.filter((p) => p.id !== meId);
-        delete doc.advanceBy[meId];
-        if (doc.players.length === 0) return 'delete';
-        if (wasPlaying) {
-          finishRoom(doc, doc.players[0].id, 'left', null);
-        }
-        return true;
-      });
-      if (res === null || res.out === 'delete') {
-        await kv.delete(['room', code]);
-        deliverLocal(code, null);
-      } else if (res) {
-        deliverLocal(code, res.doc);
-      }
-      await pushLobby();
-      send(conn, { t: 'ok', rid });
-      return;
-    }
-
-    /* ---------- быстрый матч: встать в очередь ---------- */
-    case 'match': {
-      if (!conn.uid) return;
-      const name = sanitizeName(msg.name);
-      const level = clamp(Math.floor(Number(msg.level) || 1), 1, 999);
-      const cur = await kv.get<TicketDoc>(['ticket', conn.uid]);
-      const ticket: TicketDoc = {
-        uid: conn.uid,
-        name,
-        hue: cur.value?.hue ?? rndHue(),
-        level,
-        createdAt: cur.value?.createdAt ?? now(),
         lastSeen: now(),
-        paired: null,
-      };
-      await kv.set(['ticket', conn.uid], ticket);
-      await scheduleMatchfinding(conn, rid as number | string | undefined);
-      return;
-    }
-
-    /* ---------- выйти из очереди ---------- */
-    case 'match-leave': {
-      if (!conn.uid) return;
-      await kv.delete(['ticket', conn.uid]);
-      send(conn, { t: 'ok', rid });
-      return;
-    }
-
-    /* ---------- подписка на лобби ---------- */
-    case 'lobby': {
-      conn.lobby = msg.on === true;
-      if (conn.lobby) {
-        const rooms = await buildLobby();
-        send(conn, { t: 'lobby', rooms, rid });
+        finished: null,
+        wins: 0,
+      });
+      const res = await mutateRoom(code, (r) => {
+        if (r.status !== 'waiting' || r.players.length >= 2) return 'abort';
+        r.players.push(joiner());
+        r.status = 'playing';
+        r.startedAt = now() + INTRO_BUDGET_MS;
+        return r;
+      });
+      // «abort» = не вошли (занято/идёт игра); успешный вход виден по игроку
+      if (!res.ok || !res.room || !res.room.players.some((p) => p.id === joinerId)) {
+        // мог не найтись из-за репликации KV — ретраи
+        const fresh = await getFreshRoom(code);
+        if (!fresh) {
+          errOf(s, m, 'ROOM_NOT_FOUND');
+          return;
+        }
+        if (fresh.status !== 'waiting' || fresh.players.length >= 2) {
+          errOf(s, m, 'ROOM_FULL');
+          return;
+        }
+        // редкий случай: комната «проявилась» между попытками — ещё раз
+        const retry = await mutateRoom(code, (r) => {
+          if (r.status !== 'waiting' || r.players.length >= 2) return 'abort';
+          r.players.push(joiner());
+          r.status = 'playing';
+          r.startedAt = now() + INTRO_BUDGET_MS;
+          return r;
+        });
+        if (
+          !retry.ok || !retry.room ||
+          !retry.room.players.some((p) => p.id === joinerId)
+        ) {
+          errOf(s, m, 'ROOM_FULL');
+          return;
+        }
+        res.room = retry.room;
+        res.ok = true;
       }
+      const room = res.room!;
+      s.name = name;
+      bindSock(s, room.code, joinerId);
+      ensureRoomWatch(room.code);
+      // обоим локальным: вьюха старта (соперник узнает и через watch)
+      pushLocal(room.code, room);
+      send(s, { t: 'room', view: view(room), playerId: joinerId, rid: m.rid });
+      return;
+    }
+
+    /* ---------- прогресс + присутствие ---------- */
+    case 'view': {
+      const code = s.roomCode;
+      if (!code || !s.playerId) {
+        errOf(s, m, 'ROOM_NOT_FOUND');
+        return;
+      }
+      const score = Number(m.score);
+      const pairs = Number(m.pairsDone);
+      const res = await mutateRoom(code, (r) => {
+        const p = r.players.find((x) => x.id === s.playerId);
+        if (!p) return r; // нас нет (вышли?) — просто вернём что есть
+        p.lastSeen = now();
+        if (r.status === 'playing') {
+          if (Number.isFinite(score)) p.score = clamp(score, 0, 10_000_000);
+          if (Number.isFinite(pairs)) {
+            p.pairsDone = clamp(Math.floor(pairs), 0, 1000);
+          }
+        }
+        return autoRules(r, now()) ?? 'abort';
+      });
+      if (!res.ok && res.room === null) {
+        errOf(s, m, 'ROOM_NOT_FOUND');
+        return;
+      }
+      if (res.room) send(s, { t: 'room', view: view(res.room), rid: m.rid });
+      return;
+    }
+
+    /* ---------- собрал пару: релея сопернику ---------- */
+    case 'event': {
+      if (m.kind !== 'match') return;
+      const code = s.roomCode;
+      const myPid = s.playerId;
+      if (!code || !myPid) return;
+      const score = Number(m.score);
+      const pairs = Number(m.pairsDone);
+      const res = await mutateRoom(code, (r) => {
+        const p = r.players.find((x) => x.id === myPid);
+        if (!p) return r;
+        p.lastSeen = now();
+        if (r.status === 'playing') {
+          if (Number.isFinite(score)) p.score = clamp(score, 0, 10_000_000);
+          if (Number.isFinite(pairs)) {
+            p.pairsDone = clamp(Math.floor(pairs), 0, 1000);
+          }
+          r.lastEvent = {
+            playerId: myPid,
+            tile1Id: clamp(Math.floor(Number(m.tile1Id) || 0), 0, 999),
+            tile2Id: clamp(Math.floor(Number(m.tile2Id) || 0), 0, 999),
+            score: Number.isFinite(score) ? Math.round(score) : 0,
+            pairsDone: Number.isFinite(pairs) ? Math.floor(pairs) : 0,
+            at: now(),
+          };
+        }
+        return r;
+      });
+      if (res.room) pushLocal(code, res.room); // локальному сопернику сразу
+      return; // соперник на другом изоляте получит через watch
+    }
+
+    /* ---------- терминальное событие ---------- */
+    case 'finish': {
+      const code = s.roomCode;
+      if (!code || !s.playerId) {
+        errOf(s, m, 'ROOM_NOT_FOUND');
+        return;
+      }
+      const why: 'cleared' | 'tray' = m.reason === 'cleared' ? 'cleared' : 'tray';
+      const score = Number(m.score);
+      const pairs = Number(m.pairsDone);
+      const res = await mutateRoom(code, (r) => {
+        const p = r.players.find((x) => x.id === s.playerId);
+        if (!p) return r;
+        p.lastSeen = now();
+        p.finished = why;
+        if (Number.isFinite(score)) p.score = clamp(score, 0, 10_000_000);
+        if (Number.isFinite(pairs)) {
+          p.pairsDone = clamp(Math.floor(pairs), 0, 1000);
+        }
+        if (r.status === 'playing') {
+          if (why === 'cleared') {
+            return finishRoom(r, p.id, 'cleared', now());
+          }
+          const other = r.players.find((x) => x.id !== p.id);
+          if (other) return finishRoom(r, other.id, 'tray', now());
+        }
+        return r;
+      });
+      if (!res.ok && res.room === null) {
+        errOf(s, m, 'ROOM_NOT_FOUND');
+        return;
+      }
+      if (res.room) {
+        pushLocal(code, res.room);
+        send(s, { t: 'room', view: view(res.room), rid: m.rid });
+      }
+      return;
+    }
+
+    /* ---------- реванш / следующий уровень (оба согласны) ---------- */
+    case 'advance': {
+      const code = s.roomCode;
+      if (!code || !s.playerId) {
+        errOf(s, m, 'ROOM_NOT_FOUND');
+        return;
+      }
+      const kind: 'rematch' | 'next' = m.kind === 'next' ? 'next' : 'rematch';
+      const advPid = s.playerId;
+      const res = await mutateRoom(code, (r) => {
+        if (r.status !== 'result') return 'abort';
+        if (r.players.length < 2) return 'abort';
+        const p = r.players.find((x) => x.id === advPid);
+        if (p) {
+          p.lastSeen = now();
+          r.advanceBy[advPid] = kind;
+        }
+        const [a, b] = r.players;
+        const ka = a ? r.advanceBy[a.id] : undefined;
+        const kb = b ? r.advanceBy[b.id] : undefined;
+        if (!(ka && kb && ka === kb)) {
+          // голос СОХРАНЯЕМ: второй игрок увидит предложение
+          return r;
+        }
+        // оба согласны — старт нового матча (счёт серии НЕ сбрасываем)
+        r.advanceBy = {};
+        if (kind === 'next') r.level = clamp(r.level + 1, 1, 999);
+        r.seed = newSeed();
+        r.result = null;
+        r.lastEvent = null;
+        r.startedAt = now() + INTRO_BUDGET_MS;
+        r.timeTotalMs = timeForLevel(r.level);
+        for (const p2 of r.players) {
+          p2.score = 0;
+          p2.pairsDone = 0;
+          p2.finished = null;
+          p2.lastSeen = now();
+        }
+        r.status = 'playing';
+        return r;
+      });
+      if (!res.ok || !res.room) {
+        errOf(s, m, 'ROOM_EMPTY');
+        return;
+      }
+      pushLocal(code, res.room);
+      send(s, { t: 'room', view: view(res.room), rid: m.rid });
+      return;
+    }
+
+    /* ---------- выйти (сопернику — победа) ---------- */
+    case 'leave': {
+      const code = s.roomCode;
+      const pid = s.playerId;
+      bindSock(s, null, null);
+      if (!code || !pid) {
+        send(s, { t: 'ok', rid: m.rid });
+        return;
+      }
+      const res = await mutateRoom(code, (r) => {
+        r.players = r.players.filter((x) => x.id !== pid);
+        delete r.advanceBy[pid];
+        if (r.players.length === 0) return 'delete'; // комнату удалим в mutateRoom
+        if (r.status === 'playing') {
+          return finishRoom(r, r.players[0].id, 'left', now());
+        }
+        return r;
+      });
+      if (res.room) pushLocal(code, res.room);
+      send(s, { t: 'ok', rid: m.rid });
+      return;
+    }
+
+    /* ---------- быстрый матч ---------- */
+    case 'match': {
+      if (typeof m.name === 'string' && m.name.trim()) {
+        s.name = sanitizeName(m.name);
+      }
+      const level = clamp(Math.floor(Number(m.level) || 1), 1, 999);
+      if (!s.mmTicket) await createTicketFor(s);
+      if (s.mmTicket) {
+        const e = await kv.get<TicketState>(['mm', s.mmTicket]);
+        if (e?.value && !e.value.paired) {
+          await kv.atomic()
+            .check(e as KvEntry<unknown>)
+            .set(['mm', s.mmTicket], {
+              ...e.value,
+              name: s.name || 'Игрок',
+              level,
+              lastSeen: now(),
+            })
+            .commit()
+            .catch(() => {});
+        }
+      }
+      await tryMatchAll();
+      // сразу могли подобрать: watch мог уже втащить нас в комнату
+      // (и обнулить mmTicket) — проверяем и то, и другое
+      const myTicket = s.mmTicket;
+      if (myTicket) {
+        const e = await kv.get<TicketState>(['mm', myTicket]);
+        if (e?.value?.paired) {
+          await enterPairedRoom(s, e.value.paired.code, e.value.paired.playerId);
+          const room = await getRoom(e.value.paired.code);
+          if (room) {
+            send(s, {
+              t: 'room',
+              view: view(room),
+              playerId: e.value.paired.playerId,
+              rid: m.rid,
+            });
+            return;
+          }
+        }
+      } else if (s.roomCode && s.playerId) {
+        // watch уже втащил — отвечаем готовой комнатой
+        const room = await getRoom(s.roomCode);
+        if (room) {
+          send(s, { t: 'room', view: view(room), playerId: s.playerId, rid: m.rid });
+          return;
+        }
+      }
+      send(s, { t: 'mm', status: 'search', rid: m.rid });
+      return;
+    }
+
+    /** держим тикет живым (клиент раз в ~4 c, пока ищет) */
+    case 'match-heart': {
+      if (!s.mmTicket) {
+        // watch мог уже втащить в комнату — молча ок
+        send(s, { t: 'mm', status: s.roomCode ? 'paired' : 'search', rid: m.rid });
+        return;
+      }
+      await touchTicket(s);
+      await tryMatchAll();
+      const ht = s.mmTicket;
+      const e = ht ? await kv.get<TicketState>(['mm', ht]) : null;
+      if (e?.value?.paired) {
+        await enterPairedRoom(s, e.value.paired.code, e.value.paired.playerId);
+        const room = await getRoom(e.value.paired.code);
+        if (room) {
+          send(s, {
+            t: 'room',
+            view: view(room),
+            playerId: e.value.paired.playerId,
+            rid: m.rid,
+          });
+        }
+        return;
+      }
+      send(s, { t: 'mm', status: 'search', rid: m.rid });
+      return;
+    }
+
+    case 'match-leave': {
+      await dropTicket(s);
+      send(s, { t: 'ok', rid: m.rid });
       return;
     }
 
     case 'ping': {
-      send(conn, { t: 'pong', rid });
+      // фоновая вкладка: таймеры зажаты браузером, но сокет жив и
+      // отвечает на hb — считаем это присутствием (lastSeen)
+      const code = s.roomCode;
+      const pid = s.playerId;
+      if (code && pid) {
+        await mutateRoom(code, (r) => {
+          const p = r.players.find((x) => x.id === pid);
+          // не дублируем свежий поллинг игрока
+          if (p && now() - p.lastSeen > 4000) {
+            p.lastSeen = now();
+            return r;
+          }
+          return 'abort';
+        }).catch(() => {});
+      }
+      send(s, { t: 'pong', rid: m.rid });
       return;
     }
+    default:
+      return;
   }
 }
 
-/* ============================ serve ============================ */
+/** втянуть сокет в подобранную комнату матчмейкинга */
+async function enterPairedRoom(
+  s: Sock,
+  code: string,
+  playerId: string,
+): Promise<void> {
+  const room = await getFreshRoom(code);
+  if (!room || !room.players.some((p) => p.id === playerId)) return;
+  s.mmTicket = null;
+  bindSock(s, room.code, playerId);
+  ensureRoomWatch(room.code);
+  // прогреваем lastSeen — игрок только пришёл
+  await mutateRoom(room.code, (r) => {
+    const p = r.players.find((x) => x.id === playerId);
+    if (p) p.lastSeen = now();
+    return r;
+  }).catch(() => {});
+}
 
-const PORT = Number(Deno.env.get('PORT') ?? 8080);
+/* ==================== HTTP / WS СЕРВЕР ==================== */
 
-Deno.serve({ port: PORT }, (req) => {
+async function handle(req: Request): Promise<Response> {
   const url = new URL(req.url);
   if (url.pathname === '/health') {
-    return Response.json({ ok: true, isolate: ISOLATE, kv: kvMode });
+    let rooms = 0;
+    try {
+      for await (const _e of kv.list<RoomState>({ prefix: ['room'] })) rooms++;
+    } catch {
+      rooms = -1;
+    }
+    return Response.json({
+      ok: true,
+      isolate: ISOLATE,
+      kv: kvMode,
+      sockets: sockets.size,
+      rooms,
+      v: 2,
+    });
   }
   if (url.pathname === '/ws') {
-    if (req.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
-      return new Response('expected websocket', { status: 400 });
-    }
     const { socket, response } = Deno.upgradeWebSocket(req);
-    handleWs(socket);
+    const sock: Sock = {
+      ws: socket,
+      uid: 'anon',
+      name: 'Игрок',
+      roomCode: null,
+      playerId: null,
+      bindEpoch: 0,
+      lobby: false,
+      mmTicket: null,
+      alive: true,
+    };
+    socket.onopen = () => {
+      sockets.add(sock);
+    };
+    socket.onmessage = (ev) => {
+      void onMessage(sock, String(ev.data)).catch((err) => {
+        console.warn('[ws] handler:', err instanceof Error ? err.message : err);
+      });
+    };
+    socket.onclose = () => {
+      sock.alive = false;
+      sockets.delete(sock);
+      void dropTicket(sock);
+      if (sock.roomCode) {
+        // даём клиенту шанс вернуться (grace 30 c на серверных таймерах);
+        // здесь только убираем локальную подписку, если больше некому
+        const others = localRoomSocks(sock.roomCode);
+        if (others.length === 0) releaseRoomWatch(sock.roomCode);
+      }
+    };
+    socket.onerror = () => {
+      try {
+        socket.close();
+      } catch {
+        // ignore
+      }
+    };
     return response;
   }
-  return new Response('not found', { status: 404 });
-});
-
-/* ============================ фоновые циклы ============================ */
-
-// присутствие: объявляем себя каждые 2с и перепушиваем виды комнат,
-// у которых изменились онлайн-флаги (обрыв/возврат игрока)
-setInterval(() => {
-  announcePresence();
-  refreshPresenceViews();
-}, PRESENCE_TICK_MS);
-
-// серверные «сердцебиения»: крошечный JSON каждые 5с держит TCP/
-// NAT живым — фоновые вкладки не «умирают» и присутствие честно
-setInterval(() => {
-  for (const c of conns.values()) {
-    send(c, { t: 'hb' });
+  if (url.pathname === '/') {
+    return Response.json({
+      ok: true,
+      multiplayer: 'deno',
+      ws: `${url.protocol === 'https:' ? 'wss' : 'ws'}://${url.host}/ws`,
+      v: 2,
+    });
   }
-}, 5000);
+  return new Response('Not Found', { status: 404 });
+}
 
-// sweeper: авто-исходы, TTL
-setInterval(() => {
-  void sweep().catch(() => {});
-}, SWEEP_TICK_MS);
+/* фоновые циклы изолята */
+setInterval(() => void sweep().catch(() => {}), 1500);
+// janitor со случайным смещением — чтобы изоляты не ходили строем
+const janitorDelay = 60_000 + Math.floor(Math.random() * 240_000);
+setInterval(() => void janitor().catch(() => {}), 300_000 + janitorDelay % 60_000);
+setTimeout(() => void janitor().catch(() => {}), janitorDelay);
 
-// лобби: свежий список всем подписчикам
+// hb: живость соединений (браузерные WS сами не пингуют)
 setInterval(() => {
-  void pushLobby().catch(() => {});
-}, LOBBY_TICK_MS);
+  for (const s of sockets) send(s, { t: 'hb' });
+}, 25_000);
 
-// тикеты «оживляем» от присутствия их носителей
-setInterval(() => {
-  void (async () => {
-    for await (const entry of kv.list<TicketDoc>({ prefix: ['ticket'] })) {
-      const tk = entry.value;
-      if (!tk.paired && isOnline(tk.uid) && now() - tk.lastSeen > 5000) {
-        await kv.set(['ticket', tk.uid], { ...tk, lastSeen: now() });
-      }
-    }
-  })().catch(() => {});
-}, PRESENCE_TICK_MS);
+Deno.serve({ port: PORT }, handle);
+console.log(
+  `[mj-server] изолят ${ISOLATE} слушает :${PORT} · kv=${kvMode} · v2`,
+);

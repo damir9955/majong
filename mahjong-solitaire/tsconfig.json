@@ -38,10 +38,6 @@
   ],
   "exclude": [
     "node_modules",
-    "release-stage",
-    "deno-server",
-    "examples",
-    "scripts",
-    "skills"
+    "deno-server"
   ]
 }

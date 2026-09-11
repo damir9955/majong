@@ -187,6 +187,20 @@ export function Board() {
     return m;
   }, [faceDownIds, buriedIds, revealedIds, peekId]);
 
+  /* накрытые плитки (Task 28): сверху на позиции (x, y, z+1)
+   * стоит живая кость — у такой НЕТ 3D-граней («она в стене»),
+   * зато есть лёгкое затемнение от лежащей сверху кости.
+   * Раскладки строго на сетке, значит перекрытия всегда точные */
+  const coveredSet = useMemo(() => {
+    const m = new Set<number>();
+    if (!tiles) return m;
+    const occ = buildOccupancy(tiles);
+    for (const t of tiles) {
+      if (!t.removed && occ.has(`${t.x},${t.y},${t.z + 1}`)) m.add(t.id);
+    }
+    return m;
+  }, [tiles]);
+
   /* ------------------ контроллер полётов (refs) ------------------ */
 
   const els = useRef(new Map<number, HTMLDivElement>());
@@ -239,8 +253,9 @@ export function Board() {
       enterDelay: enterOrder.get(`${t.x},${t.y},${t.z}`) ?? 0,
       concealed: concealedSet.has(t.id),
       gone: t.removed && !live.has(t.id) && !animating.has(t.id),
+      covered: coveredSet.has(t.id),
     }));
-  }, [tiles, bounds, geom, invalidId, enterOrder, entering, concealedSet, session?.tray, session?.matchedPair]);
+  }, [tiles, bounds, geom, invalidId, enterOrder, entering, concealedSet, coveredSet, session?.tray, session?.matchedPair]);
 
   /* ------------------ полёты, соединение и взрывы ------------------ */
 
