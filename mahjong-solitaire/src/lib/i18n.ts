@@ -77,6 +77,22 @@ const RU: Record<string, string> = {
   'exit.yes': 'Выйти',
   'exit.no': 'Остаться',
 
+  // возврат в незаконченный матч (Task 28): устройство помнит комнату
+  'return.title': 'Незаконченный матч',
+  'return.text': 'Ты играл с «{name}» на уровне {n}. Комната ещё жива — вернуться?',
+  'return.rejoin': 'Вернуться в матч',
+  'return.new': 'Начать новую игру',
+  'return.waitTitle': 'Твоя комната ждёт',
+  'return.waitText': 'Комната {code} всё ещё ждёт соперника. Вернуться к ожиданию?',
+  'return.waitBack': 'Вернуться',
+  'return.waitClose': 'Закрыть комнату',
+
+  // ждущие игроки в главном меню (Task 28)
+  'wait.title': 'Сейчас ждут соперника',
+  'wait.join': 'Войти',
+  'wait.more': '+{n}',
+  'wait.joining': 'Входим…',
+
   // реванш по согласию обоих (Task 25)
   'rem.waiting': 'Ждём согласия соперника…',
   'rem.offer': 'Соперник предлагает реванш — согласен?',
@@ -184,6 +200,9 @@ const RU: Record<string, string> = {
   'res.lose': 'Поражение',
   'res.match': 'матч · уровень {n}',
   'res.rematch': 'Реванш',
+  'res.time': 'Время победителя: {t}',
+  'series.title': 'Серия',
+  'series.score': 'Счёт серии',
   'res.reason.cleared': 'Доска собрана',
   'res.reason.opponent': 'Соперник собрал первым',
   'res.reason.timeout': 'Время вышло',
@@ -305,6 +324,22 @@ const EN: Record<string, string> = {
   'exit.yes': 'Leave',
   'exit.no': 'Stay',
 
+  // return to an unfinished match (Task 28): the device remembers the room
+  'return.title': 'Unfinished match',
+  'return.text': 'You were playing with "{name}" on level {n}. The room is still live — return?',
+  'return.rejoin': 'Return to match',
+  'return.new': 'Start a new game',
+  'return.waitTitle': 'Your room is waiting',
+  'return.waitText': 'Room {code} is still waiting for an opponent. Return to waiting?',
+  'return.waitBack': 'Return',
+  'return.waitClose': 'Close room',
+
+  // players waiting on the main menu (Task 28)
+  'wait.title': 'Waiting for an opponent now',
+  'wait.join': 'Join',
+  'wait.more': '+{n}',
+  'wait.joining': 'Joining…',
+
   // реванш по согласию (Task 25)
   'rem.waiting': 'Waiting for the opponent to accept…',
   'rem.offer': 'Opponent offers a rematch — accept?',
@@ -406,6 +441,9 @@ const EN: Record<string, string> = {
   'res.lose': 'Defeat',
   'res.match': 'match · level {n}',
   'res.rematch': 'Rematch',
+  'res.time': 'Winner’s time: {t}',
+  'series.title': 'Series',
+  'series.score': 'Series score',
   'res.reason.cleared': 'Board cleared',
   'res.reason.opponent': 'Opponent cleared first',
   'res.reason.timeout': "Time's up",

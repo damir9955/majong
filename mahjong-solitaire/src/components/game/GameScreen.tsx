@@ -28,13 +28,18 @@ import { confetti, showToast } from '@/lib/game/fx';
 import { TileFace } from './TileFace';
 import { IconHome } from './icons';
 import {
+  apiJoinRoom,
+  apiLeave,
   apiPollRoom,
-  apiSyncRoom,
   clearCreds,
   getSavedCreds,
-  type RoomSnapshot,
+  getSavedName,
+  onLobby,
+  onNetError,
+  onRoomView,
+  saveCreds,
 } from '@/lib/rooms/roomApi';
-import { RoomError, type RoomView } from '@/lib/rooms/types';
+import { RoomError, type OpenRoomInfo, type RoomView } from '@/lib/rooms/types';
 import {
   Sparkles,
   Hand,
@@ -49,6 +54,7 @@ import {
   Bot,
   Globe2,
   KeyRound,
+  LogIn,
   X,
 } from 'lucide-react';
 
@@ -263,6 +269,408 @@ function OneOnOne({
 
 /* ---------- Экран выбора режима ---------- */
 
+/** Ждущие игроки внизу главного меню (Task 28): живая полоска
+ *  открытых комнат — видно, кто прямо сейчас ждёт соперника,
+ *  и можно зайти к нему одним тапом, не открывая «1 на 1». */
+function WaitingPlayers({ hidden }: { hidden: boolean }) {
+  const t = useT();
+  const [rooms, setRooms] = useState<OpenRoomInfo[] | null>(null);
+  /** код комнаты, в которую входим (кнопка «…») */
+  const [joining, setJoining] = useState('');
+  /** живая партия другого режима будет закрыта — спросить */
+  const [replaceWarn, setReplaceWarn] = useState(false);
+  const pendingRef = useRef('');
+
+  // лобби: живой список открытых игр — пуши Deno-сервера
+  useEffect(() => onLobby(setRooms), []);
+
+  const doJoin = async (roomCode: string) => {
+    if (joining) return;
+    setJoining(roomCode);
+    try {
+      const nm = getSavedName().trim() || 'Игрок';
+      const { playerId, view } = await apiJoinRoom(roomCode, nm);
+      saveCreds({
+        code: roomCode,
+        playerId,
+        host: playerId === view.hostId,
+        visibility: view.visibility ?? 'closed',
+        seed: view.seed,
+        level: view.level,
+        name: nm,
+      });
+      buzz(15);
+      // игрок сам выбрал «против человека» — другая партия не мешает
+      const s = useGame.getState().session;
+      if (s && s.mode !== 'online' && s.status === 'play') {
+        useGame.setState({ session: null });
+      }
+      useGame.getState().applyRoomView(view);
+    } catch (e) {
+      showToast(
+        e instanceof RoomError && e.code === 'ROOM_FULL'
+          ? t('room.full')
+          : t('room.network'),
+      );
+      // список обновится сам: лобби живёт подпиской
+    } finally {
+      setJoining('');
+    }
+  };
+
+  const join = (roomCode: string) => {
+    const s = useGame.getState().session;
+    if (s && s.mode !== 'online' && s.status === 'play') {
+      pendingRef.current = roomCode;
+      setReplaceWarn(true);
+      return;
+    }
+    void doJoin(roomCode);
+  };
+
+  if (hidden || !rooms || rooms.length === 0) return null;
+  const creds = getSavedCreds();
+  // свою комнату не предлагаем самому себе
+  const list = rooms.filter((r) => r.code !== creds?.code);
+  if (list.length === 0) return null;
+
+  return (
+    <div
+      className="mj-waiting-bar w-full max-w-sm sm:max-w-md"
+      data-testid="mj-waiting-bar"
+    >
+      <div className="mj-waiting-head">
+        <span className="mj-waiting-dot" />
+        <p>{t('wait.title')}</p>
+      </div>
+      <div className="mj-waiting-rows">
+        {list.slice(0, 3).map((r) => (
+          <button
+            key={r.code}
+            type="button"
+            className="mj-waiting-row"
+            data-testid="mj-waiting-row"
+            disabled={!!joining}
+            onClick={() => join(r.code)}
+          >
+            <span
+              className="mj-open-av"
+              style={{ background: `hsl(${r.hue} 52% 42%)` }}
+            >
+              {(r.hostName[0] ?? 'И').toUpperCase()}
+            </span>
+            <span className="mj-waiting-info">
+              <b>{r.hostName}</b>
+              <span>{t('home.level', { n: r.level })}</span>
+            </span>
+            <span className="mj-waiting-join">
+              <LogIn className="h-4 w-4" />
+              {joining === r.code ? '…' : t('wait.join')}
+            </span>
+          </button>
+        ))}
+        {list.length > 3 && (
+          <span className="mj-waiting-more">
+            {t('wait.more', { n: list.length - 3 })}
+          </span>
+        )}
+      </div>
+
+      {replaceWarn && (
+        <div className="mj-overlay">
+          <div className="mj-card">
+            <h2 className="text-2xl font-black text-[#22432e]">
+              {t('room.replaceTitle')}
+            </h2>
+            <p className="mt-2 text-sm font-semibold text-stone-600">
+              {t('room.replaceText')}
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                className="mj-btn"
+                onClick={() => {
+                  setReplaceWarn(false);
+                  useGame.setState({ session: null });
+                  void doJoin(pendingRef.current);
+                }}
+              >
+                {t('room.replaceYes')}
+              </button>
+              <button
+                className="mj-btn mj-btn-ghost"
+                onClick={() => {
+                  pendingRef.current = '';
+                  setReplaceWarn(false);
+                }}
+              >
+                {t('room.replaceNo')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Возврат в незаконченный онлайн-матч (Task 28): устройство
+ *  ПОМНИТ комнату (креды в localStorage). Пока игрок в меню,
+ *  тихо проверяем комнату раз в 3 секунды — присутствие не
+ *  рвётся и матч не «умирает» — и предлагаем:
+ *   — «Вернуться в матч», если игра ещё идёт (или ждём соперника);
+ *   — «Начать новую»: сопернику приходит «игрок покинул игру»
+ *     (его победа), у нас комната закрывается.
+ *  Диалог возникает при КАЖДОМ входе в меню, пока не решён. */
+function ReturnPrompt({
+  onOpenRooms,
+  onOpenOne,
+}: {
+  onOpenRooms: () => void;
+  onOpenOne: () => void;
+}) {
+  const t = useT();
+  const [view, setView] = useState<RoomView | null>(null);
+  const [kind, setKind] = useState<'playing' | 'waiting' | null>(null);
+  const [busy, setBusy] = useState(false);
+  /** пользователь закрыл диалог «не сейчас» — больше не спрашиваем
+   *  в этом заходе меню (креды остаются: предложим в следующий раз) */
+  const [stopped, setStopped] = useState(false);
+
+  useEffect(() => {
+    if (stopped) return;
+    let alive = true;
+    let askedKey = '';
+    /** реакция на вид комнаты (пуш или ответ запроса) */
+    const handle = (v: RoomView) => {
+      if (!alive) return;
+      const creds = getSavedCreds();
+      if (!creds || v.code !== creds.code) return;
+      if (!v.players.some((p) => p.id === creds.playerId)) {
+        // нас уже нет в комнате — память устарела
+        clearCreds();
+        return;
+      }
+      const s = useGame.getState().session;
+      // живая онлайн-партия: кнопка «Продолжить матч» уже в меню
+      if (s && s.mode === 'online' && s.status === 'play') return;
+      if (v.status === 'playing') {
+        const key = `${v.code}:playing`;
+        if (askedKey !== key) {
+          askedKey = key;
+          setView(v);
+          setKind('playing');
+        }
+        return;
+      }
+      if (v.status === 'waiting' && v.players[0]?.id === creds.playerId) {
+        const key = `${v.code}:waiting`;
+        if (askedKey !== key) {
+          askedKey = key;
+          setView(v);
+          setKind('waiting');
+        }
+        return;
+      }
+      if (v.status === 'result') {
+        // матч закончился без нас — показываем честный итог
+        useGame.getState().applyRoomView(v);
+      }
+    };
+    // пуши сервера: состояние комнаты приходит само
+    const offView = onRoomView(handle);
+    // стартовая проверка + страховка раз в 8с (комната могла
+    // исчезнуть, пока мы не были подключены)
+    const check = async () => {
+      const creds = getSavedCreds();
+      if (!creds) return;
+      const s = useGame.getState().session;
+      if (s && s.mode === 'online' && s.status === 'play') return;
+      try {
+        const v = await apiPollRoom(creds.code, creds.playerId);
+        if (alive) handle(v);
+      } catch (e) {
+        // комната исчезла — память больше не нужна.
+        // Сеть моргнула — креды НЕ трогаем, повторим позже.
+        if (
+          alive &&
+          e instanceof RoomError &&
+          e.code === 'ROOM_NOT_FOUND'
+        ) {
+          clearCreds();
+          const s2 = useGame.getState().session;
+          if (s2 && s2.mode === 'online' && s2.battle?.online?.code === creds.code) {
+            useGame.setState({ session: null });
+          }
+        }
+      }
+    };
+    void check();
+    const iv = window.setInterval(() => void check(), 8000);
+    return () => {
+      alive = false;
+      offView();
+      window.clearInterval(iv);
+    };
+  }, [stopped]);
+
+  if (!view || !kind) return null;
+
+  const creds = getSavedCreds();
+  const friend =
+    view.players.find((p) => p.id !== creds?.playerId) ?? null;
+  const liveOther = (() => {
+    const s = useGame.getState().session;
+    return !!s && s.mode !== 'online' && s.status === 'play';
+  })();
+
+  /** вернуться в живую игру (или к ожиданию соперника) */
+  const rejoin = async () => {
+    if (!creds) return;
+    setBusy(true);
+    try {
+      if (kind === 'playing') {
+        const v = await apiPollRoom(creds.code, creds.playerId);
+        if (!v.players.some((p) => p.id === creds.playerId)) {
+          throw new RoomError('ROOM_NOT_FOUND', 'gone');
+        }
+        const s = useGame.getState().session;
+        if (s && s.mode !== 'online' && s.status === 'play') {
+          useGame.setState({ session: null });
+        }
+        buzz(15);
+        useGame.getState().applyRoomView(v);
+        return;
+      }
+      // ожидание: экран комнаты сам восстановит «ждём соперника»
+      buzz(15);
+      onOpenRooms();
+    } catch {
+      clearCreds();
+      showToast(t('room.lost'));
+    } finally {
+      setBusy(false);
+      setStopped(true);
+      setView(null);
+      setKind(null);
+    }
+  };
+
+  /** начать новую: комната закрывается, соперник получает
+   *  «игрок покинул игру» (его победа), мы — к выбору соперника */
+  const startNew = async () => {
+    if (creds) {
+      setBusy(true);
+      try {
+        await apiLeave(creds.code, creds.playerId);
+      } catch {
+        // комната уже исчезла — не страшно
+      }
+      clearCreds();
+    }
+    useGame.setState({ session: null });
+    setStopped(true);
+    setView(null);
+    setKind(null);
+    buzz(12);
+    onOpenOne();
+  };
+
+  const closeRoom = async () => {
+    if (creds) {
+      setBusy(true);
+      try {
+        await apiLeave(creds.code, creds.playerId);
+      } catch {
+        // уже исчезла
+      }
+      clearCreds();
+    }
+    setStopped(true);
+    setView(null);
+    setKind(null);
+  };
+
+  const dismiss = () => {
+    setStopped(true);
+    setView(null);
+    setKind(null);
+  };
+
+  return (
+    <div className="mj-overlay" data-testid="mj-return-prompt">
+      <div className="mj-card relative w-full max-w-sm p-6">
+        <button
+          type="button"
+          className="mj-close-x"
+          onClick={dismiss}
+          aria-label="×"
+        >
+          <X className="h-5 w-5" />
+        </button>
+        {kind === 'playing' ? (
+          <>
+            <h2 className="text-2xl font-black text-[#22432e]">
+              {t('return.title')}
+            </h2>
+            <p className="mt-2 text-sm font-semibold text-stone-600">
+              {t('return.text', {
+                name: friend?.name ?? '???',
+                n: view.level,
+              })}
+              {liveOther ? ` ${t('room.replaceText')}` : ''}
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                className="mj-btn"
+                data-testid="mj-return-rejoin"
+                disabled={busy}
+                onClick={() => void rejoin()}
+              >
+                {busy ? '…' : t('return.rejoin')}
+              </button>
+              <button
+                className="mj-btn mj-btn-ghost"
+                data-testid="mj-return-new"
+                disabled={busy}
+                onClick={() => void startNew()}
+              >
+                {t('return.new')}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 className="text-2xl font-black text-[#22432e]">
+              {t('return.waitTitle')}
+            </h2>
+            <p className="mt-2 text-sm font-semibold text-stone-600">
+              {t('return.waitText', { code: view.code })}
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                className="mj-btn"
+                data-testid="mj-return-wait"
+                disabled={busy}
+                onClick={() => void rejoin()}
+              >
+                {t('return.waitBack')}
+              </button>
+              <button
+                className="mj-btn mj-btn-ghost"
+                data-testid="mj-return-close-room"
+                disabled={busy}
+                onClick={() => void closeRoom()}
+              >
+                {t('return.waitClose')}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function HomeScreen({
   onOneOnOne,
   onSettings,
@@ -286,6 +694,11 @@ function HomeScreen({
   // партия этого режима сохранена и ещё идёт — кнопка продолжает её
   const resumable = (mode: GameMode) =>
     !!session && session.mode === mode && session.status === 'play';
+
+  // Task 28: живой онлайн-матч — карточка «1 на 1» ВОЗВРАЩАЕТ
+  // в него одним тапом (раньше открывала выбор соперника —
+  // «случайно вышел и не могу зайти»)
+  const onlineResumable = credsOnline && resumable('online');
 
   return (
     <div className="mj-table relative flex h-dvh flex-col items-center justify-center gap-7 px-6 sm:gap-10">
@@ -355,11 +768,12 @@ function HomeScreen({
         </button>
 
         {/* «1 на 1» — ВСЁ в одном месте (Task 25): автопоиск,
-            игра по коду, компьютер; «С другом» больше не отдельно */}
+            игра по коду, компьютер. Живой онлайн-матч — карточка
+            сразу ВОЗВРАЩАЕТ в него (Task 28) */}
         <button
           className="mj-mode-card"
           data-testid="mj-battle-card"
-          onClick={onOneOnOne}
+          onClick={() => (onlineResumable ? go('online') : onOneOnOne())}
         >
           <span
             className="mj-mode-ico"
@@ -390,6 +804,9 @@ function HomeScreen({
       <span className="mj-level-chip text-[13px] font-black sm:text-base lg:text-lg">
         {t('home.level', { n: level })}
       </span>
+
+      {/* снизу: кто прямо сейчас ждёт соперника (Task 28) */}
+      <WaitingPlayers hidden={onlineResumable} />
     </div>
   );
 }
@@ -693,140 +1110,69 @@ export function GameScreen() {
     return () => window.clearInterval(iv);
   }, []);
 
-  /* ---------- поллинг онлайн-комнаты с самовосстановлением ----------
+  /* ---------- онлайн-комната: ПУШИ сервера + страховка ----------
    * Живёт и в меню — присутствие игрока нужно другу, матч не
-   * останавливается. 404 (запрос попал на другой инстанс) лечим
-   * быстрым повтором; «sync»-пересоздание комнаты — ТОЛЬКО хост
-   * (Task 25: два пересоздания с двух сторон = «раздвоение»
-   * комнаты и ложные результаты посреди матча). Гость просто
-   * ждёт: хост оживит комнату, поллинг подхватит её вновь. */
+   * останавливается. WebSocket держит связь и в свёрнутой вкладке
+   * (сервер сам шлёт мини-сердцебиения) — воркер больше не нужен.
+   * Обрыв — транспорт переподключается и возвращает в ту же
+   * комнату (hello по uid устройства): матч продолжается. */
   const isOnline = session?.mode === 'online';
   const sid = session?.sid;
-  const missesRef = useRef(0);
   useEffect(() => {
-    if (!isOnline) {
-      missesRef.current = 0;
-      return;
-    }
-    let alive = true;
+    if (!isOnline) return;
 
-    const snapshot = (): RoomSnapshot | null => {
+    // вид комнаты: ходы соперника, итоги, присутствие — всё пушем
+    const offView = onRoomView((view) => {
       const creds = getSavedCreds();
-      const s = useGame.getState().session;
-      const on = s?.battle?.online;
-      if (!creds || !s || !on || !s.battle || on.code !== creds.code) return null;
-      // sync — только хост: гостю пересоздавать комнату нельзя
-      if (!creds.host) return null;
-      const b = s.battle;
-      const name = creds.name ?? b.opponent.name;
-      return {
-        code: on.code,
-        playerId: on.playerId,
-        name: name || 'Игрок',
-        level: s.level,
-        seed: on.seed,
-        hostId: on.hostId ?? creds.playerId,
-        status: 'playing',
-        timeLeftMs: b.timeLeftMs,
-        score: b.myScore,
-        pairsDone: b.myPairsDone,
-        players: [
-          {
-            id: on.playerId,
-            name: name || 'Игрок',
-            hue: 150,
-            score: b.myScore,
-            pairsDone: b.myPairsDone,
-          },
-          ...(on.friendId
-            ? [
-                {
-                  id: on.friendId,
-                  name: on.friendName ?? 'Друг',
-                  hue: on.friendHue ?? 30,
-                  score: b.botScore,
-                  pairsDone: b.botPairsDone,
-                },
-              ]
-            : []),
-        ],
-      };
-    };
+      if (creds && view.code === creds.code) {
+        useGame.getState().applyRoomView(view);
+      }
+    });
 
-    const poll = async () => {
+    // комната окончательно исчезла (сервер удалил) — прибираемся
+    const offErr = onNetError((code) => {
+      if (code !== 'ROOM_NOT_FOUND') return;
+      const creds = getSavedCreds();
+      if (!creds) return;
+      const s = useGame.getState().session;
+      if (s && s.mode === 'online' && s.battle?.online?.code === creds.code) {
+        showToast(trNow('room.closed'));
+        useGame.getState().dropOnlineSession(creds.code);
+      }
+    });
+
+    // страховка: раз в 5с свежий вид + попутный отчёт прогресса
+    // (если пуш потерялся при обрыве — view-запрос всё выравнивает)
+    const safety = () => {
       const creds = getSavedCreds();
       const s = useGame.getState().session;
       if (!creds || !s?.battle?.online || s.battle.online.code !== creds.code)
         return;
-      try {
-        const view = await apiPollRoom(creds.code, creds.playerId, {
-          score: s.battle.myScore,
-          pairsDone: s.battle.myPairsDone,
-        });
-        if (!alive) return;
-        missesRef.current = 0;
-        useGame.getState().applyRoomView(view);
-      } catch (e) {
-        if (!alive) return;
-        const code =
-          e && typeof e === 'object' && 'code' in e
-            ? String((e as { code?: unknown }).code)
-            : '';
-        if (code === 'ROOM_NOT_FOUND') {
-          missesRef.current++;
-          // 1) быстрый повтор — 404 бывает «чужим инстансом»
-          if (missesRef.current < 6) {
-            try {
-              const view = await apiPollRoom(creds.code, creds.playerId);
-              if (!alive) return;
-              missesRef.current = 0;
-              useGame.getState().applyRoomView(view);
-              return;
-            } catch {
-              // fallthrough к sync (только для хоста)
-            }
+      void apiPollRoom(creds.code, creds.playerId, {
+        score: s.battle.myScore,
+        pairsDone: s.battle.myPairsDone,
+      })
+        .then((view) => {
+          const c2 = getSavedCreds();
+          if (c2 && view.code === c2.code) {
+            useGame.getState().applyRoomView(view);
           }
-          // 2) хост пересоздаёт комнату из снимка (клиент знает картину);
-          //    гость НЕ пересоздаёт — ждёт, пока хост оживит комнату
-          if (creds.host && missesRef.current >= 6 && missesRef.current % 6 === 0) {
-            const snap = snapshot();
-            if (snap) {
-              try {
-                const view = await apiSyncRoom(snap);
-                if (!alive) return;
-                missesRef.current = 0;
-                useGame.getState().applyRoomView(view);
-                return;
-              } catch {
-                // даже sync не прошёл — считаем ниже
-              }
-            }
-          }
-          // 3) комната окончательно потеряна (хост не ожил ~50 сек)
-          const budget = creds.host ? 42 : 46;
-          if (missesRef.current > budget) {
-            missesRef.current = 0;
-            showToast(trNow('room.closed'));
-            useGame.getState().dropOnlineSession(creds.code);
-          }
-          return;
-        }
-        // сеть моргнула — просто ждём следующий тик
-      }
+        })
+        .catch(() => {});
     };
-    void poll();
-    const iv = window.setInterval(() => void poll(), 1100);
+    const iv = window.setInterval(safety, 5000);
+
+    // вернулись во вкладку — сразу синхронизируемся
     const onVis = () => {
-      if (document.visibilityState === 'visible') void poll();
+      if (document.visibilityState === 'visible') safety();
     };
-    const onNet = () => void poll();
     document.addEventListener('visibilitychange', onVis);
-    window.addEventListener('online', onNet);
+
     return () => {
-      alive = false;
+      offView();
+      offErr();
       window.clearInterval(iv);
       document.removeEventListener('visibilitychange', onVis);
-      window.removeEventListener('online', onNet);
     };
   }, [isOnline, sid]);
 
@@ -870,6 +1216,12 @@ export function GameScreen() {
           onOneOnOne={() => setOneOpen(true)}
           onSettings={() => setSettingsOpen(true)}
           onStandings={() => setStandingsOpen(true)}
+        />
+        {/* устройство помнит живую комнату — предлагаем вернуться
+            в незаконченный матч или начать новую (Task 28) */}
+        <ReturnPrompt
+          onOpenRooms={() => setRoomOpen(true)}
+          onOpenOne={() => setOneOpen(true)}
         />
         {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
         {oneOpen && (

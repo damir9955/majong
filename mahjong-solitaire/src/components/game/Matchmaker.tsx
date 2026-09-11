@@ -1,10 +1,16 @@
 'use client';
 
 /**
- * Быстрый матч против реального человека (Task 25): просто
- * «найти игру» — уровень больше НЕ важен. Соединяем с любым,
- * кто тоже в автопоиске, а если таких нет — присоединяемся
- * к первой открытой комнате. Пока ищем — радар и отмена.
+ * Быстрый матч против реального человека: просто «найти игру» —
+ * уровень больше НЕ важен. Соединяем с любым, кто тоже в
+ * автопоиске, а если таких нет — присоединяемся к первой
+ * открытой комнате. Пока ищем — радар и отмена.
+ *
+ * (Task 29) Транспорт — WebSocket на Deno-сервер: тикет очереди
+ * живёт на сервере (Deno KV), подобранную пару сервер ПУШИТ
+ * сообщением {t:'room'} — поллинга больше нет. Обрыв связи во
+ * время поиска не страшен: сервер держит тикет, пока устройство
+ * онлайн.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -12,15 +18,12 @@ import { useGame } from '@/lib/game/store';
 import { useT } from '@/lib/i18n';
 import { buzz } from '@/lib/sound';
 import {
-  apiMatchJoin,
   apiMatchLeave,
-  apiMatchPoll,
-  clearTicket,
-  getSavedName,
-  getSavedTicket,
+  apiMatchStart,
+  onRoomView,
   saveCreds,
+  getSavedName,
   saveName,
-  saveTicket,
 } from '@/lib/rooms/roomApi';
 import { Search, X, ArrowLeft } from 'lucide-react';
 
@@ -32,53 +35,46 @@ export function Matchmaker({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   /** секунд с начала поиска — после 25 подсказка «людей мало» */
   const [waited, setWaited] = useState(0);
-  const ticketRef = useRef('');
+  /** пара найдена — защита от двойного входа */
+  const pairedRef = useRef(false);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+  const nameRef = useRef(name);
+  useEffect(() => {
+    nameRef.current = name;
+  }, [name]);
   const onName = (v: string) => setName([...v].slice(0, 16).join(''));
 
   useEffect(() => {
     if (phase !== 'search') return;
     const iv = window.setInterval(() => setWaited((v) => v + 1), 1000);
-    return () => window.clearInterval(iv);
-  }, [phase]);
-
-  // поллинг очереди: подобрали? → сохраняем креды и в бой
-  useEffect(() => {
-    if (phase !== 'search') return;
-    let alive = true;
-    const iv = window.setInterval(async () => {
-      const ticketId = ticketRef.current;
-      if (!ticketId) return;
-      try {
-        const st = await apiMatchPoll(ticketId);
-        if (!alive) return;
-        if (st.status === 'paired' && st.view && st.code && st.playerId) {
-          window.clearInterval(iv);
-          const view = st.view;
-          saveCreds({
-            code: st.code,
-            playerId: st.playerId,
-            host: st.playerId === view.hostId,
-            seed: view.seed,
-            level: view.level,
-            name: name || 'Игрок',
-          });
-          buzz(20);
-          // живая партия другого режима заменяется без вопросов:
-          // игрок сам выбрал «против человека»
-          const s = useGame.getState().session;
-          if (s && s.mode !== 'online' && s.status === 'play') {
-            useGame.setState({ session: null });
-          }
-          useGame.getState().applyRoomView(view);
-          if (alive) onClose();
-        }
-      } catch {
-        // сеть моргнула — следующий тик
+    // соперник найден: Deno-сервер пришлёт комнату пушем
+    const off = onRoomView((view, playerId) => {
+      if (pairedRef.current || !playerId) return; // толкают именно НАС в комнату
+      pairedRef.current = true;
+      saveCreds({
+        code: view.code,
+        playerId,
+        host: playerId === view.hostId,
+        seed: view.seed,
+        level: view.level,
+        name: nameRef.current || 'Игрок',
+      });
+      buzz(20);
+      // живая партия другого режима заменяется без вопросов:
+      // игрок сам выбрал «против человека»
+      const s = useGame.getState().session;
+      if (s && s.mode !== 'online' && s.status === 'play') {
+        useGame.setState({ session: null });
       }
-    }, 1200);
+      useGame.getState().applyRoomView(view);
+      onCloseRef.current();
+    });
     return () => {
-      alive = false;
       window.clearInterval(iv);
+      off();
     };
   }, [phase]);
 
@@ -86,23 +82,25 @@ export function Matchmaker({ onClose }: { onClose: () => void }) {
     const nm = name.trim() || 'Игрок';
     setBusy(true);
     setErr('');
+    pairedRef.current = false;
     try {
       saveName(nm);
-      const prevTicket = getSavedTicket();
-      const st = await apiMatchJoin(nm, useGame.getState().level, prevTicket || undefined);
-      if (st.ticketId) {
-        ticketRef.current = st.ticketId;
-        saveTicket(st.ticketId);
-      }
-      // могли подобрать мгновенно
-      if (st.status === 'paired' && st.view && st.code && st.playerId) {
-        const view = st.view;
+      const st = await apiMatchStart(nm, useGame.getState().level);
+      // могли подобрать мгновенно — пуш уже прилетел (или придёт)
+      if (
+        !pairedRef.current &&
+        st.status === 'paired' &&
+        st.view &&
+        st.code &&
+        st.playerId
+      ) {
+        pairedRef.current = true;
         saveCreds({
           code: st.code,
           playerId: st.playerId,
-          host: st.playerId === view.hostId,
-          seed: view.seed,
-          level: view.level,
+          host: st.playerId === st.view.hostId,
+          seed: st.view.seed,
+          level: st.view.level,
           name: nm,
         });
         buzz(20);
@@ -110,10 +108,11 @@ export function Matchmaker({ onClose }: { onClose: () => void }) {
         if (s && s.mode !== 'online' && s.status === 'play') {
           useGame.setState({ session: null });
         }
-        useGame.getState().applyRoomView(view);
+        useGame.getState().applyRoomView(st.view);
         onClose();
         return;
       }
+      if (pairedRef.current) return;
       buzz(12);
       setWaited(0);
       setPhase('search');
@@ -124,13 +123,9 @@ export function Matchmaker({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const cancel = async () => {
-    const ticketId = ticketRef.current || getSavedTicket();
-    if (ticketId) {
-      void apiMatchLeave(ticketId).catch(() => {});
-    }
-    ticketRef.current = '';
-    clearTicket();
+  const cancel = () => {
+    void apiMatchLeave().catch(() => {});
+    pairedRef.current = false;
     setPhase('setup');
   };
 

@@ -1,184 +1,61 @@
 /**
- * Клиентский транспорт комнат «игра с другом» и матчмейкинга.
- * Креды комнаты (код + playerId + снимок для восстановления) хранятся
- * в localStorage — перезагрузка страницы не выкидывает игрока из матча,
- * а «sync» может пересоздать комнату на сервере из снимка.
+ * Клиентский API комнат «1 на 1» — тонкий фасад над WebSocket-
+ * транспортом (net.ts → Deno Deploy сервер).
+ *
+ * ЧТО ИЗМЕНИЛОСЬ (было: HTTP-поллинг /api/rooms на Vercel):
+ *  — один WebSocket на устройство: сервер сам ПУШИТ изменения
+ *    (ход соперника, итог, присутствие) — поллинга больше нет;
+ *  — события матча: собрал пару → короткое {tile1Id, tile2Id}
+ *    на сервер, он пересылает сопернику;
+ *  — ВРЕМЯ АВТОРИТАРНОЕ: финальное время считает сервер;
+ *  — реконнект: обрыв связи не рвёт матч (uid устройства).
+ *
+ * Креды (код + playerId) по-прежнему в localStorage — перезагрузка
+ * страницы и возврат в матч работают как раньше.
  */
 
+import { net, type MateEvent } from './net';
 import { RoomError, type OpenRoomInfo, type RoomView } from './types';
+import {
+  clearCredsRaw,
+  getSavedCreds as getCreds,
+  getSavedName as getName,
+  saveCredsRaw,
+  saveNameRaw,
+  type RoomCreds,
+} from './creds';
 
-const CREDS_KEY = 'mahjong-room';
-const NAME_KEY = 'mahjong-name';
-const TICKET_KEY = 'mahjong-match-ticket';
+export type { RoomCreds, MateEvent };
+export { net };
 
-export interface RoomCreds {
-  code: string;
-  playerId: string;
-  /** я создатель комнаты (может пересоздать её через sync) */
-  host?: boolean;
-  /** открытая игра — пересоздаётся такой же при self-heal */
-  visibility?: 'open' | 'closed';
-  /** сид и уровень — снимок для восстановления комнаты */
-  seed?: number;
-  level?: number;
-  /** имя игрока (для sync-восстановления) */
-  name?: string;
-}
-
-/** полный снимок комнаты для sync: у клиента есть вся картина */
-export interface RoomSnapshot {
-  code: string;
-  playerId: string;
-  name: string;
-  level: number;
-  seed: number;
-  hostId: string;
-  status: 'waiting' | 'playing' | 'result';
-  visibility?: 'open' | 'closed';
-  timeLeftMs: number;
-  score?: number;
-  pairsDone?: number;
-  players: { id: string; name: string; hue: number; score: number; pairsDone: number }[];
-}
+/* ---------- креды и имя (синхронизируются с транспортом) ---------- */
 
 export function getSavedCreds(): RoomCreds | null {
-  try {
-    const raw = localStorage.getItem(CREDS_KEY);
-    if (!raw) return null;
-    const c = JSON.parse(raw) as {
-      code?: unknown;
-      playerId?: unknown;
-      host?: unknown;
-      visibility?: unknown;
-      seed?: unknown;
-      level?: unknown;
-      name?: unknown;
-    };
-    if (
-      typeof c.code === 'string' &&
-      c.code.length === 5 &&
-      typeof c.playerId === 'string' &&
-      c.playerId.length > 0
-    ) {
-      return {
-        code: c.code,
-        playerId: c.playerId,
-        host: c.host === true,
-        visibility: c.visibility === 'open' ? 'open' : 'closed',
-        seed: typeof c.seed === 'number' ? c.seed : undefined,
-        level: typeof c.level === 'number' ? c.level : undefined,
-        name: typeof c.name === 'string' ? c.name : undefined,
-      };
-    }
-  } catch {
-    // битый стор — считаем, что комнаты нет
-  }
-  return null;
+  return getCreds();
 }
 
 export function saveCreds(creds: RoomCreds) {
-  try {
-    localStorage.setItem(CREDS_KEY, JSON.stringify(creds));
-  } catch {
-    // приватный режим — игра без сохранения комнаты
-  }
+  saveCredsRaw(creds);
+  // транспорт помнит комнату — реконнект вернёт в неё
+  net.setRoom(creds.code, creds.playerId);
 }
 
 export function clearCreds() {
-  try {
-    localStorage.removeItem(CREDS_KEY);
-  } catch {
-    // ignore
-  }
+  clearCredsRaw();
+  net.clearRoom();
 }
 
 /** имя игрока (запоминается после первого ввода) */
 export function getSavedName(): string {
-  try {
-    return localStorage.getItem(NAME_KEY) ?? '';
-  } catch {
-    return '';
-  }
+  return getName();
 }
 
 export function saveName(name: string) {
-  try {
-    localStorage.setItem(NAME_KEY, name);
-  } catch {
-    // ignore
-  }
+  saveNameRaw(name);
+  net.setName(name);
 }
 
-/** тикет матчмейкинга живёт между перезагрузками (пока ждём соперника) */
-export function getSavedTicket(): string {
-  try {
-    return localStorage.getItem(TICKET_KEY) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-export function saveTicket(id: string) {
-  try {
-    localStorage.setItem(TICKET_KEY, id);
-  } catch {
-    // ignore
-  }
-}
-
-export function clearTicket() {
-  try {
-    localStorage.removeItem(TICKET_KEY);
-  } catch {
-    // ignore
-  }
-}
-
-/* ---------- транспорт ---------- */
-
-async function request(
-  url: string,
-  init?: RequestInit,
-): Promise<Record<string, unknown>> {
-  let res: Response;
-  try {
-    res = await fetch(url, init);
-  } catch {
-    throw new RoomError('NETWORK', 'Нет связи с сервером');
-  }
-  let data: Record<string, unknown> = {};
-  try {
-    data = (await res.json()) as Record<string, unknown>;
-  } catch {
-    // пустой ответ упадёт ниже как NETWORK
-  }
-  if (!res.ok) {
-    const e = typeof data.error === 'string' ? data.error : '';
-    if (e === 'ROOM_NOT_FOUND')
-      throw new RoomError('ROOM_NOT_FOUND', 'Комната не найдена');
-    if (e === 'ROOM_FULL')
-      throw new RoomError('ROOM_FULL', 'Комната уже занята');
-    if (e === 'ROOM_EMPTY')
-      throw new RoomError('ROOM_EMPTY', 'Друг вышел из комнаты');
-    if (e === 'NOT_YET') throw new RoomError('NOT_YET', 'Ещё не началось');
-    if (e === 'BAD_CODE') throw new RoomError('BAD_CODE', 'Неверный код');
-    throw new RoomError('NETWORK', 'Сервер недоступен');
-  }
-  return data;
-}
-
-function toView(data: Record<string, unknown>): RoomView {
-  const view = data.view ?? data;
-  if (
-    !view ||
-    typeof (view as Record<string, unknown>).code !== 'string'
-  ) {
-    throw new RoomError('NETWORK', 'Некорректный ответ сервера');
-  }
-  return view as unknown as RoomView;
-}
-
-const JSON_HEADERS = { 'content-type': 'application/json' } as const;
+/* ---------- игры «с другом» ---------- */
 
 /** создать игру (хост): visibility 'open' — видна в лобби */
 export async function apiCreateRoom(
@@ -186,40 +63,18 @@ export async function apiCreateRoom(
   level: number,
   visibility: 'open' | 'closed' = 'closed',
 ): Promise<{ playerId: string; view: RoomView }> {
-  const data = await request('/api/rooms', {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ name, level, visibility }),
+  const m = await net.request<{ t: string; playerId?: string; view?: RoomView }>({
+    t: 'create',
+    name,
+    level,
+    visibility,
   });
-  const playerId = typeof data.playerId === 'string' ? data.playerId : '';
-  if (!playerId) throw new RoomError('NETWORK', 'Некорректный ответ сервера');
-  return { playerId, view: toView(data) };
-}
-
-/** список открытых игр (лобби): можно зайти без кода */
-export async function apiListOpenRooms(): Promise<OpenRoomInfo[]> {
-  const data = await request('/api/rooms', { cache: 'no-store' });
-  const raw = Array.isArray(data.rooms) ? data.rooms : [];
-  const out: OpenRoomInfo[] = [];
-  for (const r of raw) {
-    const x = r as Record<string, unknown>;
-    if (
-      typeof x.code === 'string' &&
-      x.code.length === 5 &&
-      typeof x.hostName === 'string' &&
-      typeof x.level === 'number'
-    ) {
-      out.push({
-        code: x.code,
-        level: x.level,
-        hostName: x.hostName,
-        hue: typeof x.hue === 'number' ? x.hue : 30,
-        createdAt: typeof x.createdAt === 'number' ? x.createdAt : 0,
-        players: typeof x.players === 'number' ? x.players : 1,
-      });
-    }
+  if (m.t !== 'room' || !m.view || !m.playerId) {
+    throw new RoomError('NETWORK', 'Некорректный ответ сервера');
   }
-  return out;
+  net.setName(name);
+  net.setRoom(m.view.code, m.playerId);
+  return { playerId: m.playerId, view: m.view };
 }
 
 /** войти в комнату по коду (друг) */
@@ -227,137 +82,155 @@ export async function apiJoinRoom(
   code: string,
   name: string,
 ): Promise<{ playerId: string; view: RoomView }> {
-  const data = await request(`/api/rooms/${code}`, {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ action: 'join', name }),
+  const m = await net.request<{ t: string; playerId?: string; view?: RoomView }>({
+    t: 'join',
+    code,
+    name,
   });
-  const playerId = typeof data.playerId === 'string' ? data.playerId : '';
-  if (!playerId) throw new RoomError('NETWORK', 'Некорректный ответ сервера');
-  return { playerId, view: toView(data) };
+  if (m.t !== 'room' || !m.view || !m.playerId) {
+    throw new RoomError('NETWORK', 'Некорректный ответ сервера');
+  }
+  net.setName(name);
+  net.setRoom(m.view.code, m.playerId);
+  return { playerId: m.playerId, view: m.view };
 }
 
-/** поллинг состояния + «попутный» отчёт своего прогресса */
+/** свежее состояние комнаты (+попутный отчёт своего прогресса).
+ *  Основной поток изменений идёт ПУШАМИ (net.onView) — этот вызов
+ *  нужен для стартовой проверки и как страховка раз в несколько
+ *  секунд (например, после свёрнутой вкладки) */
 export async function apiPollRoom(
   code: string,
   playerId: string,
   progress?: { score?: number; pairsDone?: number },
 ): Promise<RoomView> {
-  const q = new URLSearchParams({ playerId });
-  if (progress?.score != null) q.set('score', String(Math.round(progress.score)));
-  if (progress?.pairsDone != null)
-    q.set('pairsDone', String(Math.round(progress.pairsDone)));
-  const data = await request(`/api/rooms/${code}?${q.toString()}`, {
-    cache: 'no-store',
+  const m = await net.request<{ t: string; view?: RoomView }>({
+    t: 'view',
+    score: progress?.score,
+    pairsDone: progress?.pairsDone,
   });
-  return toView(data);
+  if (m.t !== 'room' || !m.view) {
+    throw new RoomError('NETWORK', 'Некорректный ответ сервера');
+  }
+  return m.view;
 }
 
-/** пересоздать/оживить комнату из снимка (самовосстановление) */
-export async function apiSyncRoom(snap: RoomSnapshot): Promise<RoomView> {
-  const data = await request(`/api/rooms/${snap.code}`, {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({
-      action: 'sync',
-      playerId: snap.playerId,
-      name: snap.name,
-      level: snap.level,
-      seed: snap.seed,
-      hostId: snap.hostId,
-      status: snap.status,
-      visibility: snap.visibility,
-      timeLeftMs: Math.round(snap.timeLeftMs),
-      score: snap.score,
-      pairsDone: snap.pairsDone,
-      players: snap.players,
-    }),
-  });
-  return toView(data);
-}
-
-/** терминальное событие: собрал доску / переполнил лоток */
+/** терминальное событие: собрал доску / переполнил лоток.
+ *  Время победителя посчитает СЕРВЕР и пришлёт в view.result */
 export async function apiReportFinish(
-  code: string,
-  playerId: string,
+  _code: string,
+  _playerId: string,
   reason: 'cleared' | 'tray',
   score: number,
   pairsDone: number,
 ): Promise<RoomView | null> {
-  const data = await request(`/api/rooms/${code}`, {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({
-      action: 'finish',
-      playerId,
-      reason,
-      score: Math.round(score),
-      pairsDone: Math.round(pairsDone),
-    }),
+  const m = await net.request<{ t: string; view?: RoomView }>({
+    t: 'finish',
+    reason,
+    score: Math.round(score),
+    pairsDone: Math.round(pairsDone),
   });
-  return data.view ? toView(data) : null;
+  return m.t === 'room' && m.view ? m.view : null;
 }
 
-/** следующий уровень («Дальше») или повтор («Реванш») */
+/** следующий уровень («Дальше») или повтор («Реванш»):
+ *  матч стартует, когда согласятся ОБА */
 export async function apiAdvance(
   code: string,
   playerId: string,
   kind: 'next' | 'rematch',
 ): Promise<RoomView | null> {
-  const data = await request(`/api/rooms/${code}`, {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ action: kind, playerId }),
+  const m = await net.request<{ t: string; view?: RoomView }>({
+    t: 'advance',
+    kind,
   });
-  return data.view ? toView(data) : null;
+  if (m.t !== 'room' || !m.view) return null;
+  // друга уже нет в комнате — прежний UI показывал тост «вышел»
+  if (m.view.players.length < 2) {
+    throw new RoomError('ROOM_EMPTY', 'Друг вышел из комнаты');
+  }
+  return m.view;
 }
 
-/** выйти из комнаты */
+/** выйти из комнаты (сопернику — победа «вышел») */
 export async function apiLeave(code: string, playerId: string) {
-  await request(`/api/rooms/${code}`, {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ action: 'leave', playerId }),
+  net.clearRoom();
+  await net.request({ t: 'leave' });
+}
+
+/* ---------- события матча ---------- */
+
+/** собрал пару: короткое событие серверу — он переслёт сопернику
+ *  (его прогресс-бар прыгнет мгновенно) и запомнит прогресс */
+export function sendMatchEvent(
+  tile1Id: number,
+  tile2Id: number,
+  score: number,
+  pairsDone: number,
+) {
+  net.send({
+    t: 'event',
+    kind: 'match',
+    tile1Id,
+    tile2Id,
+    score: Math.round(score),
+    pairsDone,
   });
 }
 
-/* ---------- матчмейкинг «быстрый матч» ---------- */
+/** подписка на события соперника «пара собрана» */
+export function onMatchEvent(cb: (ev: MateEvent) => void): () => void {
+  return net.onEvent(cb);
+}
 
-export interface MatchStatus {
+/** подписка на все изменения комнат (пуши сервера) */
+export function onRoomView(
+  cb: (view: RoomView, playerId?: string) => void,
+): () => void {
+  return net.onView(cb);
+}
+
+/** подписка на список открытых игр (лобби) */
+export function onLobby(cb: (rooms: OpenRoomInfo[]) => void): () => void {
+  return net.onLobby(cb);
+}
+
+/** разовые ошибки транспорта (комната исчезла и т.п.) */
+export function onNetError(cb: (code: string) => void): () => void {
+  return net.onErr(cb);
+}
+
+/* ---------- быстрый матч «найти игру» ---------- */
+
+export interface MatchStartResult {
   status: 'search' | 'paired';
-  ticketId?: string;
   code?: string;
   playerId?: string;
   view?: RoomView;
 }
 
-/** встать в очередь быстрого матча (идемпотентно по ticketId) */
-export async function apiMatchJoin(
+/** встать в очередь (уровень больше не важен). Если пару нашли
+ *  мгновенно — ответ уже с комнатой; иначе сервер ПУШНЕТ {t:'room'}
+ *  через net.onView, как только соперник найдётся */
+export async function apiMatchStart(
   name: string,
   level: number,
-  ticketId?: string,
-): Promise<MatchStatus> {
-  const data = await request('/api/rooms', {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ action: 'match', name, level, ticketId }),
-  });
-  return data as unknown as MatchStatus;
-}
-
-/** статус подбора (поллинг ~1/сек) */
-export async function apiMatchPoll(ticketId: string): Promise<MatchStatus> {
-  const data = await request(`/api/rooms?match=${encodeURIComponent(ticketId)}`, {
-    cache: 'no-store',
-  });
-  return data as unknown as MatchStatus;
+): Promise<MatchStartResult> {
+  const m = await net.request<{
+    t: string;
+    status?: string;
+    playerId?: string;
+    view?: RoomView;
+  }>({ t: 'match', name, level });
+  net.setName(name);
+  if (m.t === 'room' && m.view && m.playerId) {
+    net.setRoom(m.view.code, m.playerId);
+    return { status: 'paired', code: m.view.code, playerId: m.playerId, view: m.view };
+  }
+  return { status: 'search' };
 }
 
 /** выйти из очереди */
-export async function apiMatchLeave(ticketId: string) {
-  await request('/api/rooms', {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ action: 'match-leave', ticketId }),
-  });
+export async function apiMatchLeave() {
+  await net.request({ t: 'match-leave' });
 }

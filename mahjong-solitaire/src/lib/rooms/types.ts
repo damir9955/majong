@@ -24,11 +24,19 @@ export interface RoomPlayerView {
   online: boolean;
   /** терминальное событие игрока, если было */
   finished: 'cleared' | 'tray' | null;
+  /** побед в СЕРИИ этой комнаты — сколько матчей подряд с этим
+   *  соперником выиграно (счёт ведёт сервер; старый сервер без
+   *  поля отдаёт undefined → покажем 0) */
+  wins?: number;
 }
 
 export interface RoomResultView {
   winnerId: string;
   reason: RoomFinishReason;
+  /** АВТОРИТАРНОЕ время победителя (мс от старта отсчёта) —
+   *  посчитано СЕРВЕРОМ по своим часам (Deno Deploy), накрутить
+   *  таймер на клиенте невозможно. Только для reason='cleared' */
+  finalTimeMs?: number | null;
 }
 
 /** публичное состояние комнаты — то, что видит клиент */

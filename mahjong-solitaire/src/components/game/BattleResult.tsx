@@ -26,7 +26,7 @@ import { useT, useLang, leagueName } from '@/lib/i18n';
 import { apiLeave, clearCreds } from '@/lib/rooms/roomApi';
 import { confetti } from '@/lib/game/fx';
 import { playTrophy, buzz } from '@/lib/sound';
-import { Trophy, Lightbulb, Shuffle, Swords, Hourglass } from 'lucide-react';
+import { Trophy, Lightbulb, Shuffle, Swords, Hourglass, Crown } from 'lucide-react';
 
 function BonusChip({ kind, delay }: { kind: BonusItem; delay: number }) {
   const t = useT();
@@ -40,6 +40,59 @@ function BonusChip({ kind, delay }: { kind: BonusItem; delay: number }) {
       )}
       {t(isHint ? 'bonus.hint' : 'bonus.shuffle')}
     </span>
+  );
+}
+
+/** Счёт СЕРИИ с этим соперником: играем подряд в одной комнате —
+ *  копятся победы каждого. Лидеру — корона и золотая цифра.
+ *  Показываем с первого итога (1:0) — сразу видно, кто ведёт */
+function SeriesScore({
+  myWins,
+  oppWins,
+  oppName,
+  oppHue,
+  isLead,
+}: {
+  myWins: number;
+  oppWins: number;
+  oppName: string;
+  oppHue: number;
+  isLead: -1 | 0 | 1;
+}) {
+  const t = useT();
+  const av = (hue: number, label: string, lead: boolean) => (
+    <span className="mj-series-av-wrap">
+      <span
+        className={`mj-series-av${lead ? ' lead' : ''}`}
+        style={{
+          background: `linear-gradient(160deg, hsl(${hue} 52% 62%), hsl(${hue} 48% 40%))`,
+        }}
+      >
+        {label[0] ?? '?'}
+      </span>
+      {lead && <Crown className="mj-series-crown" />}
+    </span>
+  );
+  return (
+    <div className="mj-series mt-3" data-testid="mj-series">
+      <p className="mj-series-title">
+        <Swords className="h-3 w-3" />
+        {t('series.title')}
+      </p>
+      <div className="mj-series-row">
+        {av(150, t('vs.you'), isLead === 1)}
+        <b className={`mj-series-n tabular-nums ${isLead === 1 ? 'lead' : ''}`}>
+          {myWins}
+        </b>
+        <span className="mj-series-sep">:</span>
+        <b
+          className={`mj-series-n tabular-nums ${isLead === -1 ? 'lead' : ''}`}
+        >
+          {oppWins}
+        </b>
+        {av(oppHue, oppName || '?', isLead === -1)}
+      </div>
+    </div>
   );
 }
 
@@ -65,6 +118,19 @@ export function BattleResult() {
   const on = session?.battle?.online;
   const myAdvance = on?.myAdvance ?? null;
   const oppAdvance = on?.oppAdvance ?? null;
+  /** СЧЁТ СЕРИИ с этим соперником (кто сколько матчей выиграл):
+   *  ведёт сервер, переживает реванш */
+  const myWins = on?.myWins ?? 0;
+  const oppWins = on?.oppWins ?? 0;
+  const seriesTotal = myWins + oppWins;
+  const lead: -1 | 0 | 1 =
+    myWins > oppWins ? 1 : oppWins > myWins ? -1 : 0;
+  /** АВТОРИТАРНОЕ время победителя — посчитано Deno-сервером
+   *  по своим часам (finalTimeMs = финиш − старт); накрутка
+   *  таймера на телефоне невозможна */
+  const finalMs = on?.finalTimeMs ?? null;
+  const timeText = (ms: number) =>
+    `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
   // соперник уже предложил реванш, а я ещё не отвечал
   const askAccept =
     online && !oppGone && oppAdvance === 'rematch' && !myAdvance && !declined;
@@ -125,6 +191,29 @@ export function BattleResult() {
         <p className="mt-0.5 text-sm font-semibold text-stone-500">
           {reasonText}
         </p>
+
+        {/* АВТОРИТАРНОЕ ВРЕМЯ ПОБЕДИТЕЛЯ — от часов сервера */}
+        {online && finalMs != null && (
+          <p
+            className="mt-2 flex items-center justify-center gap-1.5 text-sm font-bold text-stone-600"
+            data-testid="mj-final-time"
+          >
+            <Hourglass className="h-4 w-4 text-amber-600" />
+            {t('res.time', { t: timeText(finalMs) })}
+          </p>
+        )}
+
+        {/* СЧЁТ СЕРИИ: играем подряд с одним соперником — кто сколько
+            раз выиграл (с первого итога: 1:0 уже информативно) */}
+        {online && seriesTotal > 0 && (
+          <SeriesScore
+            myWins={myWins}
+            oppWins={oppWins}
+            oppName={session?.battle?.opponent.name ?? '?'}
+            oppHue={session?.battle?.opponent.hue ?? 20}
+            isLead={lead}
+          />
+        )}
 
         {/* сравнение очков */}
         <div className="mj-res-scores mt-4">

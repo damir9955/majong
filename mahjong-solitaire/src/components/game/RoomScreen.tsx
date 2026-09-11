@@ -6,7 +6,7 @@
  *  — «Создать игру»: открытая (видна всем в списке «Открытые игры»,
  *    заходят без кода) или закрытая (только по коду приглашения).
  *  — «Открытые игры»: живой список ждущих соперника игр — кнопка
- *    «Войти» у каждой строки. Список обновляется сам (~2.5 сек).
+ *    «Войти» у каждой строки. Обновляется пушами Deno-сервера.
  *  — «Войти по коду»: 5 символов — для закрытых игр (и открытых тоже).
  *  — Вход ТОЛЬКО по коду: никаких ссылок-приглашений.
  *  — Пока соперник не вошёл — экран ожидания с кодом и радаром.
@@ -16,7 +16,8 @@
  * Подтверждение «закрыть живую партию» спрашивается ДО создания
  * игры — раньше вопрос всплывал ПОСЛЕ того, как друг вошёл,
  * и создатель «зависал в ожидании», хотя матч уже начался.
- * 404 при поллинге лечится быстрым повтором и sync-пересозданием.
+ * Комната живёт на Deno-сервере (Deno KV) — она не исчезает при
+ * рестартах, sync-пересоздание больше не нужно.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -28,15 +29,15 @@ import {
   apiCreateRoom,
   apiJoinRoom,
   apiLeave,
-  apiListOpenRooms,
   apiPollRoom,
-  apiSyncRoom,
   clearCreds,
   getSavedCreds,
   getSavedName,
+  onLobby,
+  onNetError,
+  onRoomView,
   saveCreds,
   saveName,
-  type RoomCreds,
 } from '@/lib/rooms/roomApi';
 import { RoomError, type OpenRoomInfo, type RoomView } from '@/lib/rooms/types';
 import { TileFace } from './TileFace';
@@ -136,10 +137,14 @@ export function RoomScreen({ onClose }: { onClose: () => void }) {
       clearCreds();
       dropStaleOnline(creds.code);
       return false;
-    } catch {
-      // 404/сеть: игра мертва — не «предлагаем вернуться» в неё
-      clearCreds();
-      dropStaleOnline(creds.code);
+    } catch (e) {
+      // 404 — игра действительно мертва; сеть просто моргнула —
+      // креды НЕ трогаем (Task 28: память устройства живёт дальше,
+      // вернуться можно будет позже)
+      if (e instanceof RoomError && e.code === 'ROOM_NOT_FOUND') {
+        clearCreds();
+        dropStaleOnline(creds.code);
+      }
       return false;
     }
   };
@@ -149,41 +154,13 @@ export function RoomScreen({ onClose }: { onClose: () => void }) {
     void checkAlive();
   }, []);
 
-  /* ---------- лобби: живой список открытых игр ---------- */
+  /* ---------- лобби: живой список открытых игр (пуши) ---------- */
   useEffect(() => {
     if (phase !== 'choose') return;
-    let alive = true;
-    const load = async () => {
-      try {
-        const rooms = await apiListOpenRooms();
-        if (alive) setOpenRooms(rooms);
-      } catch {
-        // сеть моргнула — оставляем прошлый список
-      }
-    };
-    void load();
-    const iv = window.setInterval(() => void load(), 2500);
-    return () => {
-      alive = false;
-      window.clearInterval(iv);
-    };
+    return onLobby(setOpenRooms);
   }, [phase]);
 
-  /** ждём-фаза: снимок для sync-восстановления ожидания */
-  const waitingSnapshot = (creds: RoomCreds) => ({
-    code: creds.code,
-    playerId: creds.playerId,
-    name: creds.name ?? name ?? 'Игрок',
-    level: creds.level ?? useGame.getState().level,
-    seed: creds.seed ?? 1,
-    hostId: creds.playerId,
-    status: 'waiting' as const,
-    visibility: creds.visibility,
-    timeLeftMs: 120000,
-    players: [],
-  });
-
-  /* ---------- ожидание соперника: поллинг с самолечением ---------- */
+  /* ---------- ожидание соперника: пуши + страховка ---------- */
   useEffect(() => {
     if (phase !== 'waiting') return;
     const creds = getSavedCreds();
@@ -192,73 +169,58 @@ export function RoomScreen({ onClose }: { onClose: () => void }) {
       return;
     }
     let alive = true;
-    let misses = 0;
+    /** в бой: сессию мешающего режима прибираем, матч — на экран */
+    const enter = (v: RoomView) => {
+      const s = useGame.getState().session;
+      if (s && s.mode !== 'online' && s.status === 'play') {
+        useGame.setState({ session: null });
+      }
+      useGame.getState().applyRoomView(v);
+      onCloseRef.current();
+    };
+    // соперник вошёл — сервер ПУШНЕТ новый статус комнаты
+    const offView = onRoomView((v) => {
+      if (!alive || v.code !== creds.code) return;
+      if (v.status === 'waiting') {
+        setView(v);
+        return;
+      }
+      if (!v.players.some((p) => p.id === creds.playerId)) {
+        // нас удалили из комнаты — памяти конец
+        clearCreds();
+        setPhase('choose');
+        return;
+      }
+      enter(v);
+    });
+    // комната исчезла насовсем (сервер удалил) — тихо возвращаемся
+    const offErr = onNetError((code) => {
+      if (!alive || code !== 'ROOM_NOT_FOUND') return;
+      clearCreds();
+      setErr(t('room.lost'));
+      setView(null);
+      setPhase('choose');
+    });
+    // страховка раз в 6с: состояние комнаты спрашиваем сами
+    // (пуши могло не быть — например, мы подключились позже)
     const iv = window.setInterval(async () => {
+      if (!alive) return;
       try {
         const v = await apiPollRoom(creds.code, creds.playerId);
         if (!alive) return;
-        misses = 0;
         if (v.status === 'waiting') {
           setView(v);
           return;
         }
-        // соперник вошёл — в бой (интро покажет GameScreen)
-        window.clearInterval(iv);
-        if (!alive) return;
-        const s = useGame.getState().session;
-        if (s && s.mode !== 'online' && s.status === 'play') {
-          useGame.setState({ session: null });
-        }
-        useGame.getState().applyRoomView(v);
-        onCloseRef.current();
-      } catch (e) {
-        if (!alive) return;
-        if (e instanceof RoomError && e.code === 'ROOM_NOT_FOUND') {
-          misses++;
-          // 404 бывает «чужим инстансом»: быстрый повтор
-          if (misses < 6) {
-            try {
-              const v = await apiPollRoom(creds.code, creds.playerId);
-              if (!alive) return;
-              misses = 0;
-              if (v.status === 'waiting') {
-                setView(v);
-                return;
-              }
-              window.clearInterval(iv);
-              useGame.getState().applyRoomView(v);
-              onCloseRef.current();
-              return;
-            } catch {
-              // попробуем sync
-            }
-          }
-          // игра пропала на этом инстансе — пересоздать по снимку
-          if (misses >= 6) {
-            try {
-              const v = await apiSyncRoom(waitingSnapshot(creds));
-              if (!alive) return;
-              misses = 0;
-              setView(v);
-              return;
-            } catch {
-              // совсем плохо — ниже финальная очистка
-            }
-          }
-          if (misses > 14) {
-            window.clearInterval(iv);
-            clearCreds();
-            setErr(t('room.lost'));
-            setPhase('choose');
-            setView(null);
-          }
-          return;
-        }
-        // сеть моргнула — попробуем в следующий тик
+        enter(v);
+      } catch {
+        // сеть моргнула — следующий тик; смерть комнаты придёт onErr
       }
-    }, 1100);
+    }, 6000);
     return () => {
       alive = false;
+      offView();
+      offErr();
       window.clearInterval(iv);
     };
   }, [phase]);
@@ -328,12 +290,7 @@ export function RoomScreen({ onClose }: { onClose: () => void }) {
       enter(v);
     } catch (e) {
       setErr(errText(e, t));
-      // игру могли занять прямо из-под носа — обновляем список
-      try {
-        setOpenRooms(await apiListOpenRooms());
-      } catch {
-        // сеть моргнула — список обновит поллинг
-      }
+      // игру могли занять прямо из-под носа — лобби обновится пушем
     } finally {
       setBusy(false);
       setJoiningCode('');

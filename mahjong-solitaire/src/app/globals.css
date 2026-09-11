@@ -470,20 +470,69 @@ body[data-mj-theme='mint'] {
    ЗАМЕТНО КРУПНЕЕ, чем раньше (слоты ~40px на телефоне) —
    кости в лотке хорошо читаются. Высота ограничена и шириной,
    и ВЫСОТОЙ экрана — в альбомной ориентации лоток не
-   съедает доску. */
+   съедает доску.
+   БЕЗ текстуры дерева: в wood.webp есть вертикальные тёмные
+   волокна — при растяжении на широкую низкую зону они читались
+   как ДВЕ щели, делящие лоток на «три доски» (путало игроков:
+   казалось, мест только три). Теперь фон — чистый тёмный
+   градиент, а число мест честно показывают гнёзда ниже. */
 .mj-tray-zone {
+  position: relative;
   width: min(94vw, calc((clamp(62px, min(14vw, 16vh), 118px) - 14px) * 3.125 + 28px));
   height: clamp(62px, min(14vw, 16vh), 118px);
   border-radius: 14px;
   background:
-    linear-gradient(180deg, rgba(20, 13, 6, 0.22), rgba(6, 4, 2, 0.5)),
-    url('/tex/wood.webp') center / cover;
+    radial-gradient(120% 90% at 50% 0%, rgba(56, 36, 16, 0.35), transparent 60%),
+    linear-gradient(180deg, rgba(24, 15, 7, 0.5), rgba(7, 4, 2, 0.66));
   box-shadow:
     inset 0 5px 16px rgba(0, 0, 0, 0.72),
     inset 0 -1px 0 rgba(255, 235, 190, 0.12),
     0 1px 0 rgba(255, 214, 130, 0.2);
   border: 1px solid rgba(170, 140, 80, 0.5);
   transition: border-color 0.25s ease;
+}
+
+/* ЧЕТЫРЕ посадочных гнезда — зеркало геометрии traySlots.ts:
+   те же отступы (7px сверху/снизу, 8px по бокам), тот же зазор
+   4px и то же соотношение сторон кости 1:1.28. Каждое гнездо —
+   лёгкая «утопленная» ячейка: сразу видно, что лоток вмещает
+   ровно ЧЕТЫРЕ кости. Прилетевшие кости садятся точно на
+   гнёзда (Board считает координаты той же формулой). */
+.mj-tray-sockets {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 7px 8px;
+  pointer-events: none;
+}
+
+.mj-tray-sockets i {
+  display: block;
+  flex: 1 1 0;
+  min-width: 0;
+  aspect-ratio: 1 / 1.28;
+  border-radius: 7px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.26), rgba(0, 0, 0, 0.12));
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.42),
+    inset 0 0 0 1px rgba(255, 236, 200, 0.08);
+}
+
+/* тревога/переполнение — гнёзда подкрашиваются в тон зоны,
+   чтобы свечение не спорило с ячейками */
+.mj-tray.warn .mj-tray-sockets i {
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.42),
+    inset 0 0 0 1px rgba(217, 160, 56, 0.22);
+}
+
+.mj-tray.full .mj-tray-sockets i {
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.42),
+    inset 0 0 0 1px rgba(226, 86, 86, 0.26);
 }
 
 /* третья плитка — мягкое золотое свечение */
@@ -1393,6 +1442,114 @@ body[data-mj-theme='mint'] {
   color: #9aa8a0;
 }
 
+/* ================= Счёт серии (онлайн, подряд с одним rival) ================= */
+
+/* карточка-полоса на итоговом экране: аватары, большие цифры,
+   лидеру — корона над аватаром и золотая цифра */
+.mj-series {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 9px 20px 11px;
+  border-radius: 16px;
+  background:
+    radial-gradient(120% 130% at 50% 0%, rgba(217, 160, 56, 0.1), transparent 55%),
+    rgba(31, 44, 38, 0.06);
+  border: 1px solid rgba(217, 160, 56, 0.28);
+}
+
+.mj-series-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: #a8863c;
+}
+
+.mj-series-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mj-series-av-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.mj-series-av {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.75);
+  box-shadow: 0 2px 6px rgba(31, 44, 38, 0.28);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 800;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+/* лидер серии: аватар чуть «дороже» — золотая кайма + свечение */
+.mj-series-av.lead {
+  border-color: #e9b95c;
+  box-shadow:
+    0 0 0 3px rgba(233, 185, 92, 0.25),
+    0 2px 8px rgba(180, 130, 40, 0.4);
+}
+
+/* корона лидера — маленькая, сидит сверху-справа от аватара */
+.mj-series-crown {
+  position: absolute;
+  top: -9px;
+  right: -7px;
+  width: 15px;
+  height: 15px;
+  color: #e9a83c;
+  fill: #f7d488;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
+  transform: rotate(18deg);
+}
+
+.mj-series-n {
+  font-size: 30px;
+  font-weight: 900;
+  line-height: 1;
+  color: #6a7a72;
+}
+
+/* цифра лидера — золото */
+.mj-series-n.lead {
+  color: #cf9a2e;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.mj-series-sep {
+  font-size: 18px;
+  font-weight: 700;
+  color: #9aa8a0;
+  transform: translateY(-2px);
+}
+
+/* мини-счёт серии в VersusBar (во время матча, со 2-й игры):
+   крошечная золотая строка под шкалами гонки */
+.mj-series-mini {
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #caa14e;
+  opacity: 0.92;
+  white-space: nowrap;
+}
+
 .mj-res-league {
   background: rgba(31, 44, 38, 0.05);
   border-radius: 16px;
@@ -1968,6 +2125,134 @@ body[data-mj-theme='mint'] {
 }
 .mj-open-row:active .mj-open-join {
   box-shadow: 0 1px 0 #1c4436, 0 3px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* ---- ждущие игроки внизу главного меню (Task 28) ----
+   Тёплая «деревянная» плашка с зелёной точкой-маячком: видно,
+   что кто-то прямо сейчас ждёт соперника — вход одним тапом */
+.mj-waiting-bar {
+  border-radius: 16px;
+  padding: 10px 12px 12px;
+  background: rgba(58, 44, 30, 0.82);
+  border: 1px solid rgba(214, 186, 138, 0.32);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 240, 214, 0.10),
+    0 10px 24px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+}
+.mj-waiting-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+}
+.mj-waiting-head p {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(240, 229, 205, 0.85);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.mj-waiting-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #6fd88f;
+  box-shadow: 0 0 0 0 rgba(111, 216, 143, 0.55);
+  animation: mj-waiting-pulse 1.8s ease-out infinite;
+}
+@keyframes mj-waiting-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(111, 216, 143, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(111, 216, 143, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(111, 216, 143, 0);
+  }
+}
+.mj-waiting-rows {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+.mj-waiting-row {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 6px 8px;
+  border-radius: 12px;
+  background: rgba(240, 236, 226, 0.88);
+  border: 1px solid rgba(201, 212, 198, 0.8);
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.mj-waiting-row:hover {
+  background: rgba(247, 244, 236, 0.97);
+}
+.mj-waiting-row:active {
+  transform: scale(0.97);
+}
+.mj-waiting-row:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* компактная колонка меню: аватар меньше, имя+уровень столбиком */
+.mj-waiting-row .mj-open-av {
+  width: 34px;
+  height: 34px;
+  font-size: 14px;
+}
+.mj-waiting-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.15;
+}
+.mj-waiting-info b {
+  max-width: 100%;
+  font-size: 13px;
+  font-weight: 800;
+  color: #1f2c26;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mj-waiting-info span {
+  font-size: 11px;
+  font-weight: 700;
+  color: #6a7a72;
+}
+.mj-waiting-join {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #fff;
+  background: linear-gradient(180deg, #2f6e58, #275a48);
+  box-shadow: 0 2px 0 #1c4436, 0 4px 8px rgba(0, 0, 0, 0.22);
+}
+.mj-waiting-row:active .mj-waiting-join {
+  box-shadow: 0 1px 0 #1c4436, 0 2px 5px rgba(0, 0, 0, 0.18);
+}
+.mj-waiting-more {
+  flex: none;
+  align-self: center;
+  padding: 0 4px;
+  font-size: 14px;
+  font-weight: 900;
+  color: rgba(240, 229, 205, 0.9);
 }
 
 /* cache-bust: t21 */

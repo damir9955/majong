@@ -6,9 +6,14 @@
  * парные соединяются, поднимаются и взрываются, а оставшиеся
  * мягко соскальзывают на освободившееся место. Три плитки —
  * мягкое золотое свечение зоны, четыре — красная тревога.
+ *
+ * Внутри зоны — ЧЕТЫРЕ едва заметных посадочных гнезда (та же
+ * геометрия, что traySlots.ts): по виду сразу читается, что лоток
+ * вмещает РОВНО ЧЕТЫРЕ кости — раньше текстура дерева рисовала
+ * две тёмные полосы, и казалось, что мест только три.
  */
 
-import { registerTrayZone } from '@/lib/game/traySlots';
+import { registerTrayZone, TRAY_CAP } from '@/lib/game/traySlots';
 import { useGame } from '@/lib/game/store';
 
 export function Tray() {
@@ -22,7 +27,14 @@ export function Tray() {
       className={`mj-tray z-20 shrink-0${full ? ' full' : warn ? ' warn' : ''}`}
       aria-label="Лоток для плиток"
     >
-      <div className="mj-tray-zone" ref={registerTrayZone} />
+      <div className="mj-tray-zone" ref={registerTrayZone}>
+        {/* гнёзда-подсказки: ровно 4 места, на которые садятся кости */}
+        <span className="mj-tray-sockets" aria-hidden="true">
+          {Array.from({ length: TRAY_CAP }, (_, i) => (
+            <i key={i} />
+          ))}
+        </span>
+      </div>
     </div>
   );
 }

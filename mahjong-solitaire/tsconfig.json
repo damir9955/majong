@@ -37,6 +37,11 @@
     ".next/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "release-stage",
+    "deno-server",
+    "examples",
+    "scripts",
+    "skills"
   ]
 }
