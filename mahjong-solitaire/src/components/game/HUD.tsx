@@ -12,8 +12,7 @@
 
 import { useGame, UNDOS_MAX, HINTS_MAX, SHUFFLES_MAX } from '@/lib/game/store';
 import { useT } from '@/lib/i18n';
-import { Undo2, Shuffle } from 'lucide-react';
-import { IconHelp } from './icons';
+import { IconHelp, IconShuffle, IconUndo } from './icons';
 
 function CountBadge({
   count,
@@ -98,7 +97,7 @@ export function HUD() {
             aria-label={t('hud.undo')}
             title={t('hud.undoLeft', { n: session.undosLeft })}
           >
-            <Undo2 className="h-5 w-5 text-[#22432e] sm:h-6 sm:w-6 lg:h-7 lg:w-7" />
+            <IconUndo className="h-5 w-5 sm:h-6 sm:w-6 lg:h-7 lg:w-7" />
           </button>
           <CountBadge
             count={session.undosLeft}
@@ -115,7 +114,7 @@ export function HUD() {
             aria-label={t('hud.shuffle')}
             title={t('hud.shuffle')}
           >
-            <Shuffle className="h-5 w-5 text-[#b3382c] sm:h-6 sm:w-6 lg:h-7 lg:w-7" />
+            <IconShuffle className="h-5 w-5 sm:h-6 sm:w-6 lg:h-7 lg:w-7" />
           </button>
           <CountBadge
             count={session.shufflesLeft}

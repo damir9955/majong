@@ -8,12 +8,10 @@
  * через DOM (React не пишет transform/transition/display). Занятые
  * плитки НИЧЕМ не выделены.
  *
- * 3D-БЛОК (Task 28): у ОТКРЫТЫХ плиток есть нижняя и правая
- * грань (свет сверху-слева — как на реальном фото костей):
- * нижняя тёплая терракотовая, правая темнее. Плитки, накрытые
- * костью сверху (covered), граней НЕ показывают — они «в стене»,
- * вместо этого несут лёгкое затемнение от лежащей сверху кости:
- * сразу видно, кто на каком уровне.
+ * Фидбек «ужасные края вернулись»: выступающие 3D-грани (терракотовая
+ * нижняя + коричневая правая, Task 28) УБРАНЫ — плитка снова
+ * чистое фото кости от края до края, как в одобренном виде Task 27.
+ * Уровни стопки читаются по затемнению накрытых плиток.
  *
  * Рубашка: concealed=true — плитка лежит лицом вниз (тёмная
  * «ткань» с золотым орнаментом). Переворот — 3D-поворот
@@ -55,7 +53,6 @@ function TileInner({ v, registerEl }: Props) {
   const { tile } = v;
   const def = getTileDef(tile.defId);
   const radius = Math.max(5, v.width * 0.11);
-  const depth = Math.max(2, v.width * 0.062);
 
   const cls = [
     'mj-tile',
@@ -85,37 +82,15 @@ function TileInner({ v, registerEl }: Props) {
         zIndex: v.zIndex,
         borderRadius: radius,
         display: v.gone ? 'none' : undefined,
-        // лёгкая кромка по краю картинки + контакт блока со столом
-        // (тень ложится ПОД нижнюю грань) + спокойное широкое
-        // затенение вокруг
+        // тонкая кромка по краю картинки (белое не сливается) +
+        // мягкий контакт со столом — без выступающих граней
+        // (фидбек «ужасные края»: 3D-грани Task 28 убраны)
         boxShadow: v.covered
-          ? `inset 0 0 0 1px rgba(56,45,26,.14), 0 ${Math.max(1, depth * 0.3)}px ${Math.max(2, depth * 0.7)}px rgba(0,0,0,.18)`
-          : `inset 0 0 0 1px rgba(56,45,26,.16), 0 ${Math.max(2, depth * 0.7)}px ${Math.max(3, depth * 1.5)}px rgba(0,0,0,.26), 0 ${depth * 1.6}px ${depth * 5}px rgba(0,0,0,.18)`,
+          ? `inset 0 0 0 1px rgba(56,45,26,.14), 0 1px 3px rgba(0,0,0,.20)`
+          : `inset 0 0 0 1px rgba(56,45,26,.16), 0 2px 4px rgba(0,0,0,.22), 0 7px 16px rgba(0,0,0,.16)`,
         animationDelay: `${v.enterDelay}ms`,
       }}
     >
-      {/* 3D-блок: правая, нижняя и угловая грани — только у плиток,
-          сверху которых ничего не лежит (открытые «поверхностные»
-          кости). Накрытые — без граней, со лёгкой тенью сверху */}
-      {!v.covered && (
-        <>
-          <div
-            className="mj-side mj-side-r"
-            style={{ width: depth, borderRadius: `0 ${radius}px 0 0` }}
-            aria-hidden="true"
-          />
-          <div
-            className="mj-side mj-side-b"
-            style={{ height: depth, borderRadius: `0 0 0 ${radius}px` }}
-            aria-hidden="true"
-          />
-          <div
-            className="mj-side mj-side-c"
-            style={{ width: depth, height: depth, borderRadius: `0 0 ${radius}px 0` }}
-            aria-hidden="true"
-          />
-        </>
-      )}
       <div className="mj-flipper">
         <div className="mj-face" style={{ borderRadius: radius }}>
           <TileFace defId={tile.defId} />

@@ -109,6 +109,37 @@ function wsUrl(): string {
   return 'wss://mahjong-solitaire.damirkolmurzin.deno.net/ws';
 }
 
+/* ============ воркер-сердцебиение (как в рабочем образце) ============
+ * Браузер душит таймеры СВЁРНУТОЙ вкладки до ~1/мин — поллинг вьюхи
+ * там замирает. Воркер не дросселируется: тикает каждые 5 c и
+ * просит главный поток послать {t:'ping'} — сервер считает это
+ * присутствием (hb→ping и так работает, воркер — страховка от
+ * потерянных hb и заморозки). */
+let presenceWorker: Worker | null = null;
+
+function ensurePresenceWorker(): void {
+  if (presenceWorker || typeof Worker === 'undefined') return;
+  try {
+    const src =
+      "let iv=null;onmessage=e=>{if(e.data==='start'&&iv===null)" +
+      'iv=setInterval(()=>postMessage(1),5000);' +
+      "if(e.data==='stop'&&iv!==null){clearInterval(iv);iv=null}}";
+    presenceWorker = new Worker(
+      URL.createObjectURL(new Blob([src], { type: 'text/javascript' })),
+    );
+    presenceWorker.onmessage = () => {
+      // в видимой вкладке hb-понги уже идут — не дублируем
+      if (typeof document !== 'undefined' && document.hidden) {
+        wsClient.ping();
+      }
+    };
+    presenceWorker.postMessage('start');
+  } catch {
+    // воркер недоступен (старый браузер/политика) — останется hb→ping
+    presenceWorker = null;
+  }
+}
+
 /* ============================ сокет-клиент ============================ */
 
 class WsClient {
@@ -134,6 +165,7 @@ class WsClient {
   private statusSubs = new Set<(s: WsStatus) => void>();
 
   connect(): void {
+    ensurePresenceWorker();
     if (
       this.ws &&
       (this.ws.readyState === WebSocket.OPEN ||
@@ -180,6 +212,12 @@ class WsClient {
         }
       }
     };
+  }
+
+  /** присутствие без поллинга: свёрнутая вкладка / страховка
+   * (сервер обновляет lastSeen игрока по ping) */
+  ping(): void {
+    this.rawSend({ t: 'ping' });
   }
 
   private send(m: Record<string, unknown>): void {
@@ -683,8 +721,13 @@ export async function apiMatchJoin(
 }
 
 /** держим тикет живым; заодно сервер досматривает очередь */
-export async function apiMatchHeart(): Promise<MatchStatus> {
-  const data = await wsClient.request({ t: 'match-heart' }, 5000);
+export async function apiMatchHeart(level?: number): Promise<MatchStatus> {
+  // уровень едет с каждым сердцем: если сокет пережил обрыв и
+  // тикет потерялся — сервер пересоздаст его с актуальным уровнем
+  const data = await wsClient.request(
+    { t: 'match-heart', level: level ?? 1 },
+    5000,
+  );
   if (data.t === 'room' && data.view) {
     return {
       status: 'paired',

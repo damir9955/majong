@@ -155,8 +155,11 @@ export interface Battle {
     code: string;
     playerId: string;
     seed: number;
-    /** друг на связи (свежий поллинг) */
+    /** друг на связи (свежий поллинг + дебаунс: одиночный «офлайн»-вьюх
+     *     не роняет баннер «потерял связь» — только 2 подряд) */
     friendOnline: boolean;
+    /** сколько ПОДРЯД вьюх сказали «офлайн» (анти-мерцание баннера) */
+    offlineStreak: number;
     hostId?: string;
     friendId?: string;
     friendName?: string;
@@ -1686,6 +1689,7 @@ export const useGame = create<GameState>()(
             playerId,
             seed: view.seed,
             friendOnline: friend?.online ?? true,
+            offlineStreak: 0,
             hostId: view.hostId,
             friendId: friend?.id,
             friendName: friend?.name,
@@ -1768,7 +1772,17 @@ export const useGame = create<GameState>()(
                   online: b.online
                     ? {
                         ...b.online,
-                        friendOnline: friend?.online ?? false,
+                        // АНТИ-МЕРЦАНИЕ (Фидбек «каждые 3-5 секунд теряется
+                        // связь»): одиночный офлайн-вьюх — не повод
+                        // показывать баннер; только 2 подряд (~8 c)
+                        friendOnline: (() => {
+                          const fo = friend?.online ?? false;
+                          const streak = fo ? 0 : (b.online!.offlineStreak ?? 0) + 1;
+                          return fo || streak < 2;
+                        })(),
+                        offlineStreak: (friend?.online ?? false)
+                          ? 0
+                          : (b.online!.offlineStreak ?? 0) + 1,
                         hostId: view.hostId,
                         friendId: friend?.id,
                         friendName: friend?.name,

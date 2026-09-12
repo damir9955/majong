@@ -68,7 +68,7 @@ const RU: Record<string, string> = {
   'one.findSub': 'Автопоиск соперника — уровень не важен',
   'one.code': 'По коду',
   'one.codeSub': 'Открытые игры · вход по коду',
-  'one.bot': 'С компьютером',
+  'one.bot': 'С ботом',
   'one.botSub': 'Соперник сразу',
 
   // новый экран «1 на 1» (Task 32): играть сразу, минимум выбора
@@ -76,7 +76,8 @@ const RU: Record<string, string> = {
   'duel.playSub': 'Случайный соперник — уровень не важен',
   'duel.codeSub': 'Код или своя игра',
   'duel.codeTitle': 'По коду',
-  'duel.codeText': 'Введи код друга или создай свою игру',
+  'duel.createText': 'Создай свою игру — получишь код и позовёшь друга',
+  'duel.orJoin': 'или войти по коду друга',
   'duel.createOpen': 'Создать игру',
   'duel.saveName': 'Сохранить',
   'duel.openEmptyHint': 'Открытых игр нет — нажми «Играть» или создай свою',
@@ -108,6 +109,10 @@ const RU: Record<string, string> = {
   'wait.join': 'Войти',
   'wait.more': '+{n}',
   'wait.joining': 'Входим…',
+  'wait.confirmTitle': 'Присоединиться к игре?',
+  'wait.confirmText': '{name} ждёт соперника · уровень {n}',
+  'wait.confirmYes': 'Войти в игру',
+  'wait.confirmNo': 'Пока нет',
 
   // реванш по согласию обоих (Task 25)
   'rem.waiting': 'Ждём согласия соперника…',
@@ -328,7 +333,7 @@ const EN: Record<string, string> = {
   'one.findSub': 'Auto-match with any player — level does not matter',
   'one.code': 'By code',
   'one.codeSub': 'Open games · join by code',
-  'one.bot': 'vs Computer',
+  'one.bot': 'vs Bot',
   'one.botSub': 'Instant opponent',
 
   // new 1v1 screen (Task 32): play instantly, minimal choices
@@ -336,7 +341,8 @@ const EN: Record<string, string> = {
   'duel.playSub': 'Random opponent — any level',
   'duel.codeSub': 'Join by code or host your own',
   'duel.codeTitle': 'By code',
-  'duel.codeText': "Enter a friend's code or create your own game",
+  'duel.createText': 'Host your own game — you get a code to share',
+  'duel.orJoin': 'or join with a friend’s code',
   'duel.createOpen': 'Create game',
   'duel.saveName': 'Save',
   'duel.openEmptyHint': 'No open games right now — tap Play or create your own',
@@ -368,6 +374,10 @@ const EN: Record<string, string> = {
   'wait.join': 'Join',
   'wait.more': '+{n}',
   'wait.joining': 'Joining…',
+  'wait.confirmTitle': 'Join this game?',
+  'wait.confirmText': '{name} is waiting · level {n}',
+  'wait.confirmYes': 'Join game',
+  'wait.confirmNo': 'Not yet',
 
   // реванш по согласию (Task 25)
   'rem.waiting': 'Waiting for the opponent to accept…',

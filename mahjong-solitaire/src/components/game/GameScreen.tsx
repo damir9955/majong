@@ -25,7 +25,7 @@ import { AdModal } from './AdModal';
 import { setSoundEnabled, buzz } from '@/lib/sound';
 import { confetti, showToast } from '@/lib/game/fx';
 import { TileFace } from './TileFace';
-import { IconHome } from './icons';
+import { IconGear, IconHome, IconTrophy } from './icons';
 import {
   apiJoinRoom,
   apiLeave,
@@ -49,8 +49,6 @@ import {
   Shuffle,
   Eye,
   Users,
-  Trophy,
-  Settings,
   Bot,
   Globe2,
   KeyRound,
@@ -197,6 +195,9 @@ function WaitingPlayers({ hidden }: { hidden: boolean }) {
   const [joining, setJoining] = useState('');
   /** живая партия другого режима будет закрыта — спросить */
   const [replaceWarn, setReplaceWarn] = useState(false);
+  /** Фидбек: тап по ждущему игроку сначала спрашивает «точно
+   * присоединиться?» — случайный тап не кидает в чужую игру */
+  const [confirmRoom, setConfirmRoom] = useState<OpenRoomInfo | null>(null);
   const pendingRef = useRef('');
 
   // лобби открытых игр — живая подписка (WebSocket, ~2 c)
@@ -249,6 +250,14 @@ function WaitingPlayers({ hidden }: { hidden: boolean }) {
     void doJoin(roomCode);
   };
 
+  /** «точно присоединиться?» → да → обычный join (со своими
+   * проверками: замена живой партии и т.д.) */
+  const joinConfirmed = () => {
+    const r = confirmRoom;
+    setConfirmRoom(null);
+    if (r) join(r.code);
+  };
+
   if (hidden || !rooms || rooms.length === 0) return null;
   const creds = getSavedCreds();
   // свою комнату не предлагаем самому себе
@@ -272,7 +281,10 @@ function WaitingPlayers({ hidden }: { hidden: boolean }) {
             className="mj-waiting-row"
             data-testid="mj-waiting-row"
             disabled={!!joining}
-            onClick={() => join(r.code)}
+            onClick={() => {
+              buzz(8);
+              setConfirmRoom(r);
+            }}
           >
             <span
               className="mj-open-av"
@@ -296,6 +308,37 @@ function WaitingPlayers({ hidden }: { hidden: boolean }) {
           </span>
         )}
       </div>
+
+      {confirmRoom && (
+        <div className="mj-overlay" data-testid="mj-join-confirm">
+          <div className="mj-card">
+            <h2 className="text-2xl font-black text-[#22432e]">
+              {t('wait.confirmTitle')}
+            </h2>
+            <p className="mt-2 text-sm font-semibold text-stone-600">
+              {t('wait.confirmText', {
+                name: confirmRoom.hostName,
+                n: confirmRoom.level,
+              })}
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                className="mj-btn"
+                data-testid="mj-join-confirm-yes"
+                onClick={joinConfirmed}
+              >
+                {t('wait.confirmYes')}
+              </button>
+              <button
+                className="mj-btn mj-btn-ghost"
+                onClick={() => setConfirmRoom(null)}
+              >
+                {t('wait.confirmNo')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {replaceWarn && (
         <div className="mj-overlay">
@@ -615,7 +658,7 @@ function HomeScreen({
           aria-label={t('home.standings')}
           title={t('home.standings')}
         >
-          <Trophy className="h-5 w-5 text-[#b8860b] sm:h-6 sm:w-6" />
+          <IconTrophy className="h-5 w-5 sm:h-6 sm:w-6" />
         </button>
       </div>
       <div className="absolute right-3 top-[max(0.8rem,env(safe-area-inset-top))] flex gap-2 sm:right-5">
@@ -627,19 +670,32 @@ function HomeScreen({
           aria-label={t('home.settings')}
           title={t('home.settings')}
         >
-          <Settings className="h-5 w-5 text-[#22432e] sm:h-6 sm:w-6" />
+          <IconGear className="h-5 w-5 sm:h-6 sm:w-6" />
         </button>
       </div>
       <div className="flex flex-col items-center gap-3">
-        <div className="flex items-end gap-2 sm:gap-3">
-          <div className="mj-logo-tile" style={{ transform: 'rotate(-8deg)' }}>
-            <TileFace defId="drg-1" />
+        {/* Фидбек «на кости поставь красивые»: три лучшие грани
+            набора — птица (1 бамбук), хризантема и красный дракон;
+            свободный веер с лёгкими наклонами, как разложенные
+            настоящие кости */}
+        <div className="flex items-end gap-1.5 sm:gap-2.5">
+          <div
+            className="mj-logo-tile"
+            style={{ transform: 'rotate(-9deg) translateY(2px)' }}
+          >
+            <TileFace defId="bam-1" />
           </div>
           <div
             className="mj-logo-tile"
-            style={{ transform: 'rotate(6deg) translateY(-6px)' }}
+            style={{ transform: 'translateY(-5px) rotate(-2deg)' }}
           >
-            <TileFace defId="drg-2" />
+            <TileFace defId="flower-3" />
+          </div>
+          <div
+            className="mj-logo-tile"
+            style={{ transform: 'rotate(7deg) translateY(2px)' }}
+          >
+            <TileFace defId="drg-1" />
           </div>
         </div>
         <p className="mj-screen-title text-lg font-bold tracking-[0.3em] sm:text-2xl lg:text-3xl">
@@ -1210,13 +1266,21 @@ export function GameScreen() {
         </div>
       )}
       <TopBar onHome={onHome} />
+      {/* Фидбек «Собери пару появляется прямо на костях»:
+          челлендж живёт в СВОЕЙ зарезервированной полосе над доской
+          (высота постоянна весь матч — доска не прыгает), а не
+          плавает поверх плиток */}
+      {versus && (
+        <div className="mj-challenge-slot">
+          <ChallengeBanner />
+        </div>
+      )}
       {/* z-30: летящие в лоток плитки рисуются поверх верхней панели и лотка */}
       <main className="relative z-30 min-h-0 flex-1">
         <Board />
       </main>
       <HUD />
 
-      {versus && <ChallengeBanner />}
       {showIntro && <MatchIntro />}
       {battleFinished && <BattleResult />}
       {mode === 'classic' && finished && <ClassicResult />}

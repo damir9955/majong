@@ -245,7 +245,7 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
     let alive = true;
     const heart = async () => {
       try {
-        const st = await apiMatchHeart();
+        const st = await apiMatchHeart(useGame.getState().level);
         if (!alive) return;
         if (st.status === 'paired' && st.view && st.code && st.playerId) {
           saveCreds({
@@ -650,7 +650,8 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
         {err && <p className="mj-err text-center">{err}</p>}
       </div>
 
-      {/* ---- диалог «по коду» ---- */}
+      {/* ---- диалог «по коду»: СОЗДАТЬ и ВОЙТИ — разные действия,
+            до фидбека выглядело как «сначала введи код» ---- */}
       {codeOpen && (
         <div className="mj-overlay" data-testid="mj-code-dialog">
           <div className="mj-card relative w-full max-w-sm p-6">
@@ -665,34 +666,13 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
             <h2 className="flex items-center gap-2 text-xl font-black text-[#22432e]">
               <Globe2 className="h-5 w-5" /> {t('duel.codeTitle')}
             </h2>
+
+            {/* блок 1: создать свою игру — ничего вводить не надо */}
             <p className="mt-1 text-sm font-semibold text-stone-600">
-              {t('duel.codeText')}
+              {t('duel.createText')}
             </p>
-            <input
-              className="mj-input mj-code-input mt-4"
-              value={code}
-              onChange={(e) => onCode(e.target.value)}
-              placeholder="•••••"
-              maxLength={5}
-              autoComplete="off"
-              autoCapitalize="characters"
-              inputMode="text"
-              data-testid="mj-code-input"
-              autoFocus
-            />
             <button
               className="mj-btn mt-3 w-full"
-              disabled={busy || code.trim().length !== 5}
-              data-testid="mj-join-code"
-              onClick={() => {
-                if (guardLive({ kind: 'join', code })) return;
-                void joinGame(code);
-              }}
-            >
-              {busy && joiningCode === code ? '…' : t('room.enter')}
-            </button>
-            <button
-              className="mj-btn-secondary mt-2 w-full"
               disabled={busy}
               data-testid="mj-create-room"
               onClick={() => {
@@ -701,6 +681,35 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
               }}
             >
               {busy ? '…' : t('duel.createOpen')}
+            </button>
+
+            {/* разделитель двух разных действий */}
+            <div className="mj-code-divider" aria-hidden="true">
+              <span>{t('duel.orJoin')}</span>
+            </div>
+
+            {/* блок 2: войти в чужую игру по коду */}
+            <input
+              className="mj-input mj-code-input"
+              value={code}
+              onChange={(e) => onCode(e.target.value)}
+              placeholder="•••••"
+              maxLength={5}
+              autoComplete="off"
+              autoCapitalize="characters"
+              inputMode="text"
+              data-testid="mj-code-input"
+            />
+            <button
+              className="mj-btn-secondary mt-2 w-full"
+              disabled={busy || code.trim().length !== 5}
+              data-testid="mj-join-code"
+              onClick={() => {
+                if (guardLive({ kind: 'join', code })) return;
+                void joinGame(code);
+              }}
+            >
+              {busy && joiningCode === code ? '…' : t('room.enter')}
             </button>
           </div>
         </div>

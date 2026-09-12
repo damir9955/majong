@@ -46,7 +46,9 @@
  *  → {t:'mm', status:'search'} | {t:'room', view, playerId}
  *  ← {t:'match-heart'} / {t:'match-leave'}   держать/убрать тикет
  *  ← {t:'ping'} → {t:'pong'}                 живость соединения
- *  сервер шлёт {t:'hb'} каждые 25 c (клиент молча игнорирует)
+ *  сервер шлёт {t:'hb'} каждые 3 c; клиент отвечает {t:'ping'} —
+ *  это и есть присутствие игрока (lastSeen обновляется и в свёрнутой
+ *  вкладке, где таймеры страницы душатся до ~1/мин)
  *
  * СЧЁТ СЕРИИ (wins): у каждого игрока в комнате есть счётчик побед;
  * растёт при любом исходе в его пользу (cleared/tray/timeout/
@@ -65,8 +67,10 @@ const PORT = Number(Deno.env.get('PORT') ?? 8080);
 
 /** запас на интро-карточку и отсчёт 3-2-1 у обоих игроков */
 const INTRO_BUDGET_MS = 8000;
-/** «в сети»: игрок давал о себе знать не позже этого */
-const PRESENCE_MS = 8000;
+/** «в сети»: игрок давал о себе знать не позже этого
+ *  (12 c — как в рабочем образце: полл 4 c + мобильный джиттер
+ *  не должен мерцать флагом «потерял связь» каждые пару секунд) */
+const PRESENCE_MS = 12000;
 /** так долго нет вестей → победа соперника по отключению
  *  (30 c: перезагрузка страницы НЕ должна рвать матч ложно) */
 const ONLINE_GRACE_MS = 30000;
@@ -622,12 +626,18 @@ async function getFreshRoom(code: string): Promise<RoomState | null> {
 }
 
 /** изменить комнату через CAS; fn возвращает новое состояние,
- *  'abort' — без изменений (успех без записи), 'delete' — удалить */
+ *  'abort' — без изменений (успех без записи), 'delete' — удалить.
+ *  ВАЖНО (Фидбек «связь теряется»): два игрока поллят комнату каждые
+ *  ~4 c, каждый полл — запись (lastSeen); одновременные записи из
+ *  разных изолятов конфликтуют по versionstamp. Если ретраи исчерпаны,
+ *  это НЕ значит «комнаты нет» — возвращаем её с contention:true,
+ *  чтобы вызывающие отвечали вьюхой, а не страшным ROOM_NOT_FOUND
+ *  (из-за которого клиент ронял матч после 3 промахов подряд). */
 async function mutateRoom(
   code: string,
   fn: (r: RoomState) => RoomState | 'abort' | 'delete',
-): Promise<{ ok: boolean; room: RoomState | null; changed?: boolean; deleted?: boolean }> {
-  for (let i = 0; i < 6; i++) {
+): Promise<{ ok: boolean; room: RoomState | null; changed?: boolean; deleted?: boolean; contention?: boolean }> {
+  for (let i = 0; i < 10; i++) {
     const entry = await kv.get<RoomState>(['room', code]);
     const cur = entry?.value ?? null;
     if (!cur) return { ok: false, room: null };
@@ -642,9 +652,15 @@ async function mutateRoom(
       .set(['room', code], next)
       .commit();
     if (res.ok) return { ok: true, room: next, changed: true };
-    // конфликт — перечитываем и пробуем снова
+    // конфликт — крошечная пауза (растёт) и снова
+    await new Promise((r) => setTimeout(r, 8 + i * 12));
   }
-  return { ok: false, room: null };
+  // исчерпали ретраи: комната почти наверняка жива — не даём
+  // вызывающим врать «ROOM_NOT_FOUND»
+  const last = await kv.get<RoomState>(['room', code]);
+  return last?.value
+    ? { ok: false, room: last.value, contention: true }
+    : { ok: false, room: null };
 }
 
 /** разослать вьюху локальным сокетам комнаты (свой вклад изолята) */
@@ -885,13 +901,16 @@ async function touchTicket(sock: Sock): Promise<void> {
     .catch(() => {});
 }
 
-async function createTicketFor(sock: Sock): Promise<void> {
+async function createTicketFor(
+  sock: Sock,
+  level = 1,
+): Promise<void> {
   const id = rndId();
   const tk: TicketState = {
     id,
     name: sock.name || 'Игрок',
     hue: rndHue(),
-    level: 1,
+    level,
     createdAt: now(),
     lastSeen: now(),
     paired: null,
@@ -1365,7 +1384,10 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
         r.status = 'playing';
         return r;
       });
-      if (!res.ok || !res.room) {
+      if (!res.room) {
+        // комнаты действительно нет (CAS-конфликт теперь возвращает
+        // живую комнату, а не ложное «пусто» — согласие на реванш
+        // больше не ломается спорадической ROOM_EMPTY)
         errOf(s, m, 'ROOM_EMPTY');
         return;
       }
@@ -1453,9 +1475,21 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
     /** держим тикет живым (клиент раз в ~4 c, пока ищет) */
     case 'match-heart': {
       if (!s.mmTicket) {
-        // watch мог уже втащить в комнату — молча ок
-        send(s, { t: 'mm', status: s.roomCode ? 'paired' : 'search', rid: m.rid });
-        return;
+        if (s.roomCode && s.playerId) {
+          // watch уже втащил в комнату — молча ок
+          send(s, { t: 'mm', status: 'paired', rid: m.rid });
+          return;
+        }
+        // САМОВОССТАНОВЛЕНИЕ ОЧЕРЕДИ (Фидбек «не соединяется при
+        // быстрой игре»): сокет мог пережить обрыв/переподключение —
+        // старый тикет при close уже удалён, и на новом сокете его
+        // нет. Раньше клиент вечно висел в «поиске»: heart отвечал
+        // «search», но тикета в очереди не было. Встаём заново.
+        const lvl = Number(m.level);
+        await createTicketFor(
+          s,
+          Number.isFinite(lvl) ? clamp(Math.floor(lvl), 1, 999) : 1,
+        );
       }
       await touchTicket(s);
       await tryMatchAll();
@@ -1473,6 +1507,17 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
           });
         }
         return;
+      }
+      // watch мог уже втащить нас в комнату между tryMatchAll и
+      // чтением тикета (memory-KV гонка: pump обнуляет mmTicket) —
+      // отвечаем комнатой сокета, иначе клиент получит «search»
+      // при живом матче и застрянет в радаре
+      if (s.roomCode && s.playerId) {
+        const room = await getRoom(s.roomCode);
+        if (room) {
+          send(s, { t: 'room', view: view(room), playerId: s.playerId, rid: m.rid });
+          return;
+        }
       }
       send(s, { t: 'mm', status: 'search', rid: m.rid });
       return;
@@ -1606,10 +1651,13 @@ const janitorDelay = 60_000 + Math.floor(Math.random() * 240_000);
 setInterval(() => void janitor().catch(() => {}), 300_000 + janitorDelay % 60_000);
 setTimeout(() => void janitor().catch(() => {}), janitorDelay);
 
-// hb: живость соединений (браузерные WS сами не пингуют)
+// hb: живость соединений (браузерные WS сами не пингуют).
+// Каждые 3 c — как в рабочем образце: держит NAT/прокси тёплым,
+// а клиент отвечает {t:'ping'} → сервер обновляет lastSeen игрока
+// (присутствие не зависит от поллинга вьюхи).
 setInterval(() => {
   for (const s of sockets) send(s, { t: 'hb' });
-}, 25_000);
+}, 3_000);
 
 Deno.serve({ port: PORT }, handle);
 console.log(
