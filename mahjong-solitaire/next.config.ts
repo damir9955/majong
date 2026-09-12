@@ -1,15 +1,31 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // БЕЗ output: "standalone" — Vercel собирает свой выпуск, а
-  // standalone-копирование node_modules (платформенные optional-зависимости
-  // sharp/@img) падало на свежем bun install с ENOENT.
+  output: "standalone",
+  /* config options here */
   typescript: {
     ignoreBuildErrors: true,
   },
-  // Строгий режим выключен: DOM-анимации полёта плиток в лоток
-  // рассчитаны на однократное срабатывание эффектов.
   reactStrictMode: false,
+  async headers() {
+    return [
+      {
+        // Service Worker и манифест всегда свежие: браузер сверяет
+        // их при каждом запуске, не таская старую версию из HTTP-кеша
+        source: "/sw.js",
+        headers: [
+          { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
+          { key: "Service-Worker-Allowed", value: "/" },
+        ],
+      },
+      {
+        source: "/manifest.json",
+        headers: [
+          { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

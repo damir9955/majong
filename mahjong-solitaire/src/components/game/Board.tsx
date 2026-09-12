@@ -44,11 +44,13 @@ const TILE_RATIO = 1.28; // высота плитки к ширине
 const MAX_TILE_W = 168; // на планшете/десктопе плитки крупнее
 const RESERVE_MS = 160; // страховка после взрыва до освобождения ячеек
 
-const FLIGHT_MS = 420; // обычный полёт доска → лоток одним скольжением
-const TRAY_MS = 300; // спокойные сдвиги внутри лотка
-const JOIN_MS = 260; // соединение пары в лотке
-const BOOM_MS = 520; // взрыв пары
-const FLIP_MS = 460; // переворот рубашки — полёт начинается ПОСЛЕ него
+const FLIGHT_MS = 340; // обычный полёт доска → лоток одним скольжением
+const TRAY_MS = 260; // спокойные сдвиги внутри лотка
+const JOIN_MS = 220; // соединение пары в лотке
+const BOOM_MS = 500; // взрыв пары
+const FLIP_MS = 220; // переворот рубашки — полёт начинается ПОСЛЕ него
+// (фидбек «улетают с задержкой»: раньше кость лежала 460 мс,
+//  разворачиваясь — теперь переворот вдвое короче)
 const PEEK_HOLD_MS = 300; // удержание до поднятия плитки
 const PEEK_MAX_X = 120;
 const PEEK_MIN_Y = -170;
@@ -362,34 +364,44 @@ export function Board() {
     [placeAt, clearFlyTimers, addFlyTimer],
   );
 
-  /** первая свободная позиция зоны: занято всё, что имеет позицию —
-   *  одиночки, соединяющиеся пары и ЯЧЕЙКИ ВЗРЫВАЮЩИХСЯ пар
-   *  (резерв держится до полного конца взрыва) */
+  /** первая свободная позиция зоны: занято всё, что имеет позицию
+   *  (одиночки и соединяющиеся пары), НО ячейки пар, которые уже
+   *  ВЗРЫВАЮТСЯ (state 'gone'), свободны: взрыв — чистый фейдер,
+   *  новая пара подлетает сразу — без очереди «нажал 4 — улетела
+   *  одна» */
   const firstFreePos = useCallback(() => {
+    const F = fl.current;
     const used = new Set<number>();
-    fl.current.posOf.forEach((pos) => used.add(pos));
+    F.posOf.forEach((pos, id) => {
+      if (F.state.get(id) !== 'gone') used.add(pos);
+    });
     let i = 0;
     while (used.has(i)) i++;
     return i;
   }, []);
 
   /** база пары: две СВОБОДНЫЕ соседние ячейки — житель и прилетевшая
-   *  встают рядом, как классические ячейки 1-2 или 3-4 */
+   *  встают рядом, как классические ячейки 1-2 или 3-4. Ячейки
+   *  взрывающихся пар не считаются занятыми (см. firstFreePos) */
   const pairBasePos = useCallback(() => {
+    const F = fl.current;
     const used = new Set<number>();
-    fl.current.posOf.forEach((pos) => used.add(pos));
+    F.posOf.forEach((pos, id) => {
+      if (F.state.get(id) !== 'gone') used.add(pos);
+    });
     for (let b = 0; b < TRAY_CAP; b++) {
       if (!used.has(b) && !used.has(b + 1)) return b;
     }
     return -1;
   }, []);
 
-  /** ячейку держит взрывающаяся/соединяющаяся пара (не одиночка)? */
+  /** ячейку держит СОЕДИНЯЮЩАЯСЯ пара (не одиночка и не взрыв)?
+   *  именно 'joining' блокирует; 'gone' (взрыв пошёл) — уже нет */
   const cellBlocked = useCallback((b: number) => {
     const F = fl.current;
     let blocked = false;
     F.posOf.forEach((pos, id) => {
-      if (pos === b && F.state.get(id) !== 'tray') blocked = true;
+      if (pos === b && F.state.get(id) === 'joining') blocked = true;
     });
     return blocked;
   }, []);
@@ -835,21 +847,26 @@ export function Board() {
 
   /* ------------------ жесты ------------------ */
 
-  const gs = useRef({
-    active: false,
-    pid: -1,
-    x0: 0,
-    y0: 0,
-    t0: 0,
-    id: -1,
-    el: null as HTMLDivElement | null,
-    peek: false,
+  /* МУЛЬТИТАЧ (фидбек «успеваешь нажать 4 штуки — улетает одна»):
+   * раньше существовал ОДИН жест — палец №2, коснувшийся доски до
+   * отпускания пальца №1, игнорировался НАВСЕГДА (его pointerup уже
+   * не совпадал с pid) — быстрый набор терял тапы. Теперь каждый
+   * указатель живёт своей жизнью: Map<pointerId, жест>, и каждый
+   * тап доезжает до tapTile независимо от соседей. */
+  interface Gesture {
+    x0: number;
+    y0: number;
+    t0: number;
+    id: number;
+    el: HTMLDivElement | null;
+    peek: boolean;
     /** свободную плитку можно поднять пальцем, зажатую — нет */
-    liftable: false,
-    timer: 0,
-    moved: 0,
-    baseZ: '',
-  });
+    liftable: boolean;
+    timer: number;
+    moved: number;
+    baseZ: string;
+  }
+  const gestures = useRef(new Map<number, Gesture>());
 
   const tileIdFrom = (target: EventTarget | null): number | null => {
     const el = (target as HTMLElement | null)?.closest?.('[data-tile-id]');
@@ -858,8 +875,7 @@ export function Board() {
     return Number.isFinite(id) ? id : null;
   };
 
-  const beginPeek = () => {
-    const g = gs.current;
+  const beginPeek = (g: Gesture) => {
     if (g.peek || !g.el || !g.liftable) return;
     g.peek = true;
     g.el.classList.add('mj-peek');
@@ -868,8 +884,7 @@ export function Board() {
     buzz(12);
   };
 
-  const endPeek = () => {
-    const g = gs.current;
+  const endPeek = (g: Gesture) => {
     const el = g.el;
     if (!el) return;
     el.classList.remove('mj-peek');
@@ -884,7 +899,7 @@ export function Board() {
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if (gs.current.active) return;
+      if (gestures.current.has(e.pointerId)) return;
       const s = useGame.getState().session;
       if (!s || s.status !== 'play' || s.pendingLose) return;
       const id = tileIdFrom(e.target);
@@ -897,34 +912,35 @@ export function Board() {
       } catch {
         /* noop */
       }
-      const g = gs.current;
-      g.active = true;
-      g.pid = e.pointerId;
-      g.x0 = e.clientX;
-      g.y0 = e.clientY;
-      g.t0 = performance.now();
-      g.id = id;
-      g.el = el;
-      g.peek = false;
-      g.moved = 0;
-      g.baseZ = el.style.zIndex || '';
       // поднять пальцем можно только СВОБОДНУЮ плитку
       const tile = s.tiles.find((t) => t.id === id);
-      g.liftable = !!tile && isFree(tile, buildOccupancy(s.tiles));
-      g.timer = window.setTimeout(beginPeek, PEEK_HOLD_MS);
+      const g: Gesture = {
+        x0: e.clientX,
+        y0: e.clientY,
+        t0: performance.now(),
+        id,
+        el,
+        peek: false,
+        liftable: !!tile && isFree(tile, buildOccupancy(s.tiles)),
+        timer: 0,
+        moved: 0,
+        baseZ: el.style.zIndex || '',
+      };
+      gestures.current.set(e.pointerId, g);
+      g.timer = window.setTimeout(() => beginPeek(g), PEEK_HOLD_MS);
     },
     [],
   );
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
-    const g = gs.current;
-    if (!g.active || e.pointerId !== g.pid || !g.el) return;
+    const g = gestures.current.get(e.pointerId);
+    if (!g || !g.el) return;
     const dx = e.clientX - g.x0;
     const dy = e.clientY - g.y0;
     g.moved = Math.max(g.moved, Math.hypot(dx, dy));
     if (!g.peek && g.moved > 14) {
       window.clearTimeout(g.timer);
-      beginPeek();
+      beginPeek(g);
     }
     if (g.peek) {
       const px = clamp(dx, -PEEK_MAX_X, PEEK_MAX_X);
@@ -936,22 +952,16 @@ export function Board() {
 
   const finishGesture = useCallback(
     (e: React.PointerEvent, cancelled: boolean) => {
-      const g = gs.current;
-      if (!g.active || e.pointerId !== g.pid) return;
+      const g = gestures.current.get(e.pointerId);
+      if (!g) return;
       window.clearTimeout(g.timer);
       const quick = performance.now() - g.t0 < 360 && g.moved < 14;
       if (g.peek) {
-        endPeek();
+        endPeek(g);
       } else if (quick && !cancelled && g.id >= 0) {
         tapTile(g.id);
       }
-      g.active = false;
-      g.el = null;
-      g.id = -1;
-      g.pid = -1;
-      g.peek = false;
-      g.liftable = false;
-      g.timer = 0;
+      gestures.current.delete(e.pointerId);
     },
     [tapTile],
   );

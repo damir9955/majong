@@ -92,20 +92,27 @@ export function VersusBar() {
 
         {/* таймер + гонка */}
         <div className="mj-vmid">
-          <div className={`mj-timer tabular-nums ${low ? 'mj-timer-low' : ''}`}>
-            {fmtTime(b.timeLeftMs)}
+          {/* Фидбек «счёт перекрывает полоску прогресса со 2-й игры»:
+              чип серии «2:1» раньше вставал ОТДЕЛЬНЫМ рядом под
+              таймером — с его появлением (первая победа сыграна)
+              колонка переставала влезать в фиксированную высоту
+              панели и налезала на полосы. Теперь таймер и чип
+              стоят в ОДНОЙ строке — высота колонки не меняется
+              никогда, полосы прогресса не перекрываются. */}
+          <div className="mj-timer-row">
+            <div className={`mj-timer tabular-nums ${low ? 'mj-timer-low' : ''}`}>
+              {fmtTime(b.timeLeftMs)}
+            </div>
+            {online && b.online && b.online.myWins + b.online.friendWins > 0 && (
+              <span
+                className="mj-series-chip tabular-nums"
+                data-testid="mj-series-chip"
+                title={t('series.title')}
+              >
+                {b.online.myWins}:{b.online.friendWins}
+              </span>
+            )}
           </div>
-          {/* счёт серии (Task 32): маленькое «2:1» под таймером —
-              только в онлайн-матче и только если серия уже пошла */}
-          {online && b.online && b.online.myWins + b.online.friendWins > 0 && (
-            <span
-              className="mj-series-chip tabular-nums"
-              data-testid="mj-series-chip"
-              title={t('series.title')}
-            >
-              {b.online.myWins}:{b.online.friendWins}
-            </span>
-          )}
           <div className="mj-race" aria-label="Прогресс гонки">
             <div className="mj-race-row">
               <div

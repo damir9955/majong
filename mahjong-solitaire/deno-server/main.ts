@@ -45,6 +45,11 @@
  *  ← {t:'match', name, level}                быстрый матч: в очередь
  *  → {t:'mm', status:'search'} | {t:'room', view, playerId}
  *  ← {t:'match-heart'} / {t:'match-leave'}   держать/убрать тикет
+ *  Быстрый матч = очередь + ОТКРЫТАЯ комната-ожидание: пока игрок
+ *  ищет, другие видят его в лобби как открытую игру (можно войти
+ *  карточкой из главного меню); подобрали — комната-ожидание
+ *  тихо убирается. НИКАКОЙ утечки watch: сокет держит подписки
+ *  строго по своим комнатам и отпускает их при перепривязке.
  *  ← {t:'ping'} → {t:'pong'}                 живость соединения
  *  сервер шлёт {t:'hb'} каждые 3 c; клиент отвечает {t:'ping'} —
  *  это и есть присутствие игрока (lastSeen обновляется и в свёрнутой
@@ -154,6 +159,10 @@ interface TicketState {
   level: number;
   createdAt: number;
   lastSeen: number;
+  /** комната-ожидание быстрого матча: пока ищем пару, мы ВИДНЫ
+   *  в лобби открытых игр (фидбек «когда 1 ищет быструю игру,
+   *  у другого не появляется открытая комната») */
+  waitCode: string | null;
   /** подобрали: комната готова */
   paired: {
     code: string;
@@ -490,16 +499,34 @@ interface Sock {
   lobby: boolean;
   /** активный тикет матчмейкинга */
   mmTicket: string | null;
+  /** комнаты, на чьи watch этот сокет держит ссылку.
+   *  ФИДБЕК «ПОСЛЕ 3-4 ИГР ТЕРЯЕТСЯ СВЯЗЬ»: раньше каждая
+   *  перепривязка (быстрая игра → комната → реванш → выход)
+   *  делала refs++ у kv.watch и НИКОГДА не отпускала его —
+   *  потоки подписок копились, изолят задыхался и рвал всех.
+   *  Теперь сокет держит ровно те комнаты, за которыми следит,
+   *  и отпускает их при перепривязке и закрытии. */
+  watched: Set<string>;
   alive: boolean;
 }
 
 const sockets = new Set<Sock>();
 
-/** атомарная смена привязки сокета к комнате (последний выигрывает) */
+/** атомарная смена привязки сокета к комнате (последний выигрывает);
+ *  watch-подписки прежних комнат отпускаем — накопление подписок
+ *  за несколько игр подряд больше не рвёт связь */
 function bindSock(s: Sock, code: string | null, pid: string | null): void {
   s.bindEpoch++;
+  if (s.roomCode !== code) {
+    for (const rc of [...s.watched]) {
+      if (rc === code) continue;
+      s.watched.delete(rc);
+      releaseRoomWatch(rc);
+    }
+  }
   s.roomCode = code;
   s.playerId = pid;
+  if (code) watchRoom(s, code);
 }
 
 /** комната → {lastPushedVs, lastEventAt, watch} — подписка изолята */
@@ -563,7 +590,13 @@ function ensureRoomWatch(code: string): void {
           const v = view(room);
           const targets = localRoomSocks(code);
           for (const s of targets) {
-            send(s, { t: 'room', view: v });
+            // playerId в пуше: клиент быстрого матча ещё без кредов —
+            // без него он не смог бы войти в найденную комнату
+            send(s, {
+              t: 'room',
+              view: v,
+              ...(s.playerId ? { playerId: s.playerId } : {}),
+            });
             // событие «соперник собрал пару» — с дедупом по времени
             if (
               room.lastEvent &&
@@ -608,6 +641,16 @@ function releaseRoomWatch(code: string): void {
   } catch {
     // ignore
   }
+}
+
+/** сокет следит за комнатой: одна ссылка на сокет — один refs++
+ *  у watch (сколько сокетов в комнате на изоляте, столько и refs).
+ *  Раньше ensureRoomWatch дёргали из пяти мест подряд без учёта —
+ *  refs расползались и watch-потоки утекали навсегда. */
+function watchRoom(s: Sock, code: string): void {
+  if (s.watched.has(code)) return;
+  s.watched.add(code);
+  ensureRoomWatch(code);
 }
 
 /* ==================== ЧТЕНИЕ/ЗАПИСЬ КОМНАТ (CAS) ==================== */
@@ -672,7 +715,11 @@ function pushLocal(code: string, room: RoomState): void {
   const w = roomWatches.get(code);
   const v = view(room);
   for (const s of localRoomSocks(code)) {
-    send(s, { t: 'room', view: v });
+    send(s, {
+      t: 'room',
+      view: v,
+      ...(s.playerId ? { playerId: s.playerId } : {}),
+    });
     if (
       room.lastEvent &&
       (!w || room.lastEvent.at > w.lastEventAt) &&
@@ -757,11 +804,14 @@ async function sweep(): Promise<void> {
       pushLocal(code, res.room);
     }
   }
-  // тикеты: мёртвые — вон
+  // тикеты: мёртвые — вон (заодно их комнаты-ожидания из лобби)
   try {
     for await (const e of kv.list<TicketState>({ prefix: ['mm'] })) {
       const tk = e.value;
-      if (tk && t - tk.lastSeen > TICKET_TTL_MS) await kv.delete(e.key);
+      if (tk && t - tk.lastSeen > TICKET_TTL_MS) {
+        await kv.delete(e.key);
+        if (tk.waitCode) void deleteWaitingRoom(tk.waitCode);
+      }
     }
   } catch {
     // KV моргнул — в следующий тик
@@ -838,6 +888,51 @@ function ensureLobbyLoop(): void {
 
 /* ==================== МАТЧМЕЙКИНГ ==================== */
 
+/** безопасно удалить комнату-ожидание: только если она ВСЁ ЕЩЕ
+ *  ждёт (status waiting, 1 игрок). Если в неё успели войти —
+ *  versionstamp не сойдётся, удаление отменяется (гонка join) */
+async function deleteWaitingRoom(code: string): Promise<void> {
+  if (!code) return;
+  try {
+    const e = await kv.get<RoomState>(['room', code]);
+    const r = e?.value;
+    if (!r || r.status !== 'waiting' || r.players.length !== 1) return;
+    await kv.atomic()
+      .check(e as KvEntry<unknown>)
+      .delete(['room', code])
+      .commit();
+  } catch {
+    // KV моргнул — комнату добьёт янитор по stale-хосту
+  }
+}
+
+/** в комнату вошёл второй игрок: пометить paired тикеты тех, кто
+ *  «искал быструю игру» именно в этой комнате-ожидании (хост),
+ *  чтобы очередь больше не предлагала их в другие матчи */
+async function pairTicketsForRoom(
+  code: string,
+  hostPlayerId: string,
+): Promise<void> {
+  try {
+    for await (const e of kv.list<TicketState>({ prefix: ['mm'] })) {
+      const tk = e.value;
+      if (!tk || tk.paired || tk.waitCode !== code) continue;
+      await kv.atomic()
+        .check(e as KvEntry<unknown>)
+        .set(['mm', tk.id], { ...tk, paired: { code, playerId: hostPlayerId } })
+        .commit();
+      for (const s of sockets) {
+        if (s.mmTicket === tk.id) {
+          s.mmTicket = null;
+          releaseTicketWatch(tk.id);
+        }
+      }
+    }
+  } catch {
+    // KV моргнул — heart тикета досмотрит
+  }
+}
+
 /** подпишись на свой тикет: когда другой изолят его «подберёт» —
  *  пришлём сокету готовую комнату */
 function ensureTicketWatch(sock: Sock, ticketId: string): void {
@@ -846,21 +941,41 @@ function ensureTicketWatch(sock: Sock, ticketId: string): void {
     const reader = kv.watch([['mm', ticketId]]).getReader();
     ticketWatches.set(ticketId, reader);
     const pump = async () => {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) return;
-        const tk = value?.[0]?.value as TicketState | null;
-        if (!tk || !tk.paired || !sock.alive) continue;
-        // подобрали! втаскиваем сокет в комнату
-        sock.mmTicket = null;
-        releaseTicketWatch(ticketId);
-        const room = await getFreshRoom(tk.paired.code);
-        if (!room) continue;
-        sock.roomCode = room.code;
-        sock.playerId = tk.paired.playerId;
-        ensureRoomWatch(room.code);
-        send(sock, { t: 'room', view: view(room), playerId: tk.paired.playerId });
-        return;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) return;
+          const tk = value?.[0]?.value as TicketState | null;
+          // тикет удалён (TTL/выход) — больше не ждём, поток закрыт
+          if (!tk) {
+            if (ticketWatches.get(ticketId) === reader) {
+              ticketWatches.delete(ticketId);
+            }
+            return;
+          }
+          if (!sock.alive) {
+            if (ticketWatches.get(ticketId) === reader) {
+              ticketWatches.delete(ticketId);
+            }
+            try {
+              reader.cancel();
+            } catch {
+              // ignore
+            }
+            return;
+          }
+          if (!tk.paired) continue;
+          // подобрали! втаскиваем сокет в комнату
+          sock.mmTicket = null;
+          releaseTicketWatch(ticketId);
+          const room = await getFreshRoom(tk.paired.code);
+          if (!room) continue;
+          bindSock(sock, room.code, tk.paired.playerId);
+          send(sock, { t: 'room', view: view(room), playerId: tk.paired.playerId });
+          return;
+        }
+      } catch {
+        // watch умер — heart тикета подхватит
       }
     };
     void pump();
@@ -885,7 +1000,11 @@ async function dropTicket(sock: Sock): Promise<void> {
   sock.mmTicket = null;
   if (id) {
     releaseTicketWatch(id);
+    // заодно убрать комнату-ожидание быстрого матча из лобби
+    const e = await kv.get<TicketState>(['mm', id]).catch(() => null);
+    const waitCode = e?.value?.waitCode ?? null;
     await kv.delete(['mm', id]).catch(() => {});
+    if (waitCode) await deleteWaitingRoom(waitCode);
   }
 }
 
@@ -905,11 +1024,87 @@ async function touchTicket(sock: Sock): Promise<void> {
     .catch(() => {});
 }
 
+/** встать в очередь быстрого матча: тикет + ОТКРЫТАЯ комната-
+ *  ожидание (гостям она видна в лобби как обычная открытая
+ *  игра — фидбек «даже быстрая игра показывай как открытую
+ *  комнату в главном меню»). Хост привязан к ней сокетом и
+ *  получает пуши, как только кто-то войдёт. Если сокет УЖЕ сидит
+ *  в живой ждущей комнате (восстановление после обрыва) —
+ *  переиспользуем её, дублей в лобби не появляется. */
 async function createTicketFor(
   sock: Sock,
   level = 1,
 ): Promise<void> {
   const id = rndId();
+  // ПЕРЕИСПОЛЬЗОВАНИЕ: сокет уже в живой ждущей комнате, где он
+  // хост — это и есть комната-ожидание (тикет протух, комната жива)
+  let waitCode: string | null = null;
+  let hostId: string | null = null;
+  if (sock.roomCode && sock.playerId) {
+    try {
+      const cur = await getRoom(sock.roomCode);
+      if (cur && cur.status === 'waiting' && cur.players[0]?.id === sock.playerId) {
+        waitCode = cur.code;
+        hostId = cur.players[0].id;
+      }
+    } catch {
+      // KV моргнул — создадим новую
+    }
+  }
+  if (!waitCode) {
+    // код комнаты: не конфликтует с живыми
+    let code = '';
+    for (let i = 0; i < 5; i++) {
+      code = newCode();
+      const taken = await kv.get(['room', code]);
+      if (!taken?.value) break;
+      code = '';
+    }
+    if (code) {
+      waitCode = code;
+      hostId = rndId();
+      const room: RoomState = {
+        code: waitCode,
+        level: clamp(level, 1, 999),
+        seed: newSeed(),
+        status: 'waiting',
+        hostId: hostId!,
+        visibility: 'open',
+        startedAt: 0,
+        timeTotalMs: timeForLevel(level),
+        createdAt: now(),
+        players: [{
+          id: hostId!,
+          name: sock.name || 'Игрок',
+          hue: rndHue(),
+          score: 0,
+          pairsDone: 0,
+          lastSeen: now(),
+          finished: null,
+          wins: 0,
+        }],
+        result: null,
+        advanceBy: {},
+        lastEvent: null,
+      };
+      const res = await kv.atomic()
+        .check({
+          key: ['room', waitCode],
+          value: null,
+          versionstamp: null as unknown as string,
+        })
+        .set(['room', waitCode], room)
+        .commit()
+        .catch((): KvCommitResult | null => null);
+      if (res?.ok) {
+        bindSock(sock, waitCode, hostId);
+      } else {
+        // комната не создалась (редкая коллизия кода) — ищем без неё
+        waitCode = null;
+        hostId = null;
+      }
+    }
+  }
   const tk: TicketState = {
     id,
     name: sock.name || 'Игрок',
@@ -917,11 +1112,13 @@ async function createTicketFor(
     level,
     createdAt: now(),
     lastSeen: now(),
+    waitCode,
     paired: null,
   };
   await kv.set(['mm', id], tk);
   sock.mmTicket = id;
   ensureTicketWatch(sock, id);
+  // в лобби она появится очередным тиком лобби-цикла (≤2 c)
 }
 
 /** попробовать подобрать пары и подсадить одиночек в открытые игры */
@@ -1007,7 +1204,11 @@ async function pairTickets(a: TicketState, b: TicketState): Promise<boolean> {
     .set(['mm', b.id], { ...eb.value, paired: { code, playerId: guestId } })
     .set(['room', code], room)
     .commit();
-  return res.ok;
+  if (!res.ok) return false;
+  // подобрали друг друга — комнаты-ожидания из лобби убираем
+  if (a.waitCode) void deleteWaitingRoom(a.waitCode);
+  if (b.waitCode) void deleteWaitingRoom(b.waitCode);
+  return true;
 }
 
 async function joinFirstOpenRoom(tk: TicketState): Promise<boolean> {
@@ -1019,6 +1220,9 @@ async function joinFirstOpenRoom(tk: TicketState): Promise<boolean> {
       const r = e.value;
       if (!r || r.status !== 'waiting' || r.visibility !== 'open') continue;
       if (r.players.length >= 2) continue;
+      // СВОЮ комнату-ожидание пропускаем — иначе одиночка вошёл бы
+      // вторым игроком в собственную комнату (матч с самим собой)
+      if (tk.waitCode && r.code === tk.waitCode) continue;
       const host = r.players[0];
       if (!host || t - host.lastSeen > WAITING_HOST_STALE_MS) continue;
       cands.push({ code: r.code, at: r.createdAt });
@@ -1053,6 +1257,14 @@ async function joinFirstOpenRoom(tk: TicketState): Promise<boolean> {
     .check(et as KvEntry<unknown>)
     .set(['mm', tk.id], { ...et.value, paired: { code: target.code, playerId: guestId } })
     .commit();
+  // у входящего — своя комната-ожидание больше не нужна
+  if (tk.waitCode && tk.waitCode !== target.code) {
+    void deleteWaitingRoom(tk.waitCode);
+  }
+  // хост комнаты, куда вошли, мог искать быструю игру — его
+  // тикет выводим из очереди (матч уже состоялся)
+  const host = res.room.players[0];
+  if (host) await pairTicketsForRoom(target.code, host.id);
   return true;
 }
 
@@ -1091,7 +1303,6 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
         if (s.bindEpoch !== myEpoch) return; // нас обогнали
         if (room && room.players.some((p) => p.id === pid)) {
           bindSock(s, room.code, pid);
-          ensureRoomWatch(room.code);
           // прогреваем присутствие — перезагрузка не должна рвать матч
           await mutateRoom(room.code, (r) => {
             const p = r.players.find((x) => x.id === pid);
@@ -1175,7 +1386,6 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
       }
       s.name = name;
       bindSock(s, code, hostId);
-      ensureRoomWatch(code);
       send(s, { t: 'room', view: view(room), playerId: hostId, rid: m.rid });
       return;
     }
@@ -1240,9 +1450,13 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
       const room = res.room!;
       s.name = name;
       bindSock(s, room.code, joinerId);
-      ensureRoomWatch(room.code);
       // обоим локальным: вьюха старта (соперник узнает и через watch)
       pushLocal(room.code, room);
+      // хост мог искать быструю игру (его комната-ожидание = эта
+      // комната) — выводим его тикет из очереди, чтобы очередь не
+      // утащила его в другой матч
+      const host = room.players.find((p) => p.id !== joinerId);
+      if (host) await pairTicketsForRoom(room.code, host.id);
       send(s, { t: 'room', view: view(room), playerId: joinerId, rid: m.rid });
       return;
     }
@@ -1465,9 +1679,12 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
           }
         }
       } else if (s.roomCode && s.playerId) {
-        // watch уже втащил — отвечаем готовой комнатой
+        // watch уже втащил — отвечаем готовой комнатой.
+        // ВАЖНО: своя комната-ожидание быстрого матча в статусе
+        // waiting — это ЕЩЁ ПОИСК, не «подобрали» (иначе клиент
+        // решил бы, что матч начался, и ушёл бы в доску один)
         const room = await getRoom(s.roomCode);
-        if (room) {
+        if (room && room.status !== 'waiting') {
           send(s, { t: 'room', view: view(room), playerId: s.playerId, rid: m.rid });
           return;
         }
@@ -1479,16 +1696,24 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
     /** держим тикет живым (клиент раз в ~4 c, пока ищет) */
     case 'match-heart': {
       if (!s.mmTicket) {
+        // живой МАТЧ (playing/result) — мы в игре, отвечаем «paired»;
+        // своя комната-ожидание быстрого матча — это ЕЩЁ ПОИСК
         if (s.roomCode && s.playerId) {
-          // watch уже втащил в комнату — молча ок
-          send(s, { t: 'mm', status: 'paired', rid: m.rid });
-          return;
+          const wr = await getRoom(s.roomCode);
+          if (
+            wr && wr.status !== 'waiting' &&
+            wr.players.some((p) => p.id === s.playerId)
+          ) {
+            send(s, { t: 'mm', status: 'paired', rid: m.rid });
+            return;
+          }
         }
         // САМОВОССТАНОВЛЕНИЕ ОЧЕРЕДИ (Фидбек «не соединяется при
         // быстрой игре»): сокет мог пережить обрыв/переподключение —
         // старый тикет при close уже удалён, и на новом сокете его
         // нет. Раньше клиент вечно висел в «поиске»: heart отвечал
-        // «search», но тикета в очереди не было. Встаём заново.
+        // «search», но тикета в очереди не было. Встаём заново
+        // (живая ждущая комната переиспользуется, дублей нет).
         const lvl = Number(m.level);
         await createTicketFor(
           s,
@@ -1515,10 +1740,11 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
       // watch мог уже втащить нас в комнату между tryMatchAll и
       // чтением тикета (memory-KV гонка: pump обнуляет mmTicket) —
       // отвечаем комнатой сокета, иначе клиент получит «search»
-      // при живом матче и застрянет в радаре
+      // при живом матче и застрянет в радаре. Ждущая комната
+      // (свой поиск) сюда не подходит — это не матч.
       if (s.roomCode && s.playerId) {
         const room = await getRoom(s.roomCode);
-        if (room) {
+        if (room && room.status !== 'waiting') {
           send(s, { t: 'room', view: view(room), playerId: s.playerId, rid: m.rid });
           return;
         }
@@ -1567,7 +1793,6 @@ async function enterPairedRoom(
   if (!room || !room.players.some((p) => p.id === playerId)) return;
   s.mmTicket = null;
   bindSock(s, room.code, playerId);
-  ensureRoomWatch(room.code);
   // прогреваем lastSeen — игрок только пришёл
   await mutateRoom(room.code, (r) => {
     const p = r.players.find((x) => x.id === playerId);
@@ -1596,6 +1821,7 @@ async function handle(req: Request): Promise<Response> {
       bindEpoch: 0,
       lobby: false,
       mmTicket: null,
+      watched: new Set<string>(),
       alive: true,
     };
     socket.onopen = () => {
@@ -1610,11 +1836,11 @@ async function handle(req: Request): Promise<Response> {
       sock.alive = false;
       sockets.delete(sock);
       void dropTicket(sock);
-      if (sock.roomCode) {
-        // даём клиенту шанс вернуться (grace на серверных таймерах);
-        // здесь только убираем локальную подписку, если больше некому
-        const others = localRoomSocks(sock.roomCode);
-        if (others.length === 0) releaseRoomWatch(sock.roomCode);
+      // ОТПУСКАЕМ ВСЕ watch-подписки сокета — накопление
+      // подписок за серию игр рвало связь на 3-4 матчах
+      for (const rc of [...sock.watched]) {
+        sock.watched.delete(rc);
+        releaseRoomWatch(rc);
       }
     };
     socket.onerror = () => {
@@ -1640,6 +1866,7 @@ async function handle(req: Request): Promise<Response> {
       isolate: ISOLATE,
       kv: kvMode,
       sockets: sockets.size,
+      watches: roomWatches.size,
       rooms,
       v: 2,
     });
@@ -1655,6 +1882,7 @@ async function handle(req: Request): Promise<Response> {
       bindEpoch: 0,
       lobby: false,
       mmTicket: null,
+      watched: new Set<string>(),
       alive: true,
     };
     socket.onopen = () => {
@@ -1669,11 +1897,9 @@ async function handle(req: Request): Promise<Response> {
       sock.alive = false;
       sockets.delete(sock);
       void dropTicket(sock);
-      if (sock.roomCode) {
-        // даём клиенту шанс вернуться (grace 30 c на серверных таймерах);
-        // здесь только убираем локальную подписку, если больше некому
-        const others = localRoomSocks(sock.roomCode);
-        if (others.length === 0) releaseRoomWatch(sock.roomCode);
+      for (const rc of [...sock.watched]) {
+        sock.watched.delete(rc);
+        releaseRoomWatch(rc);
       }
     };
     socket.onerror = () => {

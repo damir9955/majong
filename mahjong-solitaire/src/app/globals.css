@@ -1547,6 +1547,14 @@ body[data-mj-theme='mint'] {
   gap: 4px;
 }
 
+.mj-timer-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 24px;
+}
+
 .mj-timer {
   font-size: 19px;
   font-weight: 900;
@@ -1554,6 +1562,8 @@ body[data-mj-theme='mint'] {
   letter-spacing: 0.04em;
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
   transition: color 0.3s ease;
+  line-height: 1.15;
+  flex: none;
 }
 
 .mj-timer-low {
@@ -2762,18 +2772,21 @@ body[data-mj-theme='mint'] {
   color: #6d7a68;
 }
 
-/* мини-чип серии на панели матча: «2:1» под таймером */
+/* мини-чип серии «2:1» — В ОДНОЙ СТРОКЕ с таймером (фидбек
+   «счёт перекрывает полоску прогресса со 2-й игры»: отдельная
+   строка под таймером раздувала колонку и налезала на полосы) */
 .mj-series-chip {
   display: inline-block;
-  margin-top: 1px;
   padding: 0 8px;
   border-radius: 999px;
   font-size: 11px;
+  line-height: 17px;
   font-weight: 900;
   color: #f5e7c0;
   background: rgba(0, 0, 0, 0.28);
   border: 1px solid rgba(245, 231, 192, 0.25);
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
+  flex: none;
 }
 
 /* cache-bust: t32 */

@@ -1,0 +1,35 @@
+{
+  "name": "Маджонг — классика и матчи 1 на 1",
+  "short_name": "Маджонг",
+  "description": "Два режима: спокойная Классика без соперника и матчи 1 на 1 с трофеями и лигами от Бронзы до Легенды. Работает офлайн — мгновенный запуск из кеша.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0c2214",
+  "theme_color": "#0c2214",
+  "lang": "ru",
+  "dir": "ltr",
+  "categories": ["games", "puzzle"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
