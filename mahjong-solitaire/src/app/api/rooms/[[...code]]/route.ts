@@ -1,24 +1,25 @@
 /**
- * Роут-стаб: мультиплеер «1 на 1» живёт на выделенном WebSocket-сервере
- * пользователя (VPS, server.ts, порт 8081).
+ * Роут-стаб: мультиплеер «1 на 1» живёт на WebSocket-сервере
+ * Deno Deploy (deno-server/main.ts, деплой Playground'ом).
  *
  * Этот файл оставлен на прежнем пути, чтобы при распаковке релиз-
  * архива поверх репозитория не оставалось «призрачных» старых
  * роутов (Vercel поднимал бы их и ломал маршрутизацию).
  *
- * Клиент ходит напрямую в WebSocket: wss://mahjong.45-147-178-242.sslip.io
- * (локальная разработка — ws://localhost:8081). Никаких переменных
- * окружения: адрес зашит в src/lib/rooms/roomApi.ts одной константой.
+ * Клиент ходит напрямую в WebSocket:
+ * wss://mahjong-solitaire.damirkolmurzin.deno.net (корень; локально —
+ * ws://localhost:8080). Никаких переменных окружения: адрес зашит
+ * в src/lib/rooms/roomApi.ts одной константой.
  */
 
 import { NextResponse } from 'next/server';
 
-const WS_URL = 'wss://mahjong.45-147-178-242.sslip.io';
+const WS_URL = 'wss://mahjong-solitaire.damirkolmurzin.deno.net';
 
 function hint() {
   return NextResponse.json({
     ok: true,
-    multiplayer: 'vps',
+    multiplayer: 'deno',
     ws: WS_URL,
     hint: 'Комнаты и дуэли работают по WebSocket: ' + WS_URL,
   });

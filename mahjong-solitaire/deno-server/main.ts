@@ -55,6 +55,10 @@
  * disconnect/left), НЕ сбрасывается при реванше и «дальше» —
  * серия живёт, пока в комнате одни и те же два игрока.
  *
+ * ПОДКЛЮЧЕНИЕ: WebSocket принимается на ЛЮБОМ пути (проверка
+ * upgrade-заголовка идёт первой, до разбора URL) — клиент
+ * подключается просто к корню: wss://mahjong-solitaire.damirkolmurzin.deno.net
+ *
  * ЗАПУСК: локально  deno run --unstable-kv --allow-net --allow-env main.ts
  *          на Deploy без флагов (KV там стабилен). MJ_KV=memory —
  *          аварийный режим без KV (один изолят, только для отладки).
@@ -1574,7 +1578,55 @@ async function enterPairedRoom(
 
 /* ==================== HTTP / WS СЕРВЕР ==================== */
 
+/* ФИДЕКБ «игра не работает по сети»: раньше WebSocket принимался
+   ТОЛЬКО по пути /ws, а клиент подключался к корню — апгрейд
+   отклонялся и соединение рвалось. Теперь upgrade-заголовок
+   проверяется ПЕРВЫМ, до разбора пути: WebSocket принимается на
+   ЛЮБОМ пути (/, /ws, что угодно). Дальше — прежняя логика. */
 async function handle(req: Request): Promise<Response> {
+  const upgrade = req.headers.get('upgrade')?.toLowerCase() ?? '';
+  if (upgrade.includes('websocket')) {
+    const { socket, response } = Deno.upgradeWebSocket(req);
+    const sock: Sock = {
+      ws: socket,
+      uid: 'anon',
+      name: 'Игрок',
+      roomCode: null,
+      playerId: null,
+      bindEpoch: 0,
+      lobby: false,
+      mmTicket: null,
+      alive: true,
+    };
+    socket.onopen = () => {
+      sockets.add(sock);
+    };
+    socket.onmessage = (ev) => {
+      void onMessage(sock, String(ev.data)).catch((err) => {
+        console.warn('[ws] handler:', err instanceof Error ? err.message : err);
+      });
+    };
+    socket.onclose = () => {
+      sock.alive = false;
+      sockets.delete(sock);
+      void dropTicket(sock);
+      if (sock.roomCode) {
+        // даём клиенту шанс вернуться (grace на серверных таймерах);
+        // здесь только убираем локальную подписку, если больше некому
+        const others = localRoomSocks(sock.roomCode);
+        if (others.length === 0) releaseRoomWatch(sock.roomCode);
+      }
+    };
+    socket.onerror = () => {
+      try {
+        socket.close();
+      } catch {
+        // ignore
+      }
+    };
+    return response;
+  }
+
   const url = new URL(req.url);
   if (url.pathname === '/health') {
     let rooms = 0;

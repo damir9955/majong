@@ -29,6 +29,9 @@ import { IconGear, IconHome, IconTrophy } from './icons';
 import {
   apiJoinRoom,
   apiLeave,
+  apiMatchHeart,
+  apiMatchJoin,
+  apiMatchLeave,
   apiPollRoom,
   clearCreds,
   getSavedCreds,
@@ -53,6 +56,7 @@ import {
   Globe2,
   KeyRound,
   LogIn,
+  Wifi,
   X,
 } from 'lucide-react';
 
@@ -246,7 +250,10 @@ function WaitingPlayers({
       }
     };
     void check();
-    const iv = window.setInterval(() => void check(), 4000);
+    // строка «ваша игра ждёт»: присутствие хоста несут hb→ping
+    // (раз в 3 c, автоматически), поэтому редкий опрос 10 c нужен
+    // только чтобы обновить/убрать саму строку
+    const iv = window.setInterval(() => void check(), 10000);
     return () => {
       alive = false;
       window.clearInterval(iv);
@@ -524,7 +531,9 @@ function ReturnPrompt({
       }
     };
     void check();
-    const iv = window.setInterval(() => void check(), 3000);
+    // меню с сохранёнными кредами: редкая проверка «что с комнатой»
+    // (5 c) — в игре состояние несут пуши, это только для меню
+    const iv = window.setInterval(() => void check(), 5000);
     return () => {
       alive = false;
       window.clearInterval(iv);
@@ -689,6 +698,133 @@ function ReturnPrompt({
   );
 }
 
+/* ---------- Оверлей быстрого матча (из главного меню) ---------- */
+
+/**
+ * Фидбек «в главном меню сделай быструю игру, чтобы было сразу
+ * понятно, что это ПО СЕТИ с поиском соперника»: тап по карточке
+ * «Быстрая игра» сразу ставит игрока в сетевую очередь — радар
+ * поиска прямо поверх меню, без захода в экран «1 на 1».
+ * Нашли пару → applyRoomView — и в бой. Отмена — тихо выходим
+ * из очереди (match-leave), ничего не ломая. */
+function QuickMatchOverlay({ onClose }: { onClose: () => void }) {
+  const t = useT();
+  const [waited, setWaited] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    const nm = (getSavedName() || 'Игрок').trim() || 'Игрок';
+    const enter = (view: RoomView, playerId: string) => {
+      if (!alive) return;
+      saveCreds({
+        code: view.code,
+        playerId,
+        host: view.hostId === playerId,
+        visibility: view.visibility ?? 'closed',
+        seed: view.seed,
+        level: view.level,
+        name: nm,
+      });
+      buzz(20);
+      // живая партия другого режима не должна мешать дуэли
+      const s = useGame.getState().session;
+      if (s && s.mode !== 'online' && s.status === 'play') {
+        useGame.setState({ session: null });
+      }
+      useGame.getState().applyRoomView(view);
+    };
+    const tryEnter = (st: {
+      status: string;
+      view?: RoomView;
+      code?: string;
+      playerId?: string;
+    }) => {
+      if (!alive) return false;
+      if (st.status === 'paired' && st.view && st.code && st.playerId) {
+        enter(st.view, st.playerId);
+        return true;
+      }
+      return false;
+    };
+
+    // МАТЧМЕЙКИНГ ПЕРВОГО ИГРОКА: сервер спаривает очередь на своей
+    // стороне и ВТАСКИВАЕТ сокет в комнату watch-насосом — room-пуш
+    // БЕЗ rid (ответ на «match» в этот момент — лишь «search»).
+    // Подписываемся на пуши: playerId приезжает в самом пуше,
+    // креды сохраняем здесь же — матч стартует у обоих одинаково.
+    const offRoom = subscribeRoom((view, playerId) => {
+      if (!alive) return;
+      const pid = playerId ?? getSavedCreds()?.playerId;
+      if (!pid || !view.players.some((p) => p.id === pid)) return;
+      if (view.status === 'waiting') return; // быстрый матч — сразу игра
+      enter(view, pid);
+    });
+
+    // старт: сразу пробуем встать в очередь (могли и моментально
+    // получить пару, если кто-то уже ждёт)
+    void (async () => {
+      try {
+        const st = await apiMatchJoin(nm, useGame.getState().level);
+        tryEnter(st);
+      } catch {
+        // сеть моргнула — сердце ниже подхватит и пересоздаст тикет
+      }
+    })();
+
+    // сердце поиска: держит тикет живым, сервер досматривает
+    // очередь и подсаживает в открытые комнаты
+    const heartIv = window.setInterval(() => {
+      void (async () => {
+        try {
+          const st = await apiMatchHeart(useGame.getState().level);
+          tryEnter(st);
+        } catch {
+          // следующий тик
+        }
+      })();
+    }, 4000);
+    const tickIv = window.setInterval(() => setWaited((w) => w + 1), 1000);
+    return () => {
+      alive = false;
+      offRoom();
+      window.clearInterval(heartIv);
+      window.clearInterval(tickIv);
+    };
+  }, []);
+
+  const cancel = async () => {
+    buzz(10);
+    void apiMatchLeave().catch(() => {});
+    onClose();
+  };
+
+  return (
+    <div className="mj-overlay" data-testid="mj-quick-overlay">
+      <div className="mj-card w-full max-w-sm p-6">
+        <div className="flex flex-col items-center gap-2">
+          <div className="mj-radar" data-testid="mj-quick-radar">
+            <span />
+            <span />
+            <span />
+            <Wifi className="h-6 w-6" />
+          </div>
+          <p className="text-base font-black text-stone-800">{t('mm.searching')}</p>
+          <p className="text-sm font-semibold text-stone-600">{t('mm.anyLevel')}</p>
+          <p className="mj-room-hint text-center">
+            {waited >= 25 ? t('mm.waited') : t('mm.hint')}
+          </p>
+          <p className="text-[13px] font-bold text-emerald-700/80">
+            {t('home.quickNet')} · {waited} {t('room.sec')}
+          </p>
+        </div>
+        <button className="mj-btn mj-btn-ghost mt-5" onClick={() => void cancel()}>
+          {t('mm.cancel')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function HomeScreen({
   onOneOnOne,
   onSettings,
@@ -703,6 +839,8 @@ function HomeScreen({
   const level = useGame((s) => s.level);
   const credsOnline = !!getSavedCreds();
   const t = useT();
+  /** оверлей «ищем соперника» поверх меню */
+  const [quickOpen, setQuickOpen] = useState(false);
 
   const go = (mode: GameMode) => {
     buzz(15);
@@ -713,14 +851,28 @@ function HomeScreen({
   const resumable = (mode: GameMode) =>
     !!session && session.mode === mode && session.status === 'play';
 
-  // Task 28: живой онлайн-матч — карточка «1 на 1» ВОЗВРАЩАЕТ
-  // в него одним тапом (раньше открывала выбор соперника —
-  // «случайно вышел и не могу зайти»)
+  // Task 28: живой онлайн-матч — карточка «Быстрая игра»
+  // ВОЗВРАЩАЕТ в него одним тапом («случайно вышел и не могу зайти»)
   const onlineResumable = credsOnline && resumable('online');
 
   return (
-    <div className="mj-table relative flex h-dvh flex-col items-center justify-center gap-7 px-6 sm:gap-10">
-      <div className="absolute left-3 top-[max(0.8rem,env(safe-area-inset-top))] flex gap-2 sm:left-5">
+    <div className="mj-table mj-home relative flex h-dvh flex-col items-center justify-center gap-6 overflow-hidden px-6 sm:gap-9">
+      {/* АТМОСФЕРА: тёплый свет лампы над столом + парящие пылинки
+          (реалистичность и «живость» — фидбек о редизайне меню) */}
+      <div className="mj-home-light" aria-hidden="true" />
+      <div className="mj-motes" aria-hidden="true">
+        <i /><i /><i /><i /><i /><i />
+      </div>
+      {/* декоративные кости в углах: чуть размытые, полупрозрачные —
+          глубина сцены, как будто на сукне лежат и другие */}
+      <div className="mj-home-deco mj-home-deco-l" aria-hidden="true">
+        <TileFace defId="dot-6" />
+      </div>
+      <div className="mj-home-deco mj-home-deco-r" aria-hidden="true">
+        <TileFace defId="bam-4" />
+      </div>
+
+      <div className="absolute left-3 top-[max(0.8rem,env(safe-area-inset-top))] z-20 flex gap-2 sm:left-5">
         <button
           type="button"
           className="mj-circle-btn"
@@ -732,7 +884,7 @@ function HomeScreen({
           <IconTrophy className="h-5 w-5 sm:h-6 sm:w-6" />
         </button>
       </div>
-      <div className="absolute right-3 top-[max(0.8rem,env(safe-area-inset-top))] flex gap-2 sm:right-5">
+      <div className="absolute right-3 top-[max(0.8rem,env(safe-area-inset-top))] z-20 flex gap-2 sm:right-5">
         <button
           type="button"
           className="mj-circle-btn"
@@ -744,37 +896,78 @@ function HomeScreen({
           <IconGear className="h-5 w-5 sm:h-6 sm:w-6" />
         </button>
       </div>
-      <div className="flex flex-col items-center gap-3">
-        {/* Фидбек «на кости поставь красивые»: три лучшие грани
-            набора — птица (1 бамбук), хризантема и красный дракон;
-            свободный веер с лёгкими наклонами, как разложенные
-            настоящие кости */}
-        <div className="flex items-end gap-1.5 sm:gap-2.5">
-          <div
-            className="mj-logo-tile"
-            style={{ transform: 'rotate(-9deg) translateY(2px)' }}
-          >
-            <TileFace defId="bam-1" />
+
+      <div className="relative z-10 flex flex-col items-center gap-3">
+        {/* Три лучшие грани набора — птица (1 бамбук), хризантема
+            и красный дракон; свободный веер с наклонами, как
+            разложенные настоящие кости. Под ними — мягкая тень на
+            сукне; лёгкое «дыхание» и пробегающий блик (CSS) */}
+        <div className="relative">
+          <div className="flex items-end gap-1.5 sm:gap-2.5">
+            <div
+              className="mj-logo-tile mj-live-1"
+              style={{ transform: 'rotate(-9deg) translateY(2px)' }}
+            >
+              <TileFace defId="bam-1" />
+            </div>
+            <div
+              className="mj-logo-tile mj-live-2"
+              style={{ transform: 'translateY(-5px) rotate(-2deg)' }}
+            >
+              <TileFace defId="flower-3" />
+            </div>
+            <div
+              className="mj-logo-tile mj-live-3"
+              style={{ transform: 'rotate(7deg) translateY(2px)' }}
+            >
+              <TileFace defId="drg-1" />
+            </div>
           </div>
-          <div
-            className="mj-logo-tile"
-            style={{ transform: 'translateY(-5px) rotate(-2deg)' }}
-          >
-            <TileFace defId="flower-3" />
-          </div>
-          <div
-            className="mj-logo-tile"
-            style={{ transform: 'rotate(7deg) translateY(2px)' }}
-          >
-            <TileFace defId="drg-1" />
-          </div>
+          <span className="mj-logo-shadow" aria-hidden="true" />
         </div>
         <p className="mj-screen-title text-lg font-bold tracking-[0.3em] sm:text-2xl lg:text-3xl">
           {t('home.title')}
         </p>
       </div>
 
-      <div className="flex w-full max-w-sm flex-col gap-3 sm:max-w-md sm:gap-4 lg:max-w-lg">
+      <div className="relative z-10 flex w-full max-w-sm flex-col gap-3 sm:max-w-md sm:gap-4 lg:max-w-lg">
+        {/* БЫСТРАЯ ИГРА — главное действие (фидбек: «сразу видно,
+            что по сети с поиском соперника»): латунно-ореховая
+            карточка, пульс-маячок «онлайн», Wi-Fi-иконка.
+            Живой матч — карточка возвращает в него одним тапом */}
+        <button
+          className="mj-quick-card"
+          data-testid="mj-quick-card"
+          onClick={() => {
+            if (onlineResumable) {
+              go('online');
+              return;
+            }
+            buzz(15);
+            setQuickOpen(true);
+          }}
+        >
+          <span className="mj-quick-ico">
+            <Wifi className="h-7 w-7 sm:h-8 sm:w-8" />
+          </span>
+          <span className="mj-quick-text">
+            <b>
+              {onlineResumable ? t('home.continueMatch') : t('home.quick')}
+              {!onlineResumable && <i className="mj-net-dot" aria-hidden="true" />}
+            </b>
+            <span>
+              {onlineResumable
+                ? t('home.battleWaiting', { n: session?.level ?? 1 })
+                : t('home.quickSub')}
+            </span>
+          </span>
+          {!onlineResumable && (
+            <span className="mj-quick-go" aria-hidden="true">
+              <Wifi className="h-4 w-4" />
+            </span>
+          )}
+        </button>
+
         <button className="mj-mode-card" onClick={() => go('classic')}>
           <span
             className="mj-mode-ico"
@@ -798,13 +991,13 @@ function HomeScreen({
           </span>
         </button>
 
-        {/* «1 на 1» — ВСЁ в одном месте (Task 25): автопоиск,
-            игра по коду, компьютер. Живой онлайн-матч — карточка
-            сразу ВОЗВРАЩАЕТ в него (Task 28) */}
+        {/* «1 на 1» — хаб всех дуэлей (Task 25): по коду, открытые
+            игры, с ботом. Быстрый матч вынесен отдельной главной
+            кнопкой выше */}
         <button
           className="mj-mode-card"
           data-testid="mj-battle-card"
-          onClick={() => (onlineResumable ? go('online') : onOneOnOne())}
+          onClick={() => onOneOnOne()}
         >
           <span
             className="mj-mode-ico"
@@ -818,27 +1011,30 @@ function HomeScreen({
           </span>
           <span>
             <b className="block text-lg font-black text-stone-800 sm:text-xl lg:text-2xl">
-              {resumable('battle') || (resumable('online') && credsOnline)
-                ? t('home.continueMatch')
-                : t('home.battle')}
+              {t('home.battle')}
             </b>
             <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
-              {(resumable('battle') || (resumable('online') && credsOnline))
+              {resumable('battle')
                 ? t('home.battleWaiting', { n: session?.level ?? 1 })
-                : t('home.battleSub')}
+                : t('home.battleHub')}
             </span>
           </span>
         </button>
       </div>
 
       {/* чип уровня: «Уровень N» — как в классических маджонгах */}
-      <span className="mj-level-chip text-[13px] font-black sm:text-base lg:text-lg">
+      <span className="mj-level-chip relative z-10 text-[13px] font-black sm:text-base lg:text-lg">
         {t('home.level', { n: level })}
       </span>
 
       {/* снизу: кто прямо сейчас ждёт соперника (Task 28);
           первой строкой плашки — СВОЯ открытая игра (Task 35) */}
-      <WaitingPlayers hidden={onlineResumable} onOpenOwn={onOneOnOne} />
+      <div className="relative z-10 flex w-full justify-center">
+        <WaitingPlayers hidden={onlineResumable} onOpenOwn={onOneOnOne} />
+      </div>
+
+      {/* поиск соперника прямо из меню (без захода в «1 на 1») */}
+      {quickOpen && <QuickMatchOverlay onClose={() => setQuickOpen(false)} />}
     </div>
   );
 }
@@ -1146,12 +1342,12 @@ export function GameScreen() {
     return () => window.clearInterval(iv);
   }, []);
 
-  /* ---------- онлайн-комната: пуши + лёгкий поллинг ----------
+  /* ---------- онлайн-комната: пуши + редкая страховка ----------
    * Сервер (Deno KV) сам пушит вьюхи на каждое изменение комнаты
-   * и событие «соперник собрал пару». Клиент лишь: применяет пуши,
-   * раз в 4 c шлёт свой прогресс (заодно присутствие), а в свёрнутой
-   * вкладке отвечает на серверный hb — матч не умирает по
-   * ложному «дисконнекту» (Task 32: воркер больше не нужен). */
+   * и событие «соперник собрал пару». ЭКОНОМИЯ ЛИМИТОВ DENO:
+   * клиент в игре НЕ поллит состояние — только событие match в
+   * момент клика и finish; редкий запрос раз в 15 c остался
+   * страховкой («комната жива?»), присутствие несут hb→ping. */
   const isOnline = session?.mode === 'online';
   const sid = session?.sid;
   const missesRef = useRef(0);
@@ -1190,7 +1386,8 @@ export function GameScreen() {
       });
     });
 
-    // лёгкий поллинг: прогресс + присутствие (сервер пишет lastSeen)
+    // страховка раз в 15 c: жива ли комната (счёт едет в событиях
+    // match, актуальность — в пуши watch)
     const poll = async () => {
       const creds = getSavedCreds();
       const s = useGame.getState().session;
@@ -1224,7 +1421,7 @@ export function GameScreen() {
       }
     };
     void poll();
-    const iv = window.setInterval(() => void poll(), 4000);
+    const iv = window.setInterval(() => void poll(), 15000);
 
     const onVis = () => {
       if (document.visibilityState === 'visible') void poll();

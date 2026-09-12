@@ -66,6 +66,7 @@ function errText(e: unknown, t: ReturnType<typeof useT>): string {
 }
 
 type Phase = 'main' | 'search' | 'waiting';
+
 /** действие, ожидающее подтверждения «закрыть живую партию» */
 type Pending =
   | { kind: 'quick' }
@@ -75,6 +76,11 @@ type Pending =
 export function DuelScreen({ onClose }: { onClose: () => void }) {
   const t = useT();
   const [phase, setPhase] = useState<Phase>('main');
+  /** фаза без ререндера — для WS-подписки (пуш может прийти в любой момент) */
+  const phaseRef = useRef<Phase>('main');
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
   const [name, setName] = useState(() => getSavedName());
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -130,12 +136,35 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
 
   /* ---------- вьюхи комнаты: старт матча, ожидание ---------- */
   useEffect(() => {
-    const off = subscribeRoom((view) => {
+    const off = subscribeRoom((view, playerId) => {
+      // Фидбек «не соединяется при быстрой игре»: ПЕРВОГО игрока в
+      // очередь сервер спаривает на своей стороне и втаскивает в
+      // комнату watch-насосом — room-пуш приходит БЕЗ rid и БЕЗ
+      // сохранённых кредов. playerId приезжает в самом пуше —
+      // используем его как фолбэк, креды сохраняем здесь же.
+      const pid = playerId ?? getSavedCreds()?.playerId;
+      if (!pid) return;
       const creds = getSavedCreds();
-      if (!creds || creds.code !== view.code) return;
-      if (!view.players.some((p) => p.id === creds.playerId)) return;
+      if (creds && creds.code === view.code) {
+        if (creds.playerId !== pid) return;
+      } else if (phaseRef.current !== 'search') {
+        // без кредов реагируем только в фазе поиска (быстрый матч)
+        return;
+      } else if (!view.players.some((p) => p.id === pid)) {
+        return;
+      } else {
+        saveCreds({
+          code: view.code,
+          playerId: pid,
+          host: view.hostId === pid,
+          visibility: view.visibility ?? 'closed',
+          seed: view.seed,
+          level: view.level,
+          name: name || 'Игрок',
+        });
+      }
       if (view.status === 'waiting') {
-        if (view.players[0]?.id === creds.playerId) setWaitView(view);
+        if (view.players[0]?.id === pid) setWaitView(view);
         return;
       }
       // игра пошла (или итог) — в бой
@@ -147,7 +176,7 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
       enter(view);
     });
     return off;
-  }, []);
+  }, [name]);
 
   /* ---------- лобби открытых игр: живой список ---------- */
   useEffect(() => {

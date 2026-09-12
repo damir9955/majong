@@ -38,6 +38,8 @@
   ],
   "exclude": [
     "node_modules",
-    "server.ts"
+    "deno-server",
+    "release-stage",
+    "examples"
   ]
 }

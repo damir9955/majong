@@ -784,6 +784,332 @@ body[data-mj-theme='mint'] {
   flex-shrink: 0;
 }
 
+/* ================= Главное меню: атмосфера (Task 37) ================= */
+
+/* Фидбек «перерисуй красивее, реалистичнее и живее под атмосферу
+   игры»: меню — не просто зелёный фон, а НАСТОЯЩИЙ игровой стол
+   под тёплой лампой: глубже виньетка, тёплый свет сверху «дышит»,
+   в воздухе парят пылинки, кости лого лежат на сукне (мягкая
+   тень-эллипс) и чуть «дышат», по ним пробегает блик. Всё —
+   чистый CSS (transform/opacity), GPU, reduced-motion уважаем. */
+.mj-home {
+  --mj-home-lamp: rgba(255, 213, 130, 0.16);
+}
+
+/* лампа над столом: тёплый конус света сверху, мягко «дышит» */
+.mj-home-light {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      ellipse 120% 62% at 50% -12%,
+      var(--mj-home-lamp) 0%,
+      rgba(255, 213, 130, 0.05) 42%,
+      transparent 68%
+    );
+  animation: mj-lamp 7s ease-in-out infinite;
+}
+@keyframes mj-lamp {
+  0%,
+  100% {
+    opacity: 0.92;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* парящие пылинки в луче света — сцена «живая» */
+.mj-motes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.mj-motes i {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(255, 236, 180, 0.9) 0%,
+    rgba(255, 236, 180, 0) 70%
+  );
+  animation: mj-mote 22s linear infinite;
+  opacity: 0;
+}
+.mj-motes i:nth-child(1) { left: 18%; top: 64%; animation-delay: 0s; }
+.mj-motes i:nth-child(2) { left: 34%; top: 78%; animation-duration: 27s; animation-delay: 4s; }
+.mj-motes i:nth-child(3) { left: 52%; top: 58%; animation-duration: 19s; animation-delay: 9s; }
+.mj-motes i:nth-child(4) { left: 66%; top: 74%; animation-duration: 25s; animation-delay: 2s; }
+.mj-motes i:nth-child(5) { left: 79%; top: 62%; animation-duration: 21s; animation-delay: 13s; }
+.mj-motes i:nth-child(6) { left: 44%; top: 84%; animation-duration: 29s; animation-delay: 6s; }
+@keyframes mj-mote {
+  0% {
+    transform: translate(0, 0) scale(0.7);
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.75;
+  }
+  55% {
+    opacity: 0.35;
+  }
+  88% {
+    opacity: 0;
+  }
+  100% {
+    transform: translate(26px, -150px) scale(1.15);
+    opacity: 0;
+  }
+}
+
+/* декоративные кости в углах: полупрозрачные, чуть размытые —
+   глубина сцены, «на сукне лежат и другие кости» */
+.mj-home-deco {
+  position: absolute;
+  width: clamp(88px, 16vw, 140px);
+  aspect-ratio: 0.76;
+  border-radius: 14px;
+  overflow: hidden;
+  opacity: 0.13;
+  filter: blur(0.6px) saturate(0.9);
+  pointer-events: none;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.4);
+}
+.mj-home-deco-l {
+  left: -18px;
+  bottom: 6%;
+  transform: rotate(-14deg);
+}
+.mj-home-deco-r {
+  right: -14px;
+  top: 12%;
+  transform: rotate(11deg);
+}
+@media (max-width: 400px) {
+  .mj-home-deco {
+    opacity: 0.09;
+  }
+}
+
+/* мягкая тень-эллипс под веером костей лого — кости «лежат» на сукне */
+.mj-logo-shadow {
+  position: absolute;
+  left: 50%;
+  bottom: -12px;
+  width: 76%;
+  height: 18px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(
+    ellipse,
+    rgba(0, 0, 0, 0.42) 0%,
+    rgba(0, 0, 0, 0) 70%
+  );
+  filter: blur(3px);
+}
+
+/* «дыхание» костей лого: крошечный подъём-опускание со сдвигом
+   фаз. Анимируем СВОЙСТВО translate — inline transform:rotate(...)
+   из разметки не трогаем, они складываются */
+.mj-home .mj-logo-tile {
+  animation: mj-tile-bob 5.2s ease-in-out infinite;
+}
+.mj-home .mj-live-2 {
+  animation-duration: 4.6s;
+  animation-delay: 0.7s;
+}
+.mj-home .mj-live-3 {
+  animation-duration: 5.8s;
+  animation-delay: 1.4s;
+}
+@keyframes mj-tile-bob {
+  0%,
+  100% {
+    translate: 0 1.5px;
+  }
+  50% {
+    translate: 0 -2.5px;
+  }
+}
+
+/* пробегающий блик по костям лого (только в меню) */
+.mj-home .mj-logo-tile::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    transparent 32%,
+    rgba(255, 246, 214, 0.34) 46%,
+    rgba(255, 252, 235, 0.42) 50%,
+    transparent 64%
+  );
+  background-size: 260% 100%;
+  background-position: 120% 0;
+  animation: mj-sheen 5.5s ease-in-out infinite;
+  animation-delay: 1.2s;
+}
+.mj-home .mj-live-2::after {
+  animation-delay: 1.8s;
+}
+.mj-home .mj-live-3::after {
+  animation-delay: 2.5s;
+}
+@keyframes mj-sheen {
+  0%,
+  55% {
+    background-position: 130% 0;
+  }
+  85%,
+  100% {
+    background-position: -60% 0;
+  }
+}
+
+/* ---------- карточка «Быстрая игра» (главное действие) ----------
+   Материал — тёмный ореховый лак с латунной окантовкой и тёплым
+   свечением: сразу видно, что это ОНЛАЙН-игра с поиском соперника */
+.mj-quick-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+  padding: 18px 18px;
+  border-radius: 22px;
+  cursor: pointer;
+  color: #ffe9b3;
+  background:
+    repeating-linear-gradient(93deg, rgba(215, 180, 110, 0.05) 0 2px, transparent 2px 7px),
+    radial-gradient(130% 120% at 50% -20%, rgba(255, 220, 150, 0.16) 0%, transparent 55%),
+    linear-gradient(168deg, #452c12 0%, #331f0c 52%, #241507 100%);
+  border: 1.5px solid rgba(232, 190, 110, 0.65);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 235, 185, 0.28),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.45),
+    0 12px 28px rgba(0, 0, 0, 0.5),
+    0 0 22px rgba(255, 196, 92, 0.1);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+.mj-quick-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 214, 130, 0.85);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 235, 185, 0.28),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.45),
+    0 16px 34px rgba(0, 0, 0, 0.55),
+    0 0 30px rgba(255, 196, 92, 0.2);
+}
+.mj-quick-card:active {
+  transform: scale(0.98);
+}
+
+/* латунный диск с Wi-Fi */
+.mj-quick-ico {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  height: 58px;
+  border-radius: 18px;
+  flex-shrink: 0;
+  color: #3a2408;
+  background:
+    radial-gradient(circle at 32% 26%, rgba(255, 255, 255, 0.55) 0%, transparent 42%),
+    linear-gradient(160deg, #f6cf82 0%, #d9a24b 48%, #a8722b 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -2px 4px rgba(90, 55, 10, 0.55),
+    0 4px 12px rgba(0, 0, 0, 0.45);
+}
+
+.mj-quick-text {
+  min-width: 0;
+  flex: 1;
+}
+.mj-quick-text > b {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 21px;
+  font-weight: 900;
+  letter-spacing: 0.01em;
+  color: #ffe6ac;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6), 0 0 18px rgba(255, 190, 90, 0.25);
+}
+@media (min-width: 640px) {
+  .mj-quick-text > b {
+    font-size: 24px;
+  }
+}
+.mj-quick-text > span {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 600;
+  color: rgba(255, 226, 170, 0.72);
+}
+@media (min-width: 640px) {
+  .mj-quick-text > span {
+    font-size: 15px;
+  }
+}
+
+/* пульс-маячок «онлайн» рядом с заголовком */
+.mj-net-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #7ce8a9;
+  box-shadow: 0 0 0 0 rgba(124, 232, 169, 0.55);
+  animation: mj-net-pulse 2.2s ease-out infinite;
+  flex-shrink: 0;
+}
+@keyframes mj-net-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(124, 232, 169, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 9px rgba(124, 232, 169, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(124, 232, 169, 0);
+  }
+}
+
+/* компактный латунный бейдж Wi-Fi справа — «игра по сети» */
+.mj-quick-go {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  color: #ffdf9e;
+  background: linear-gradient(160deg, rgba(120, 84, 30, 0.9), rgba(66, 44, 14, 0.9));
+  border: 1px solid rgba(232, 190, 110, 0.5);
+  box-shadow: inset 0 1px 0 rgba(255, 235, 185, 0.25);
+}
+
+/* уважение к reduced-motion: атмосфера не двигается, но остаётся */
+@media (prefers-reduced-motion: reduce) {
+  .mj-home-light,
+  .mj-motes i,
+  .mj-home .mj-logo-tile,
+  .mj-home .mj-logo-tile::after,
+  .mj-net-dot {
+    animation: none;
+  }
+}
+
 /* ================= Эффекты ================= */
 
 /* искры взрывов */
