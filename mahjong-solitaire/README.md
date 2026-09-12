@@ -111,34 +111,57 @@ bun run start
    - Ничего настраивать не нужно — просто нажмите Deploy.
 3. Через минуту получите публичную ссылку вида `https://имя-проекта.vercel.app`.
    Дальше каждое обновление репозитория на GitHub деплоится автоматически.
-4. **Мультиплеер**: задайте адрес Deno-сервера (см. следующий раздел) —
-   в Vercel: **Settings → Environment Variables →**
-   `NEXT_PUBLIC_WS_URL = wss://имя-проекта.deno.dev` → **Redeploy**.
-   Путь `/ws` и схему клиент допишет сам — можно вставить адрес
-   прямо как из браузера.
+4. **Мультиплеер**: работает сразу после деплоя — клиент подключается
+   к серверу на вашем VPS по адресу
+   `wss://mahjong.45-147-178-242.sslip.io` (адрес зашит в
+   `src/lib/rooms/roomApi.ts` константой `PROD_WS_URL`; локальная
+   разработка автоматически ходит на `ws://localhost:8081`).
 
-## Мультиплеер-сервер (Deno Deploy)
+## Мультиплеер-сервер (собственный VPS)
 
 Матчи 1 на 1 работают через отдельный WebSocket-сервер — **один файл**
-`deno-server/main.ts` (комнаты, генерация досок, матчмейкинг, лобби
-открытых игр, счёт серии побед; состояние — в Deno KV, без внешней БД).
+`server.ts` в корне проекта (комнаты, seed раскладок, авторитарное
+время, матчмейкинг, лобби открытых игр, счёт серии побед; состояние —
+в памяти процесса, без внешней БД).
 
-Деплой — именно через **Playground** (НЕ «New Project»: он тянет весь
-репозиторий GitHub и падает на сборке, живьём там должен быть только
-один файл):
+Запуск на VPS (нужен установленный [Deno](https://deno.com)):
 
-1. [dash.deno.com](https://dash.deno.com) → **New Playground**
-   (не «New Project»!).
-2. Откройте `deno-server/main.ts` из этого проекта и скопируйте ВЕСЬ файл.
-3. В редакторе Playground: **Ctrl+A** в `main.ts` → вставьте весь файл →
-   **Save & Deploy**.
-4. Откройте выданный адрес (`https://имя-проекта.deno.dev`) — сервер
-   ответит приветственным JSON.
-5. В Vercel: **Settings → Environment Variables →**
-   `NEXT_PUBLIC_WS_URL = wss://имя-проекта.deno.dev` → **Redeploy**.
+```bash
+deno run --allow-net server.ts     # слушает порт 8081
+```
 
-Обновление сервера позже — теми же шагами: скопировать новый `main.ts` →
-Ctrl+A → вставить → Save & Deploy.
+Проверка: `curl http://45.147.178.242:8081/` — ответит
+`{"ok":true,"multiplayer":"mahjong-duel",...}`.
+
+Перед сервером должен стоять reverse-proxy с TLS, который проксирует
+`wss://mahjong.45-147-178-242.sslip.io` (443) → `127.0.0.1:8081`
+с включенным Upgrade заголовков WebSocket. Пример для Caddy —
+одна строка в Caddyfile:
+
+```
+mahjong.45-147-178-242.sslip.io {
+  reverse_proxy 127.0.0.1:8081
+}
+```
+
+Чтобы сервер не падал при перезагрузке VPS — systemd-юнит
+(`/etc/systemd/system/mahjong-duel.service`):
+
+```ini
+[Unit]
+Description=Mahjong duel WebSocket server
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/deno run --allow-net /opt/mahjong/server.ts
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Обновление сервера позже: заменить `server.ts` на VPS и перезапустить
+процесс (или `systemctl restart mahjong-duel`).
 
 ## Структура проекта
 
@@ -150,7 +173,7 @@ src/
   lib/game/             # состояние игры, эффекты, слоты лотка
   lib/rooms/            # WebSocket-клиент мультиплеера (roomApi)
   lib/sound.ts          # синтезированные звуки (Web Audio)
-deno-server/main.ts    # мультиплеер-сервер (один файл для Deno Deploy)
+server.ts              # мультиплеер-сервер (один файл, Deno, порт 8081)
 public/icons/           # PWA-иконки
 ```
 
