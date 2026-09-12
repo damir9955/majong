@@ -113,6 +113,10 @@ const RU: Record<string, string> = {
   'wait.confirmText': '{name} ждёт соперника · уровень {n}',
   'wait.confirmYes': 'Войти в игру',
   'wait.confirmNo': 'Пока нет',
+  // своя открытая игра — строка в плашке меню (Task 35)
+  'wait.ownTitle': 'Ваша игра ждёт',
+  'wait.ownSub': 'Код {code} · ждём соперника',
+  'wait.ownOpen': 'Открыть',
 
   // реванш по согласию обоих (Task 25)
   'rem.waiting': 'Ждём согласия соперника…',
@@ -378,6 +382,10 @@ const EN: Record<string, string> = {
   'wait.confirmText': '{name} is waiting · level {n}',
   'wait.confirmYes': 'Join game',
   'wait.confirmNo': 'Not yet',
+  // your open game — row in the menu strip (Task 35)
+  'wait.ownTitle': 'Your game is waiting',
+  'wait.ownSub': 'Code {code} · waiting for a rival',
+  'wait.ownOpen': 'Open',
 
   // реванш по согласию (Task 25)
   'rem.waiting': 'Waiting for the opponent to accept…',

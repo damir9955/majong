@@ -527,13 +527,22 @@ body[data-mj-theme='mint'] {
    кости в лотке хорошо читаются. Высота ограничена и шириной,
    и ВЫСОТОЙ экрана — в альбомной ориентации лоток не
    съедает доску. */
+/* Фидбек «лоток опять рисунком из 3 досок»: убрали фото-текстуру
+   дерева — в мелкой выкладке оно резалось в швы между досками и
+   выглядело как 3 состыкованные доски. Теперь лоток — ГЛАДКАЯ
+   тёмная лака-панель без единого шва (тёплый орех: свет сверху,
+   тень к низу), мягкая врезка внутрь стола. */
 .mj-tray-zone {
   width: min(94vw, calc((clamp(62px, min(14vw, 16vh), 118px) - 14px) * 3.125 + 28px));
   height: clamp(62px, min(14vw, 16vh), 118px);
   border-radius: 14px;
   background:
-    linear-gradient(180deg, rgba(20, 13, 6, 0.22), rgba(6, 4, 2, 0.5)),
-    url('/tex/wood.webp') center / cover;
+    radial-gradient(
+      130% 100% at 50% 0%,
+      rgba(255, 224, 166, 0.09),
+      rgba(255, 224, 166, 0) 58%
+    ),
+    linear-gradient(180deg, #30200f 0%, #22150a 55%, #180e06 100%);
   box-shadow:
     inset 0 5px 16px rgba(0, 0, 0, 0.72),
     inset 0 -1px 0 rgba(255, 235, 190, 0.12),
@@ -655,12 +664,18 @@ body[data-mj-theme='mint'] {
   }
 }
 
-/* док нижних кнопок — тёмное ДЕРЕВО с латунным контуром */
+/* док нижних кнопок — тот же гладкий орех без швов (единая фактура
+   с лотком: вертикальный свет, латунный контур) */
 .mj-dock {
   border-radius: 999px;
   background:
-    linear-gradient(180deg, rgba(255, 236, 200, 0.1), rgba(0, 0, 0, 0.34)),
-    url('/tex/wood.webp') center / cover;
+    linear-gradient(
+      180deg,
+      rgba(255, 236, 200, 0.14),
+      rgba(0, 0, 0, 0) 42%,
+      rgba(0, 0, 0, 0.35) 100%
+    ),
+    linear-gradient(180deg, #342310 0%, #221507 100%);
   border: 1px solid rgba(217, 180, 100, 0.4);
   box-shadow:
     inset 0 1.5px 0 rgba(255, 240, 200, 0.22),
@@ -2105,6 +2120,50 @@ body[data-mj-theme='mint'] {
   display: flex;
   align-items: stretch;
   gap: 8px;
+}
+/* своя открытая игра (Task 35): широкая строка над чужими
+   карточками — мягкая зелёная кость, аватар «Я», кнопка «Открыть».
+   Спокойная, но сразу видно: это МОЯ ждущая игра */
+.mj-waiting-own {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(233, 244, 234, 0.94);
+  border: 1px solid rgba(126, 181, 141, 0.65);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.mj-waiting-own + .mj-waiting-rows {
+  margin-top: 8px;
+}
+.mj-waiting-own:hover {
+  background: rgba(240, 248, 240, 0.98);
+}
+.mj-waiting-own:active {
+  transform: scale(0.985);
+}
+.mj-waiting-own .mj-waiting-info {
+  align-items: flex-start;
+  flex: 1 1 auto;
+}
+.mj-waiting-own-av {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 900;
+  color: #fff;
+  background: linear-gradient(180deg, #3e8a68, #2c6b4f);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 3px 7px rgba(30, 90, 60, 0.35);
 }
 .mj-waiting-row {
   flex: 1 1 0;

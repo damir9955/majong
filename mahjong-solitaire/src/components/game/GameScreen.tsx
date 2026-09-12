@@ -187,10 +187,24 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
 
 /** Ждущие игроки внизу главного меню (Task 28): живая полоска
  *  открытых комнат — видно, кто прямо сейчас ждёт соперника,
- *  и можно зайти к нему одним тапом, не открывая «1 на 1». */
-function WaitingPlayers({ hidden }: { hidden: boolean }) {
+ *  и можно зайти к нему одним тапом, не открывая «1 на 1».
+ *  Task 35 (фидбек «открытая игра должна отображаться на главном
+ *  меню, на первом экране»): САМАЯ ПЕРВАЯ строка плашки — своя
+ *  открытая игра. Пока комната жива, хозяин видит её в меню
+ *  ВСЕГДА (даже после перезагрузки): код и кнопка «открыть».
+ *  Поллинг заодно держит комнату тёплой — другие игроки видят
+ *  её в своём списке, а янитор сервера не убивает по «пропал» */
+function WaitingPlayers({
+  hidden,
+  onOpenOwn,
+}: {
+  hidden: boolean;
+  onOpenOwn: () => void;
+}) {
   const t = useT();
   const [rooms, setRooms] = useState<OpenRoomInfo[] | null>(null);
+  /** своя ждущая комната (код) — видна в меню, пока жива */
+  const [own, setOwn] = useState<{ code: string } | null>(null);
   /** код комнаты, в которую входим (кнопка «…») */
   const [joining, setJoining] = useState('');
   /** живая партия другого режима будет закрыта — спросить */
@@ -204,6 +218,39 @@ function WaitingPlayers({ hidden }: { hidden: boolean }) {
   useEffect(() => {
     const off = subscribeLobby((list) => setRooms(list));
     return off;
+  }, []);
+
+  // СВОЯ комната: жива ли, ждём ли ещё (и держим её тёплой)
+  useEffect(() => {
+    let alive = true;
+    const check = async () => {
+      const creds = getSavedCreds();
+      if (!creds) {
+        setOwn(null);
+        return;
+      }
+      try {
+        const v = await apiPollRoom(creds.code, creds.playerId);
+        if (!alive) return;
+        if (v.status === 'waiting' && v.players[0]?.id === creds.playerId) {
+          setOwn({ code: creds.code });
+          return;
+        }
+        // матч уже идёт — карточка «1 на 1» сама ведёт обратно,
+        // строка не нужна (не дублируем)
+        setOwn(null);
+      } catch {
+        // сеть моргнула или комната умерла — на следующем тике
+        if (!alive) return;
+        setOwn(null);
+      }
+    };
+    void check();
+    const iv = window.setInterval(() => void check(), 4000);
+    return () => {
+      alive = false;
+      window.clearInterval(iv);
+    };
   }, []);
 
   const doJoin = async (roomCode: string) => {
@@ -258,11 +305,11 @@ function WaitingPlayers({ hidden }: { hidden: boolean }) {
     if (r) join(r.code);
   };
 
-  if (hidden || !rooms || rooms.length === 0) return null;
+  if (hidden) return null;
   const creds = getSavedCreds();
   // свою комнату не предлагаем самому себе
-  const list = rooms.filter((r) => r.code !== creds?.code);
-  if (list.length === 0) return null;
+  const list = (rooms ?? []).filter((r) => r.code !== creds?.code);
+  if (!own && list.length === 0) return null;
 
   return (
     <div
@@ -273,41 +320,68 @@ function WaitingPlayers({ hidden }: { hidden: boolean }) {
         <span className="mj-waiting-dot" />
         <p>{t('wait.title')}</p>
       </div>
-      <div className="mj-waiting-rows">
-        {list.slice(0, 3).map((r) => (
-          <button
-            key={r.code}
-            type="button"
-            className="mj-waiting-row"
-            data-testid="mj-waiting-row"
-            disabled={!!joining}
-            onClick={() => {
-              buzz(8);
-              setConfirmRoom(r);
-            }}
-          >
-            <span
-              className="mj-open-av"
-              style={{ background: `hsl(${r.hue} 52% 42%)` }}
-            >
-              {(r.hostName[0] ?? 'И').toUpperCase()}
-            </span>
-            <span className="mj-waiting-info">
-              <b>{r.hostName}</b>
-              <span>{t('home.level', { n: r.level })}</span>
-            </span>
-            <span className="mj-waiting-join">
-              <LogIn className="h-4 w-4" />
-              {joining === r.code ? '…' : t('wait.join')}
-            </span>
-          </button>
-        ))}
-        {list.length > 3 && (
-          <span className="mj-waiting-more">
-            {t('wait.more', { n: list.length - 3 })}
+
+      {/* своя открытая игра — всегда первой строкой на первом
+          экране: видно код и то, что комната ждёт соперника */}
+      {own && (
+        <button
+          type="button"
+          className="mj-waiting-own"
+          data-testid="mj-waiting-own"
+          onClick={() => {
+            buzz(12);
+            onOpenOwn();
+          }}
+        >
+          <span className="mj-waiting-own-av">Я</span>
+          <span className="mj-waiting-info">
+            <b>{t('wait.ownTitle')}</b>
+            <span>{t('wait.ownSub', { code: own.code })}</span>
           </span>
-        )}
-      </div>
+          <span className="mj-waiting-join">
+            <LogIn className="h-4 w-4" />
+            {t('wait.ownOpen')}
+          </span>
+        </button>
+      )}
+
+      {list.length > 0 && (
+        <div className="mj-waiting-rows">
+          {list.slice(0, 3).map((r) => (
+            <button
+              key={r.code}
+              type="button"
+              className="mj-waiting-row"
+              data-testid="mj-waiting-row"
+              disabled={!!joining}
+              onClick={() => {
+                buzz(8);
+                setConfirmRoom(r);
+              }}
+            >
+              <span
+                className="mj-open-av"
+                style={{ background: `hsl(${r.hue} 52% 42%)` }}
+              >
+                {(r.hostName[0] ?? 'И').toUpperCase()}
+              </span>
+              <span className="mj-waiting-info">
+                <b>{r.hostName}</b>
+                <span>{t('home.level', { n: r.level })}</span>
+              </span>
+              <span className="mj-waiting-join">
+                <LogIn className="h-4 w-4" />
+                {joining === r.code ? '…' : t('wait.join')}
+              </span>
+            </button>
+          ))}
+          {list.length > 3 && (
+            <span className="mj-waiting-more">
+              {t('wait.more', { n: list.length - 3 })}
+            </span>
+          )}
+        </div>
+      )}
 
       {confirmRoom && (
         <div className="mj-overlay" data-testid="mj-join-confirm">
@@ -427,13 +501,10 @@ function ReturnPrompt({
           }
           return;
         }
+        // ждущая комната — НЕ спрашиваем модалкой (Task 35): своя
+        // игра постоянно видна строкой в плашке главного меню,
+        // двойное напоминание не нужно
         if (v.status === 'waiting' && v.players[0]?.id === creds.playerId) {
-          const key = `${v.code}:waiting`;
-          if (askedKey !== key) {
-            askedKey = key;
-            setView(v);
-            setKind('waiting');
-          }
           return;
         }
         if (v.status === 'result') {
@@ -765,8 +836,9 @@ function HomeScreen({
         {t('home.level', { n: level })}
       </span>
 
-      {/* снизу: кто прямо сейчас ждёт соперника (Task 28) */}
-      <WaitingPlayers hidden={onlineResumable} />
+      {/* снизу: кто прямо сейчас ждёт соперника (Task 28);
+          первой строкой плашки — СВОЯ открытая игра (Task 35) */}
+      <WaitingPlayers hidden={onlineResumable} onOpenOwn={onOneOnOne} />
     </div>
   );
 }

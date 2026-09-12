@@ -507,7 +507,12 @@ const isConcealed = (s: Session, id: number) =>
     !s.revealedIds.includes(id)) ||
   (s.buriedIds.includes(id) && !s.revealedIds.includes(id));
 
-/** найти перевёрнутую рубашку с той же гранью (кроме excludeId) */
+/** найти перевёрнутую рубашку с той же гранью (кроме excludeId).
+ *  ВАЖНО (фидбек «кости из середины убираются сами по себе»):
+ *  близнец обязан быть СВОБОДНЫМ — сверху пусто и открыт край.
+ *  Авто-открытые рубашки часто стоят зажатыми между соседями:
+ *  такая кость недоступна, «достать» её из середины нельзя —
+ *  иначе пара улетала бы вместе с заблокированной плиткой. */
 function findRevealedTwin(
   s: Session,
   matchKey: string,
@@ -515,10 +520,12 @@ function findRevealedTwin(
 ): number | null {
   const candidates = [...s.revealedIds];
   if (s.peekId !== null && s.peekId !== excludeId) candidates.push(s.peekId);
+  const occupied = buildOccupancy(s.tiles);
   for (const id of candidates) {
     if (id === excludeId) continue;
     const t = byId(s, id);
     if (!t || t.removed) continue;
+    if (!isFree(t, occupied)) continue; // зажатая рубашка — не пара
     if (getTileDef(t.defId).matchKey === matchKey) return id;
   }
   return null;
@@ -1987,6 +1994,13 @@ if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
     /** тесты: немедленный финал текущей партии (поражение по лотку) */
     loseNow: () => {
       finish(useGame.setState as unknown as (p: Partial<GameState>) => void, 'tray');
+    },
+    /** тесты: произвольная правка сессии (воспроизведение редких
+     *  состояний — например «открытая рубашка, зажатая соседями») */
+    patchSession: (patch: Record<string, unknown>) => {
+      const s = useGame.getState().session;
+      if (!s) return;
+      useGame.setState({ session: { ...s, ...patch } });
     },
     /** тесты: выставить остаток бонуса */
     setBonus: (kind: 'hints' | 'shuffles' | 'undos', n: number) => {
