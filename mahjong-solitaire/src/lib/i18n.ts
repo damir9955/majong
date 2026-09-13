@@ -41,10 +41,6 @@ const RU: Record<string, string> = {
   'home.continueMatch': 'Продолжить матч',
   'home.battle': '1 на 1',
   'home.battleSub': 'Матч против соперника · трофеи',
-  'home.battleHub': 'По коду · открытые игры · с ботом',
-  'home.quick': 'Быстрая игра',
-  'home.quickSub': 'Онлайн · поиск соперника',
-  'home.quickNet': 'По сети',
   'home.battleWaiting': 'Уровень {n} ждёт тебя',
   'home.online': 'С другом',
   'home.onlineSub': 'Открытые игры · вход по коду',
@@ -117,10 +113,24 @@ const RU: Record<string, string> = {
   'wait.confirmText': '{name} ждёт соперника · уровень {n}',
   'wait.confirmYes': 'Войти в игру',
   'wait.confirmNo': 'Пока нет',
-  // своя открытая игра — строка в плашке меню (Task 35)
-  'wait.ownTitle': 'Ваша игра ждёт',
-  'wait.ownSub': 'Код {code} · ждём соперника',
-  'wait.ownOpen': 'Открыть',
+
+  // ищущие быстрый матч — видны в меню (Task 36)
+  'wait.searchingSub': 'Ищет соперника',
+  'wait.play': 'Играть',
+  'wait.quickTitle': 'Сыграть с соперником?',
+  'wait.quickText': '{name} ищет быстрый матч — вы сойдётесь через пару секунд',
+  'wait.gone': 'Соперник уже нашёл игру — попробуйте ещё раз',
+
+  // сеть
+  'net.offline': 'Нет интернета — подключитесь, чтобы играть с живыми соперниками (с ботом можно и без сети)',
+
+  // загрузчик первой установки (Task 36)
+  'boot.title': 'Скачиваем игру…',
+  'boot.progress': '{n} из {m} · {p}%',
+  'boot.hint': 'Одна загрузка — дальше игра работает даже без интернета',
+  'boot.needNet': 'Для первой загрузки нужен интернет. Подключитесь к сети и попробуйте ещё раз',
+  'boot.failed': 'Загрузка прервалась. Проверьте интернет и попробуйте ещё раз',
+  'boot.retry': 'Повторить',
 
   // реванш по согласию обоих (Task 25)
   'rem.waiting': 'Ждём согласия соперника…',
@@ -303,6 +313,36 @@ const RU: Record<string, string> = {
   'st.emptyMatches': 'Сыграй матч 1 на 1 — результаты появятся здесь',
   'st.emptyFriends': 'Сыграй с другом по коду — итоги встреч появятся здесь',
   'st.back': 'Назад',
+
+  // статистика v2 (Task 36): обзор, подробности, достижения
+  'st.overview': 'Обзор',
+  'st.peak': 'пик',
+  'st.toNext': 'До «{name}» — {n} трофеев',
+  'st.maxLeague': 'Высшая лига достигнута!',
+  'st.curStreak': 'Текущая серия',
+  'st.bestStreak': 'Лучшая серия',
+  'st.best': 'лучшая',
+  'st.timePlayed': 'Время в игре',
+  'st.bestTime': 'Лучшее время уровня',
+  'st.bonuses': 'Бонусы потрачены',
+  'st.hintN': 'подсказок',
+  'st.shufN': 'миксов',
+  'st.undoN': 'возвратов',
+  'st.wlSep': '/',
+  'st.withFriends': 'игр с друзьями',
+  'st.friendsMet': 'Друзей: {n}',
+  'tu.h': 'ч',
+  'tu.min': 'мин',
+  'tu.sec': 'с',
+  'ach.title': 'Достижения',
+  'ach.done': 'Выполнено!',
+  'ach.progress': '{n} из {m}',
+  'ach.pairs': 'Собиратель пар',
+  'ach.levels': 'Покоритель уровней',
+  'ach.wins': 'Победитель',
+  'ach.streak': 'Огонь серии',
+  'ach.friends': 'Душа компании',
+  'ach.league': 'Покоритель лиг',
 };
 
 const EN: Record<string, string> = {
@@ -314,10 +354,6 @@ const EN: Record<string, string> = {
   'home.continueMatch': 'Continue match',
   'home.battle': '1 vs 1',
   'home.battleSub': 'Match vs opponent · trophies',
-  'home.battleHub': 'By code · open games · vs bot',
-  'home.quick': 'Quick game',
-  'home.quickSub': 'Online · opponent search',
-  'home.quickNet': 'Online',
   'home.battleWaiting': 'Level {n} is waiting for you',
   'home.online': 'With a friend',
   'home.onlineSub': 'Open games · join by code',
@@ -390,10 +426,24 @@ const EN: Record<string, string> = {
   'wait.confirmText': '{name} is waiting · level {n}',
   'wait.confirmYes': 'Join game',
   'wait.confirmNo': 'Not yet',
-  // your open game — row in the menu strip (Task 35)
-  'wait.ownTitle': 'Your game is waiting',
-  'wait.ownSub': 'Code {code} · waiting for a rival',
-  'wait.ownOpen': 'Open',
+
+  // searching players in the menu (Task 36)
+  'wait.searchingSub': 'Looking for an opponent',
+  'wait.play': 'Play',
+  'wait.quickTitle': 'Play a match?',
+  'wait.quickText': '{name} is looking for a quick match — you will be paired in a couple of seconds',
+  'wait.gone': 'That player already found a game — try again',
+
+  // network
+  'net.offline': 'No internet — connect to play live opponents (the bot works offline)',
+
+  // first-install loader (Task 36)
+  'boot.title': 'Downloading the game…',
+  'boot.progress': '{n} of {m} · {p}%',
+  'boot.hint': 'One download — then the game works even offline',
+  'boot.needNet': 'Internet is required for the first download. Connect and try again',
+  'boot.failed': 'Download was interrupted. Check your connection and try again',
+  'boot.retry': 'Retry',
 
   // реванш по согласию (Task 25)
   'rem.waiting': 'Waiting for the opponent to accept…',
@@ -565,6 +615,36 @@ const EN: Record<string, string> = {
   'st.emptyMatches': 'Play a 1 vs 1 match — results will appear here',
   'st.emptyFriends': 'Play with a friend by code — results will appear here',
   'st.back': 'Back',
+
+  // stats v2 (Task 36)
+  'st.overview': 'Overview',
+  'st.peak': 'peak',
+  'st.toNext': '{n} trophies to {name}',
+  'st.maxLeague': 'Top league reached!',
+  'st.curStreak': 'Current streak',
+  'st.bestStreak': 'Best streak',
+  'st.best': 'best',
+  'st.timePlayed': 'Time played',
+  'st.bestTime': 'Best level time',
+  'st.bonuses': 'Boosters used',
+  'st.hintN': 'hints',
+  'st.shufN': 'shuffles',
+  'st.undoN': 'undos',
+  'st.wlSep': '/',
+  'st.withFriends': 'games with friends',
+  'st.friendsMet': 'Friends: {n}',
+  'tu.h': 'h',
+  'tu.min': 'm',
+  'tu.sec': 's',
+  'ach.title': 'Achievements',
+  'ach.done': 'Done!',
+  'ach.progress': '{n} of {m}',
+  'ach.pairs': 'Pair Collector',
+  'ach.levels': 'Level Climber',
+  'ach.wins': 'Champion',
+  'ach.streak': 'On Fire',
+  'ach.friends': 'Good Company',
+  'ach.league': 'League Hero',
 };
 
 const DICTS: Record<Lang, Record<string, string>> = { ru: RU, en: EN };

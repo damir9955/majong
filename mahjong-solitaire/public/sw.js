@@ -1,131 +1,93 @@
 /**
- * МАДЖОНГ — Service Worker (PWA: оффлайн и мгновенный запуск).
+ * МАДЖОНГ · Service Worker (Task 36).
  *
- * СТРАТЕГИЯ «Cache First» для ВСЕЙ статики своего домена:
- * HTML, CSS, JS-чанки, картинки (кости, текстуры, иконки),
- * звуки и шрифты — отдаются из кеша МГНОВЕННО; навигационный
- * HTML после отдачи тихо обновляется в фоне, поэтому новая
- * версия применяется при следующем запуске игры.
+ * Стратегия: Cache First для всей статики (HTML, JS, CSS,
+ * картинки, звуки) — игра работает ПОЛНОСТЬЮ без интернета и
+ * стартует мгновенно из кеша.
  *
- * ИСКЛЮЧЕНИЯ (всегда напрямую в сеть, НИКОГДА из кеша):
- *  — /api/* — запросы к собственному бэкенду;
- *  — ЛЮБОЙ чужой домен — в том числе онлайн-сервер мультиплеера
- *    wss://mahjong-solitaire.damirkolmurzin.deno.net
- *    (WebSocket-соединения fetch-хендлером не перехватываются,
- *     но чужие fetch-запросы к нему тоже идут мимо кеша);
- *  — любые не-GET запросы и схемы ws/wss.
+ * НЕ кешируем (всегда в сеть):
+ *  — любые не-GET запросы;
+ *  — чужие домены (WebSocket-сервер Deno и прочие бэкенды);
+ *  — наш /api/* (версия, комнаты, health) — только живые данные.
  *
- * ВЕРСИОНИРОВАНИЕ: имя кеша содержит версию. При выпуске
- * обновления версия меняется → новый SW скачивает свежий
- * прекеш в фоне, ждёт (skipWaiting НЕ вызывается) и
- * активируется, когда игрок полностью закроет игру. При
- * активации СТАРЫЕ кеши удаляются — мусора не остаётся.
- * Обновление применяется при следующем перезапуске игры.
+ * Обновления: найденное в кече отдаём мгновенно, а параллельно
+ * ТИХО подтягиваем свежую копию в кеш — новая версия применяется
+ * при СЛЕДУЮЩЕМ запуске, без выкидывания игрока из игры.
  */
 
-const VERSION = 'v38';
-const CACHE = 'mj-static-' + VERSION;
+const CACHE = 'mj-static';
 
-/** ядро: ставится в кеш сразу при установке (остальное — по ходу) */
-const PRECACHE = [
-  '/',
-  '/manifest.json',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png',
-  '/icons/icon-maskable-512.png',
-];
-
-/** всегда в сеть: API, бэкенды и онлайн-сервер мультиплеера */
-function isNetworkOnly(url) {
-  if (url.origin !== self.location.origin) return true; // чужой домен
-  if (url.pathname.startsWith('/api/')) return true; // бэкенд
-  if (url.pathname.startsWith('/_next/webpack-hmr')) return true; // dev HMR
-  return false;
-}
-
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    (async () => {
-      const cache = await caches.open(CACHE);
-      // allSettled: один сбой не валит установку целиком
-      await Promise.allSettled(PRECACHE.map((u) => cache.add(u)));
-      // НЕ вызываем skipWaiting(): новая версия должна скачаться
-      // в фоне и примениться при СЛЕДУЮЩЕМ перезапуске игры
-    })(),
-  );
+self.addEventListener('install', () => {
+  // новый SW берёт управление сразу (страниц не ждём)
+  self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
-      // ВЕРСИОНИРОВАНИЕ: все чужие (старые) кеши удаляем
-      const names = await caches.keys();
+      // подчистим чужие/старые кеши, наш mj-static не трогаем:
+      // он единственный и управляется страницей (маркер версии)
+      const keys = await caches.keys();
       await Promise.all(
-        names.filter((n) => n !== CACHE).map((n) => caches.delete(n)),
+        keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)),
       );
       await self.clients.claim();
     })(),
   );
 });
 
-/** ручное ускорение обновления (если понадобится кнопкой) */
-self.addEventListener('message', (event) => {
-  if (event.data === 'SKIP_WAITING') self.skipWaiting();
-});
+/** тихая ревалидация: свежая копия подменяет кеш для следующего запуска */
+async function revalidate(request, cache) {
+  try {
+    const fresh = await fetch(request);
+    if (fresh && fresh.ok && fresh.type === 'basic') {
+      await cache.put(request, fresh.clone());
+    }
+  } catch {
+    // сети нет — в кеше остаётся прежняя копия
+  }
+}
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-
-  // только статика: не-GET (POST/PUT) и WebSocket-рукопожатия — мимо
   if (req.method !== 'GET') return;
-  const url = new URL(req.url);
+
+  let url;
+  try {
+    url = new URL(req.url);
+  } catch {
+    return;
+  }
+  // чужие домены (мультиплеер-сервер, CDN) — только сеть
+  if (url.origin !== self.location.origin) return;
+  // наш API — всегда живые данные, без кеша
+  if (url.pathname.startsWith('/api/')) return;
+  // WebSocket-апгрейды сюда не попадают (SW их не видит) — на всякий
   if (url.protocol === 'ws:' || url.protocol === 'wss:') return;
-  // API, бэкенд и онлайн-сервер — всегда напрямую в сеть
-  if (isNetworkOnly(url)) return;
-  // Deno Deploy (мультиплеер) — ни одного байта в кеш
-  if (url.hostname.endsWith('.deno.net')) return;
 
-  const isNavigate = req.mode === 'navigate';
-
-  // CACHE FIRST: мгновенный ответ из кеша; для HTML — тихое
-  // обновление в фоне, чтобы новая версия применилась со
-  // следующего запуска ( hashed-чанки приезжают по новым URL )
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE);
-      const cached = await cache.match(req, {
-        ignoreSearch: isNavigate,
-      });
-      if (cached) {
-        if (isNavigate) {
-          // фоновая догрузка свежего HTML (не блокируем ответ)
-          event.waitUntil(
-            (async () => {
-              try {
-                const fresh = await fetch(req);
-                if (fresh && fresh.ok) await cache.put(req, fresh.clone());
-              } catch {
-                // сети нет — в следующий раз
-              }
-            })(),
-          );
-        }
-        return cached;
+      // ignoreSearch: открытие с query (?utm…, ?mjboot=1) тоже
+      // попадает в закешированный документ «/»
+      const hit = await cache.match(req, { ignoreVary: true, ignoreSearch: true });
+      if (hit) {
+        // обновим в фоне — применится при следующем запуске
+        revalidate(req, cache);
+        return hit;
       }
-      // в кеше нет — идём в сеть и складываем в кеш
+      // в кеше нет: идём в сеть (и кешируем на будущее)
       try {
-        const resp = await fetch(req);
-        if (resp && resp.ok && resp.type === 'basic') {
-          await cache.put(req, resp.clone());
+        const res = await fetch(req);
+        if (res && res.ok && res.type === 'basic') {
+          cache.put(req, res.clone());
         }
-        return resp;
-      } catch (err) {
-        // сети нет и кеша нет: офлайн-запуск спасёт главная
-        if (isNavigate) {
-          const shell = await cache.match('/');
-          if (shell) return shell;
-        }
-        throw err;
+        return res;
+      } catch {
+        return new Response('offline', {
+          status: 503,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        });
       }
     })(),
   );

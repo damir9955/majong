@@ -1,27 +1,13 @@
 /**
  * Клиентский транспорт комнат «1 на 1» и матчмейкинга — WebSocket.
  *
- * DENO DEPLOY (deno-server/main.ts, протокол v2):
- *  — адрес один и жёсткий: wss://mahjong-solitaire.damirkolmurzin.deno.net
- *    (WebSocket принимается в КОРНЕ — никаких /ws и переменных
- *    окружения; старые подключения к Vercel API и VPS удалены);
- *    локальная разработка (localhost) ходит на ws://localhost:8080;
- *  — ЭКОНОМИЯ ЛИМИТОВ DENO DEPLOY (критично): в игре клиент шлёт
- *    серверу ТОЛЬКО короткое событие в момент клика по собранной
- *    паре — {t:'event', kind:'match', tile1Id, tile2Id} (+ счёт) —
- *    и терминальный {t:'finish'}. Никакого поллинга состояния и
- *    «движений мыши»: всё актуальное сервер пушит сам (watch);
- *  — SEED: раскладку оба игрока строят из одного числа view.seed
- *    (доски одинаковые); таймер матча — серверный (startedAt /
- *    serverNow), накрутить время на телефоне нельзя;
- *  — РЕКОННЕКТ: при обрыве клиент яростно пытается вернуться в
- *    течение 15 секунд (~7 попыток с нарастающей паузой), дальше —
- *    раз в 5 c неограниченно долго. Текущая игра НЕ перезапускается:
- *    «hello» с сохранёнными кредами (code + playerId) возвращает
- *    игрока в комнату с того же места (сервер держит её 30 c).
+ * Сервер: Deno Deploy (deno-server/main.ts, протокол v2). Состояние
+ * комнат живёт в Deno KV, поэтому реконнект/перезагрузка страницы
+ * не теряет игру: креды (код + playerId) сохранены в localStorage,
+ * «hello» с ними автоматически привязывает новый сокет к комнате.
  *
- * Сигнатуры api-функций совпадают с прежними, поэтому стор и
- * экраны не меняются:
+ * Сигнатуры api-функций СОВПАДАЮТ с прежним HTTP-вариантом, поэтому
+ * стор и экраны не меняются; новые возможности — подписки на пуши:
  *   subscribeRoom(cb)   — вьюха комнаты (старт/итог/прогресс)
  *   subscribeEvent(cb)  — «соперник собрал пару» (мгновенно)
  *   subscribeLobby(cb)  — список открытых игр (раз в ~2 c)
@@ -29,7 +15,7 @@
  *   subscribeStatus(cb) — 'connecting' | 'open' | 'retrying' | 'idle'
  */
 
-import { RoomError, type OpenRoomInfo, type RoomView } from './types';
+import { RoomError, type OpenRoomInfo, type RoomView, type SearchingInfo } from './types';
 
 const CREDS_KEY = 'mahjong-room';
 const NAME_KEY = 'mahjong-name';
@@ -78,31 +64,57 @@ export type WsStatus = 'idle' | 'connecting' | 'open' | 'retrying';
 /* ============================== адрес ============================== */
 
 /**
- * Адрес мультиплеер-сервера (Deno Deploy, Playground одним файлом).
+ * Адрес мультиплеер-сервера (Deno Deploy, Playground-деплой одним файлом).
  *
- * В проде — строго wss://mahjong-solitaire.damirkolmurzin.deno.net
- * (корень: сервер принимает WebSocket на любом пути). Локальная
- * разработка и e2e (localhost) — ws://localhost:8080. Чтобы сменить
- * домен, правьте одну константу ниже.
+ * Приоритет:
+ *  1. NEXT_PUBLIC_WS_URL — то имя, которое выставляется в Vercel
+ *     (Settings → Environment Variables) и инлайнится на билде;
+ *  2. NEXT_PUBLIC_MAHJONG_WS — прежнее имя переменной (совместимость);
+ *  3. localhost — локальный dev/e2e (ws://localhost:8080/ws);
+ *  4. продовый адрес сервера по умолчанию.
+ *
+ * Значение можно вставить «как скопировал из браузера»:
+ * нормализация сама добавит схему и путь /ws:
+ *   name.deno.dev → wss://name.deno.dev/ws
+ *   https://name.deno.dev → wss://name.deno.dev/ws
+ *   wss://name.deno.dev → wss://name.deno.dev/ws
+ *   wss://name.deno.dev/ws → останется как есть
  */
-const PROD_WS_URL = 'wss://mahjong-solitaire.damirkolmurzin.deno.net';
-const DEV_WS_URL = 'ws://localhost:8080';
+function normalizeWsUrl(raw: string): string {
+  let u = raw.trim();
+  if (!u) return raw;
+  if (u.startsWith('//')) u = 'wss:' + u;
+  else if (/^https:\/\//i.test(u)) u = 'wss://' + u.slice(8);
+  else if (/^http:\/\//i.test(u)) u = 'ws://' + u.slice(7);
+  else if (!/^wss?:\/\//i.test(u)) u = 'wss://' + u;
+  try {
+    const p = new URL(u);
+    if (!p.pathname || p.pathname === '/') p.pathname = '/ws';
+    return p.toString();
+  } catch {
+    return /\/ws\/?$/i.test(u) ? u : u.replace(/\/+$/, '') + '/ws';
+  }
+}
 
 function wsUrl(): string {
+  const env =
+    process.env.NEXT_PUBLIC_WS_URL ?? process.env.NEXT_PUBLIC_MAHJONG_WS;
+  if (env) return normalizeWsUrl(env);
   if (typeof window !== 'undefined') {
     const h = window.location.hostname;
     if (h === 'localhost' || h === '127.0.0.1' || h === '[::1]') {
-      return DEV_WS_URL;
+      return 'ws://localhost:8080/ws';
     }
   }
-  return PROD_WS_URL;
+  return 'wss://mahjong-solitaire.damirkolmurzin.deno.net/ws';
 }
 
-/* ============ воркер-сердцебиение (свёрнутая вкладка) ============
- * Браузер душит таймеры СВЁРНУТОЙ вкладки до ~1/мин. Воркер не
- * дросселируется: тикает каждые 5 c и просит главный поток послать
- * {t:'ping'} — сервер считает это присутствием, и матч не умирает
- * по ложному «дисконнекту», пока игрок вернётся. */
+/* ============ воркер-сердцебиение (как в рабочем образце) ============
+ * Браузер душит таймеры СВЁРНУТОЙ вкладки до ~1/мин — поллинг вьюхи
+ * там замирает. Воркер не дросселируется: тикает каждые 5 c и
+ * просит главный поток послать {t:'ping'} — сервер считает это
+ * присутствием (hb→ping и так работает, воркер — страховка от
+ * потерянных hb и заморозки). */
 let presenceWorker: Worker | null = null;
 
 function ensurePresenceWorker(): void {
@@ -116,7 +128,7 @@ function ensurePresenceWorker(): void {
       URL.createObjectURL(new Blob([src], { type: 'text/javascript' })),
     );
     presenceWorker.onmessage = () => {
-      // в видимой вкладке ответы на серверный hb уже идут — не дублируем
+      // в видимой вкладке hb-понги уже идут — не дублируем
       if (typeof document !== 'undefined' && document.hidden) {
         wsClient.ping();
       }
@@ -138,7 +150,6 @@ class WsClient {
     number,
     { resolve: (m: Record<string, unknown>) => void; reject: (e: Error) => void }
   >();
-  /** исходящие сообщения, накопленные во время обрыва */
   private outbox: string[] = [];
   private retryNo = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -146,12 +157,11 @@ class WsClient {
   private myName = '';
   private lobbyWant = false;
   private everConnected = false;
-  /** троттлинг view-запросов: не чаще раза в 2.5 c (пуши и так всё доносят) */
-  private lastViewReqAt = 0;
-  private lastViewCache: { code: string; view: RoomView } | null = null;
   /** пачки подписчиков */
   private viewSubs = new Set<(v: RoomView, playerId?: string) => void>();
-  private lobbySubs = new Set<(rooms: OpenRoomInfo[]) => void>();
+  private lobbySubs = new Set<
+    (rooms: OpenRoomInfo[], searching: SearchingInfo[]) => void
+  >();
   private eventSubs = new Set<(e: OpponentMatchEvent) => void>();
   private errSubs = new Set<(code: string) => void>();
   private statusSubs = new Set<(s: WsStatus) => void>();
@@ -177,9 +187,8 @@ class WsClient {
       this.everConnected = true;
       this.retryNo = 0;
       this.setStatus('open');
-      // сначала представляемся (hello вернёт в живую комнату),
-      // затем доливаем накопленное во время обрыва
       this.hello();
+      // исходящая очередь после обрыва — доливаем
       for (const raw of this.outbox.splice(0)) {
         try {
           ws.send(raw);
@@ -207,8 +216,8 @@ class WsClient {
     };
   }
 
-  /** присутствие: свёрнутая вкладка / страховка (сервер обновляет
-   *  lastSeen по ping — матч не умирает без поллинга) */
+  /** присутствие без поллинга: свёрнутая вкладка / страховка
+   * (сервер обновляет lastSeen игрока по ping) */
   ping(): void {
     this.rawSend({ t: 'ping' });
   }
@@ -228,14 +237,6 @@ class WsClient {
       }
     }
     if (this.outbox.length < 60) this.outbox.push(JSON.stringify(m));
-  }
-
-  /** отправить без ожидания ответа (событие «собрал пару»):
-   *  уходит сразу при живом сокете, иначе — ждёт в очереди и
-   *  уходит первым же делом после переподключения */
-  fire(m: Record<string, unknown>): void {
-    this.connect();
-    this.rawSend(m);
   }
 
   /** запрос-ответ по rid (8 c на ответ) */
@@ -288,7 +289,9 @@ class WsClient {
     return () => this.eventSubs.delete(cb);
   }
 
-  onLobby(cb: (rooms: OpenRoomInfo[]) => void): () => void {
+  onLobby(
+    cb: (rooms: OpenRoomInfo[], searching: SearchingInfo[]) => void,
+  ): () => void {
     const first = this.lobbySubs.size === 0;
     this.lobbySubs.add(cb);
     if (first) {
@@ -319,32 +322,6 @@ class WsClient {
     return this.status;
   }
 
-  /** view-запросы троттлятся: сервер и так пушит все изменения,
-   *  запрос остался страховкой (жива ли комната) */
-  requestView(
-    code: string,
-    progress?: { score?: number; pairsDone?: number },
-  ): Promise<Record<string, unknown>> {
-    const now = Date.now();
-    if (
-      now - this.lastViewReqAt < 2500 &&
-      this.lastViewCache &&
-      this.lastViewCache.code === code
-    ) {
-      return Promise.resolve({ t: 'room', view: this.lastViewCache.view });
-    }
-    this.lastViewReqAt = now;
-    return this.request({
-      t: 'view',
-      score: progress?.score,
-      pairsDone: progress?.pairsDone,
-    });
-  }
-
-  rememberView(view: RoomView): void {
-    this.lastViewCache = { code: view.code, view };
-  }
-
   /* ---------- внутреннее ---------- */
 
   private setStatus(s: WsStatus): void {
@@ -373,20 +350,11 @@ class WsClient {
     this.rawSend(m);
   }
 
-  /** РЕКОННЕКТ 15 СЕКУНД (фидбек «на телефонах связь часто
-   *  рвётся»): в первые 15 c — ~7 попыток с нарастающей паузой
-   *  (0.4 → 0.8 → 1.2 → 2 → 3 → 4 c), дальше — раз в 5 c без
-   *  ограничения по времени. Игрока НЕ выкидывает в меню: игра
-   *  не перезапускается, hello возвращает в комнату с того же
-   *  места (сервер держит её 30 c, на Redis/KV ничего не теряется). */
   private scheduleReconnect(): void {
     if (this.retryTimer) return;
-    // окно 15 c: пока попытки в нём — пауза растёт медленно,
-    // после окна — ровно 5 c между попытками
-    const in15s = this.retryNo < 7;
-    const delay = in15s
-      ? Math.min(4000, 400 + 600 * this.retryNo) + 200 * Math.random()
-      : 5000 + 500 * Math.random();
+    const delay =
+      Math.min(8000, 500 * 2 ** Math.min(this.retryNo, 4)) +
+      250 * Math.random();
     this.retryNo++;
     this.setStatus(this.everConnected ? 'retrying' : 'connecting');
     this.retryTimer = setTimeout(() => {
@@ -409,12 +377,9 @@ class WsClient {
       return;
     }
     const t = typeof m.t === 'string' ? m.t : '';
-
-    // ответ на наш ping / серверное pong — тихо
     if (t === 'pong') return;
-
-    // сервер постучался (hb) — вкладка жива: отвечаем ping
-    // (lastSeen обновится, свёрнутый матч не умрёт по «дисконнекту»)
+    // сервер постучался (hb) — фоновая вкладка жива: отвечаем,
+    // сообщение обновляет lastSeen и матч не умирает по «дисконнекту»
     if (t === 'hb') {
       try {
         this.ws?.send(JSON.stringify({ t: 'ping' }));
@@ -423,7 +388,6 @@ class WsClient {
       }
       return;
     }
-
     // ответ на запрос по rid
     const rid = typeof m.rid === 'number' ? m.rid : null;
     if (rid !== null && this.pending.has(rid)) {
@@ -441,13 +405,11 @@ class WsClient {
       p.resolve(m);
       return;
     }
-
     // чистые пуши
     switch (t) {
       case 'room': {
         const v = m.view as RoomView | undefined;
         if (!v || typeof v.code !== 'string') return;
-        this.rememberView(v);
         const pid = typeof m.playerId === 'string' ? m.playerId : undefined;
         for (const cb of [...this.viewSubs]) {
           try {
@@ -460,9 +422,12 @@ class WsClient {
       }
       case 'lobby': {
         const rooms = Array.isArray(m.rooms) ? (m.rooms as OpenRoomInfo[]) : [];
+        const searching = Array.isArray(m.searching)
+          ? (m.searching as SearchingInfo[])
+          : [];
         for (const cb of [...this.lobbySubs]) {
           try {
-            cb(rooms);
+            cb(rooms, searching);
           } catch {
             // ignore
           }
@@ -639,68 +604,72 @@ export async function apiListOpenRooms(): Promise<OpenRoomInfo[]> {
   return Array.isArray(data.rooms) ? (data.rooms as OpenRoomInfo[]) : [];
 }
 
-/** войти в комнату по коду (друг). Свежая комната может
- *  «проявляться» на другом изоляте (репликация KV) — один ретрай */
+/** войти в комнату по коду (друг) */
 export async function apiJoinRoom(
   code: string,
   name: string,
 ): Promise<{ playerId: string; view: RoomView }> {
-  const attempt = async () => {
+  try {
     const data = await wsClient.request({ t: 'join', code, name });
     const playerId = typeof data.playerId === 'string' ? data.playerId : '';
     if (playerId === '' || data.t !== 'room') {
       throw new RoomError('NETWORK', 'Некорректный ответ сервера');
     }
     return { playerId, view: toView(data) };
-  };
-  try {
-    return await attempt();
   } catch (e) {
+    // свежая комната может «проявляться» на другом изоляте — ещё раз
     if (e instanceof RoomError && e.code === 'ROOM_NOT_FOUND') {
       await new Promise((r) => setTimeout(r, 600));
-      return attempt();
+      const data = await wsClient.request({ t: 'join', code, name });
+      const playerId = typeof data.playerId === 'string' ? data.playerId : '';
+      if (playerId === '' || data.t !== 'room') {
+        throw new RoomError('NETWORK', 'Некорректный ответ сервера');
+      }
+      return { playerId, view: toView(data) };
     }
     throw e;
   }
 }
 
-/** состояние комнаты + «попутный» отчёт своего прогресса.
- *  Троттлится изнутри (не чаще 1 раза в 2.5 c): актуальное
- *  состояние сервер пушит сам — запрос остался страховкой. */
+/** состояние комнаты + «попутный» отчёт своего прогресса (присутствие) */
 export async function apiPollRoom(
   code: string,
   playerId: string,
   progress?: { score?: number; pairsDone?: number },
 ): Promise<RoomView> {
-  void playerId;
-  const data = await wsClient.requestView(code, progress);
+  const data = await wsClient.request({
+    t: 'view',
+    score: progress?.score,
+    pairsDone: progress?.pairsDone,
+  });
   if (data.t !== 'room') throw new RoomError('NETWORK', 'Комната недоступна');
   return toView(data);
 }
 
-/** собрал пару: КОРОТКОЕ событие в момент клика —
- *  {t:'event', kind:'match', tile1Id, tile2Id} + счёт/прогресс.
- *  Доставляется гарантированно: при обрыве ждёт в исходящей очереди
- *  и уходит сразу после переподключения (лимиты Deno не горят —
- *  ровно одно сообщение на каждую собранную пару). */
+/** релея «я собрал пару» — соперник узнает мгновенно */
 export function sendMatchEvent(
   tile1Id: number,
   tile2Id: number,
   score: number,
   pairsDone: number,
 ): void {
-  wsClient.fire({
-    t: 'event',
-    kind: 'match',
-    tile1Id,
-    tile2Id,
-    score: Math.round(score),
-    pairsDone: Math.round(pairsDone),
+  wsClient.connect();
+  wsClient.request(
+    {
+      t: 'event',
+      kind: 'match',
+      tile1Id,
+      tile2Id,
+      score: Math.round(score),
+      pairsDone: Math.round(pairsDone),
+    },
+    3000,
+  ).catch(() => {
+    // сеть моргнула — счёт доедет следующим view-запросом
   });
 }
 
-/** терминальное событие: собрал доску / переполнил лоток.
- *  Итог сервер фиксирует сам (по своим часам) и шлёт обоим. */
+/** терминальное событие: собрал доску / переполнил лоток */
 export async function apiReportFinish(
   code: string,
   playerId: string,
@@ -708,8 +677,6 @@ export async function apiReportFinish(
   score: number,
   pairsDone: number,
 ): Promise<RoomView | null> {
-  void code;
-  void playerId;
   const data = await wsClient.request({
     t: 'finish',
     reason,
@@ -725,16 +692,12 @@ export async function apiAdvance(
   playerId: string,
   kind: 'next' | 'rematch',
 ): Promise<RoomView | null> {
-  void code;
-  void playerId;
   const data = await wsClient.request({ t: 'advance', kind });
   return data.t === 'room' ? toView(data) : null;
 }
 
 /** выйти из комнаты */
 export async function apiLeave(code: string, playerId: string) {
-  void code;
-  void playerId;
   await wsClient.request({ t: 'leave' });
 }
 
@@ -764,10 +727,10 @@ export async function apiMatchJoin(
   return { status: 'search' };
 }
 
-/** держим тикет живым; заодно сервер досматривает очередь.
- *  Если сокет пережил обрыв и тикет потерялся — сервер пересоздаст
- *  его с актуальным уровнем; если мы уже в комнате — вернёт её. */
+/** держим тикет живым; заодно сервер досматривает очередь */
 export async function apiMatchHeart(level?: number): Promise<MatchStatus> {
+  // уровень едет с каждым сердцем: если сокет пережил обрыв и
+  // тикет потерялся — сервер пересоздаст его с актуальным уровнем
   const data = await wsClient.request(
     { t: 'match-heart', level: level ?? 1 },
     5000,
@@ -796,7 +759,9 @@ export function subscribeRoom(cb: (v: RoomView, playerId?: string) => void) {
 export function subscribeEvent(cb: (e: OpponentMatchEvent) => void) {
   return wsClient.onEvent(cb);
 }
-export function subscribeLobby(cb: (rooms: OpenRoomInfo[]) => void) {
+export function subscribeLobby(
+  cb: (rooms: OpenRoomInfo[], searching: SearchingInfo[]) => void,
+) {
   return wsClient.onLobby(cb);
 }
 export function subscribeErr(cb: (code: string) => void) {

@@ -67,6 +67,14 @@ export interface OpenRoomInfo {
   players: number;
 }
 
+/** игрок, ищущий быстрый матч (виден в меню других игроков) */
+export interface SearchingInfo {
+  name: string;
+  level: number;
+  hue: number;
+  createdAt: number;
+}
+
 /** ошибка транспорта комнаты */
 export type RoomErrorCode =
   | 'BAD_CODE'

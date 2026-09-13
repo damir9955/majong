@@ -217,6 +217,11 @@ export interface Session {
   peekId: number | null;
   /** оставшиеся возвраты плитки из лотка (ограничены) */
   undosLeft: number;
+  /** когда партия началась (epoch-ms) — для времени в статистике */
+  startedAt: number;
+  /** сколько бонусов фактически потрачено в этой партии —
+   *   для подробной статистики «Классики» */
+  used: { hints: number; shuffles: number; undos: number };
 }
 
 interface GameState {
@@ -231,10 +236,35 @@ interface GameState {
   /** начисленные, но ещё не потраченные бонусы */
   bank: { hints: number; shuffles: number };
   /** лига: трофеи и статистика */
-  league: { points: number; wins: number; losses: number; streak: number };
+  league: {
+    points: number;
+    wins: number;
+    losses: number;
+    streak: number;
+    /** лучшая серия побед за всё время (для подробной статистики) */
+    bestStreak: number;
+    /** самый высокий достигнутый рубеж трофеев */
+    pointsBest: number;
+  };
   /** статистика для таблиц: классика и встречи с друзьями */
   stats: {
-    classic: { levelsCleared: number; pairsMatched: number; games: number };
+    classic: {
+      levelsCleared: number;
+      pairsMatched: number;
+      games: number;
+      /** текущая серия пройденных уровней подряд */
+      winStreak: number;
+      /** лучшая серия пройденных уровней подряд */
+      bestStreak: number;
+      /** самое быстрое прохождение уровня (мс; 0 — ещё не прошло) */
+      bestTimeMs: number;
+      /** суммарное время в «Классике» */
+      totalTimeMs: number;
+      /** потрачено подсказок / перемешиваний / возвратов */
+      hintsUsed: number;
+      shufflesUsed: number;
+      undosUsed: number;
+    };
     friends: Record<string, FriendRecord>;
   };
   /** предложить «продолжить или заново» при входе на уровень */
@@ -366,10 +396,20 @@ function isLandscape(): boolean {
 /** подготовка партии к продолжению: «время» партии привязано
  *  к странице (performance.now), после перезагрузки окна комбо и
  *  челленджи сбрасываем, тику бота ставим «сейчас» */
-function normalizeForResume(s: Session): Session {
-  if (!s.battle) return s;
-  const now = performance.now();
+/** старые сохранённые партии не имеют startedAt/used — добираем
+ *  умолчания, чтобы подробная статистика не падала на чтении */
+function ensureSessionV2(s: Session): Session {
   return {
+    ...s,
+    startedAt: typeof s.startedAt === 'number' ? s.startedAt : Date.now(),
+    used: s.used ?? { hints: 0, shuffles: 0, undos: 0 },
+  };
+}
+
+function normalizeForResume(s: Session): Session {
+  if (!s.battle) return ensureSessionV2(s);
+  const now = performance.now();
+  return ensureSessionV2({
     ...s,
     battle: {
       ...s.battle,
@@ -379,7 +419,7 @@ function normalizeForResume(s: Session): Session {
       lastChallengeAt: 0,
       challenge: null,
     },
-  };
+  });
 }
 
 function createSession(
@@ -420,6 +460,8 @@ function createSession(
     bonusGrant: [],
     mode,
     battle,
+    startedAt: Date.now(),
+    used: { hints: 0, shuffles: 0, undos: 0 },
   };
 }
 
@@ -507,13 +549,22 @@ const isConcealed = (s: Session, id: number) =>
     !s.revealedIds.includes(id)) ||
   (s.buriedIds.includes(id) && !s.revealedIds.includes(id));
 
-/** найти перевёрнутую рубашку с той же гранью (кроме excludeId) —
- *  ФУНКЦИЯ УДАЛЕНА вместе с автопарой (фидбек «когда тыкаешь
- *  закрытую и отправляешь в лоток, автоматом вылетает с другого
- *  места закрытая такая же, даже с середины»): НИКАКАЯ кость на
- *  доске больше не улетает без прямого тапа. Открытая рубашка —
- *  обычная плитка: тап отправляет её в лоток; пары собираются
- *  только когда игрок сам тапнул вторую кость (или она уже в лотке). */
+/** найти перевёрнутую рубашку с той же гранью (кроме excludeId) */
+function findRevealedTwin(
+  s: Session,
+  matchKey: string,
+  excludeId: number | null,
+): number | null {
+  const candidates = [...s.revealedIds];
+  if (s.peekId !== null && s.peekId !== excludeId) candidates.push(s.peekId);
+  for (const id of candidates) {
+    if (id === excludeId) continue;
+    const t = byId(s, id);
+    if (!t || t.removed) continue;
+    if (getTileDef(t.defId).matchKey === matchKey) return id;
+  }
+  return null;
+}
 
 /**
  * Авто-открытие: рубашки, спрятанные ПОД костями, переворачиваются
@@ -582,10 +633,8 @@ function unstuckSession(s: Session): Session | null {
 
 /**
  * Убрать пару: обе плитки покидают доску и улетают в лоток,
- * где соединяются и взрываются. Житель — всегда плитка ЛОТКА,
- * прилетевшая — тапнутая игроком (в т.ч. закрытая рубашка,
- * совпавшая с жителем, — «счастливое открытие»: летит лицом
- * вверх). Никаких пар «по ту сторону доски» больше нет.
+ * где соединяются и взрываются. Жителем может быть как плитка
+ * лотка, так и перевёрнутая рубашка на доске (peek-пара).
  *
  * Летящая пара ВСЕГДА летит лицом вверх: закрытые кости
  * переворачиваются ДО полёта (костяшка разворачивается —
@@ -721,15 +770,28 @@ function finishClassic(
   const bonusGrant = won ? rollBonuses() : [];
   const bank = st.bank;
   const stats = st.stats;
+  const elapsed = Math.max(0, Date.now() - (s.startedAt || Date.now()));
+  const winStreak = won ? Math.max(0, stats.classic.winStreak) + 1 : 0;
   set({
     bank: won ? grantBank(bank, bonusGrant) : bank,
-    // таблица «Классика»: пройденные уровни и собранные пары
+    // таблица «Классика»: подробности — уровни, пары, время, серии,
+    // потраченные подсказки/перемешивания/возвраты
     stats: {
       ...stats,
       classic: {
         levelsCleared: stats.classic.levelsCleared + (won ? 1 : 0),
         pairsMatched: stats.classic.pairsMatched + s.matchedSeq,
         games: stats.classic.games + 1,
+        winStreak,
+        bestStreak: Math.max(stats.classic.bestStreak, winStreak),
+        bestTimeMs:
+          won && (stats.classic.bestTimeMs === 0 || elapsed < stats.classic.bestTimeMs)
+            ? elapsed
+            : stats.classic.bestTimeMs,
+        totalTimeMs: stats.classic.totalTimeMs + elapsed,
+        hintsUsed: stats.classic.hintsUsed + s.used.hints,
+        shufflesUsed: stats.classic.shufflesUsed + s.used.shuffles,
+        undosUsed: stats.classic.undosUsed + s.used.undos,
       },
     },
     session: {
@@ -774,6 +836,14 @@ function finishMatch(
 
   const league = st.league;
   const points = Math.max(0, league.points + delta);
+  const nextStreak =
+    outcome === 'win'
+      ? league.streak >= 0
+        ? league.streak + 1
+        : 1
+      : league.streak <= 0
+        ? league.streak - 1
+        : -1;
   const result: MatchResult = {
     outcome,
     reason,
@@ -792,14 +862,9 @@ function finishMatch(
       points,
       wins: league.wins + (outcome === 'win' ? 1 : 0),
       losses: league.losses + (outcome === 'lose' ? 1 : 0),
-      streak:
-        outcome === 'win'
-          ? league.streak >= 0
-            ? league.streak + 1
-            : 1
-          : league.streak <= 0
-            ? league.streak - 1
-            : -1,
+      streak: nextStreak,
+      bestStreak: Math.max(league.bestStreak, nextStreak),
+      pointsBest: Math.max(league.pointsBest, points),
     },
     bank: outcome === 'win' ? grantBank(bank, bonusGrant) : bank,
     session: {
@@ -841,6 +906,14 @@ function settleOnline(
 
   const league = st.league;
   const points = Math.max(0, league.points + delta);
+  const nextStreak =
+    outcome === 'win'
+      ? league.streak >= 0
+        ? league.streak + 1
+        : 1
+      : league.streak <= 0
+        ? league.streak - 1
+        : -1;
   const result: MatchResult = {
     outcome,
     reason,
@@ -859,14 +932,9 @@ function settleOnline(
       points,
       wins: league.wins + (outcome === 'win' ? 1 : 0),
       losses: league.losses + (outcome === 'lose' ? 1 : 0),
-      streak:
-        outcome === 'win'
-          ? league.streak >= 0
-            ? league.streak + 1
-            : 1
-          : league.streak <= 0
-            ? league.streak - 1
-            : -1,
+      streak: nextStreak,
+      bestStreak: Math.max(league.bestStreak, nextStreak),
+      pointsBest: Math.max(league.pointsBest, points),
     },
     bank: outcome === 'win' ? grantBank(bank, bonusGrant) : bank,
     // таблица «С друзьями»: итог встречи с этим другом
@@ -975,9 +1043,27 @@ export const useGame = create<GameState>()(
       showMenu: false,
       lastMode: 'classic',
       bank: { hints: 0, shuffles: 0 },
-      league: { points: 0, wins: 0, losses: 0, streak: 0 },
+      league: {
+        points: 0,
+        wins: 0,
+        losses: 0,
+        streak: 0,
+        bestStreak: 0,
+        pointsBest: 0,
+      },
       stats: {
-        classic: { levelsCleared: 0, pairsMatched: 0, games: 0 },
+        classic: {
+          levelsCleared: 0,
+          pairsMatched: 0,
+          games: 0,
+          winStreak: 0,
+          bestStreak: 0,
+          bestTimeMs: 0,
+          totalTimeMs: 0,
+          hintsUsed: 0,
+          shufflesUsed: 0,
+          undosUsed: 0,
+        },
         friends: {},
       },
       askLevelEntry: false,
@@ -1255,12 +1341,8 @@ export const useGame = create<GameState>()(
         const matchKey = getTileDef(tile.defId).matchKey;
         const concealed = isConcealed(s, id);
 
-        // ЕДИНСТВЕННАЯ автопара: житель лотка + тапнутая плитка —
-        // двигаются только те кости, по которым игрок НАЖАЛ.
-        // (Фидбек «автоматом вылетает с другого места закрытая
-        //  такая же, даже с середины»: раньше закрытая плитка
-        //  улетала парой с открытой рубашкой где-то на доске —
-        //  теперь рубашки никогда не собираются сами по себе.)
+        // 1) совпадение с жителем лотка — пара (для закрытой плитки
+        //    это «счастливое открытие»: рубашка переворачивается в полёте)
         const matchIdx = s.tray.findIndex(
           (tid) => getTileDef(byId(s, tid)!.defId).matchKey === matchKey,
         );
@@ -1269,11 +1351,17 @@ export const useGame = create<GameState>()(
           return;
         }
 
-        // закрытая плитка — переворот-подглядка (плитка остаётся на
-        // доске лицом вверх; в лоток уйдёт по ВТОРОМУ тапу, как все).
-        // Прежняя подглядка переворачивается ОБРАТНО: взгляд игрока —
-        // только на одну карточку за раз
+        // 2) закрытая плитка: если среди открытых рубашек есть
+        //    точно такая же — обе сразу уходят в лоток парой
         if (concealed) {
+          const twin = findRevealedTwin(s, matchKey, id);
+          if (twin !== null) {
+            removePair(set, s, twin, id);
+            return;
+          }
+          // иначе — переворот-подглядка (плитка остаётся на доске
+          // лицом вверх). Прежняя подглядка переворачивается ОБРАТНО:
+          // взгляд игрока — только на одну карточку за раз
           playReveal();
           set({
             session: {
@@ -1286,7 +1374,17 @@ export const useGame = create<GameState>()(
           return;
         }
 
-        // 3) новая плитка в лотке
+        // 3) открытая плитка: перевёрнутая рубашка с той же гранью —
+        //    обе немедленно летят в лоток и взрываются парой
+        // (исключаем САМУ тапнутую плитку: если её уже переворачивали,
+        //  она не может стать парой сама с собой)
+        const peekTwin = findRevealedTwin(s, matchKey, id);
+        if (peekTwin !== null) {
+          removePair(set, s, peekTwin, id);
+          return;
+        }
+
+        // 4) новая плитка в лотке
         const tray = [...s.tray, id];
         const tiles = s.tiles.map((t) =>
           t.id === id ? { ...t, removed: true } : t,
@@ -1378,6 +1476,7 @@ export const useGame = create<GameState>()(
             tiles,
             tray,
             undosLeft: s.undosLeft - 1,
+            used: { ...s.used, undos: s.used.undos + 1 },
             pendingLose: false,
             invalidId: null,
             hintPair: null,
@@ -1432,6 +1531,7 @@ export const useGame = create<GameState>()(
           session: {
             ...s,
             hintsLeft: s.hintsLeft - 1,
+            used: { ...s.used, hints: s.used.hints + 1 },
             hintPair: pair,
             invalidId: null,
           },
@@ -1469,6 +1569,7 @@ export const useGame = create<GameState>()(
             tiles,
             peekId: null,
             shufflesLeft: s.shufflesLeft - 1,
+            used: { ...s.used, shuffles: s.used.shuffles + 1 },
             shuffleSeq: s.shuffleSeq + 1,
             hintPair: null,
             invalidId: null,
@@ -1836,7 +1937,7 @@ export const useGame = create<GameState>()(
     }),
     {
       name: 'mahjong-relax-save',
-      version: 6,
+      version: 7,
       partialize: (state) => ({
         level: state.level,
         settings: state.settings,
@@ -1860,12 +1961,25 @@ export const useGame = create<GameState>()(
                 wins?: number;
                 losses?: number;
                 streak?: number;
+                bestStreak?: number;
+                pointsBest?: number;
               };
               lastMode?: GameMode;
               session?: Session | null;
               progress?: { unlockedLevel?: number };
               stats?: {
-                classic?: { levelsCleared?: number; pairsMatched?: number; games?: number };
+                classic?: {
+                  levelsCleared?: number;
+                  pairsMatched?: number;
+                  games?: number;
+                  winStreak?: number;
+                  bestStreak?: number;
+                  bestTimeMs?: number;
+                  totalTimeMs?: number;
+                  hintsUsed?: number;
+                  shufflesUsed?: number;
+                  undosUsed?: number;
+                };
                 friends?: Record<string, FriendRecord>;
               };
             }
@@ -1883,6 +1997,9 @@ export const useGame = create<GameState>()(
             wins: p?.league?.wins ?? 0,
             losses: p?.league?.losses ?? 0,
             streak: p?.league?.streak ?? 0,
+            // v7: подробная статистика лиги — лучшая серия и пик трофеев
+            bestStreak: Math.max(0, p?.league?.bestStreak ?? 0),
+            pointsBest: Math.max(p?.league?.pointsBest ?? p?.league?.points ?? 0, 0),
           },
         };
         if (version < 4) {
@@ -1897,6 +2014,14 @@ export const useGame = create<GameState>()(
             levelsCleared: p?.stats?.classic?.levelsCleared ?? 0,
             pairsMatched: p?.stats?.classic?.pairsMatched ?? 0,
             games: p?.stats?.classic?.games ?? 0,
+            // v7: подробная классика — серии, время, трата бонусов
+            winStreak: Math.max(0, p?.stats?.classic?.winStreak ?? 0),
+            bestStreak: Math.max(0, p?.stats?.classic?.bestStreak ?? 0),
+            bestTimeMs: Math.max(0, p?.stats?.classic?.bestTimeMs ?? 0),
+            totalTimeMs: Math.max(0, p?.stats?.classic?.totalTimeMs ?? 0),
+            hintsUsed: Math.max(0, p?.stats?.classic?.hintsUsed ?? 0),
+            shufflesUsed: Math.max(0, p?.stats?.classic?.shufflesUsed ?? 0),
+            undosUsed: Math.max(0, p?.stats?.classic?.undosUsed ?? 0),
           },
           friends: p?.stats?.friends ?? {},
         };
@@ -1912,7 +2037,7 @@ export const useGame = create<GameState>()(
           ...base,
           stats,
           lastMode: p?.lastMode ?? 'classic',
-          session: p?.session ?? null,
+          session: p?.session ? ensureSessionV2(p.session) : null,
         };
       },
     },
@@ -1968,13 +2093,6 @@ if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
     /** тесты: немедленный финал текущей партии (поражение по лотку) */
     loseNow: () => {
       finish(useGame.setState as unknown as (p: Partial<GameState>) => void, 'tray');
-    },
-    /** тесты: произвольная правка сессии (воспроизведение редких
-     *  состояний — например «открытая рубашка, зажатая соседями») */
-    patchSession: (patch: Record<string, unknown>) => {
-      const s = useGame.getState().session;
-      if (!s) return;
-      useGame.setState({ session: { ...s, ...patch } });
     },
     /** тесты: выставить остаток бонуса */
     setBonus: (kind: 'hints' | 'shuffles' | 'undos', n: number) => {

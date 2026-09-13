@@ -52,6 +52,7 @@ import {
   Play,
   Search,
   Users,
+  WifiOff,
   X,
 } from 'lucide-react';
 
@@ -66,7 +67,6 @@ function errText(e: unknown, t: ReturnType<typeof useT>): string {
 }
 
 type Phase = 'main' | 'search' | 'waiting';
-
 /** действие, ожидающее подтверждения «закрыть живую партию» */
 type Pending =
   | { kind: 'quick' }
@@ -76,11 +76,6 @@ type Pending =
 export function DuelScreen({ onClose }: { onClose: () => void }) {
   const t = useT();
   const [phase, setPhase] = useState<Phase>('main');
-  /** фаза без ререндера — для WS-подписки (пуш может прийти в любой момент) */
-  const phaseRef = useRef<Phase>('main');
-  useEffect(() => {
-    phaseRef.current = phase;
-  }, [phase]);
   const [name, setName] = useState(() => getSavedName());
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -136,35 +131,12 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
 
   /* ---------- вьюхи комнаты: старт матча, ожидание ---------- */
   useEffect(() => {
-    const off = subscribeRoom((view, playerId) => {
-      // Фидбек «не соединяется при быстрой игре»: ПЕРВОГО игрока в
-      // очередь сервер спаривает на своей стороне и втаскивает в
-      // комнату watch-насосом — room-пуш приходит БЕЗ rid и БЕЗ
-      // сохранённых кредов. playerId приезжает в самом пуше —
-      // используем его как фолбэк, креды сохраняем здесь же.
-      const pid = playerId ?? getSavedCreds()?.playerId;
-      if (!pid) return;
+    const off = subscribeRoom((view) => {
       const creds = getSavedCreds();
-      if (creds && creds.code === view.code) {
-        if (creds.playerId !== pid) return;
-      } else if (phaseRef.current !== 'search') {
-        // без кредов реагируем только в фазе поиска (быстрый матч)
-        return;
-      } else if (!view.players.some((p) => p.id === pid)) {
-        return;
-      } else {
-        saveCreds({
-          code: view.code,
-          playerId: pid,
-          host: view.hostId === pid,
-          visibility: view.visibility ?? 'closed',
-          seed: view.seed,
-          level: view.level,
-          name: name || 'Игрок',
-        });
-      }
+      if (!creds || creds.code !== view.code) return;
+      if (!view.players.some((p) => p.id === creds.playerId)) return;
       if (view.status === 'waiting') {
-        if (view.players[0]?.id === pid) setWaitView(view);
+        if (view.players[0]?.id === creds.playerId) setWaitView(view);
         return;
       }
       // игра пошла (или итог) — в бой
@@ -176,12 +148,26 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
       enter(view);
     });
     return off;
-  }, [name]);
+  }, []);
 
   /* ---------- лобби открытых игр: живой список ---------- */
   useEffect(() => {
     const off = subscribeLobby((list) => setRooms(list));
     return off;
+  }, []);
+
+  /* ---------- есть ли интернет: без сети онлайн-режим
+     честно просит подключиться (бот и классика работают) ---------- */
+  const [netOn, setNetOn] = useState(true);
+  useEffect(() => {
+    const upd = () => setNetOn(navigator.onLine !== false);
+    upd();
+    window.addEventListener('online', upd);
+    window.addEventListener('offline', upd);
+    return () => {
+      window.removeEventListener('online', upd);
+      window.removeEventListener('offline', upd);
+    };
   }, []);
 
   /* ---------- таймер «сколько ищем» ---------- */
@@ -508,6 +494,14 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
       </div>
 
       <div className="m-auto flex w-full max-w-sm flex-col gap-4 px-5 pb-8 pt-4">
+        {/* нет интернета — сетевой режим честно об этом просит */}
+        {!netOn && (
+          <div className="mj-offline-note mj-offline-note-lg" data-testid="mj-offline-note">
+            <WifiOff className="h-4 w-4 shrink-0" />
+            <span>{t('net.offline')}</span>
+          </div>
+        )}
+
         {/* заголовок + имя-карандашик */}
         <div className="flex flex-col items-center gap-2">
           <div className="flex items-end gap-2">
@@ -541,11 +535,12 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        {/* ГЛАВНАЯ КНОПКА: играть сразу */}
+        {/* ГЛАВНАЯ КНОПКА: играть сразу (без сети — просит подключиться,
+            матч с реальным человеком невозможен) */}
         <button
           className="mj-play-big"
           data-testid="mj-quick-play"
-          disabled={busy}
+          disabled={busy || !netOn}
           onClick={() => {
             if (guardLive({ kind: 'quick' })) return;
             void startQuick();
