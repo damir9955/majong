@@ -177,12 +177,15 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
     return () => window.clearInterval(iv);
   }, [phase]);
 
-  /* ---------- авто-возврат: сохранённая комната ещё жива? ---------- */
+  /* ---------- авто-возврат + ЖИВОЕ ОЖИДАНИЕ (Task 37): пока своя
+     комната ждёт соперника, раз в 1.5 c перечитываем её — вход
+     второго игрока виден МГНОВЕННО даже там, где push по KV-watch
+     запаздывает (хост раньше начинал матч на ~5 c позже гостя) ---------- */
   useEffect(() => {
     let alive = true;
     const check = async () => {
       const creds = getSavedCreds();
-      if (!creds) return;
+      if (!alive || !creds) return;
       try {
         const v = await apiPollRoom(creds.code, creds.playerId);
         if (!alive) return;
@@ -210,11 +213,17 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
         // сеть моргнула — не трогаем
       }
     };
+    // однократная проверка при каждом заходе на экран (авто-возврат)
     void check();
+    // а пока ЖДЁМ соперника — частый поллинг: старт матча — самый
+    // важный момент для честной гонки (якорь startAt в MatchIntro)
+    if (phase !== 'waiting') return;
+    const iv = window.setInterval(() => void check(), 1500);
     return () => {
       alive = false;
+      window.clearInterval(iv);
     };
-  }, []);
+  }, [phase]);
 
   /* ---------- быстрый матч ---------- */
 

@@ -90,22 +90,28 @@ export function VersusBar() {
           </div>
         </div>
 
-        {/* таймер + гонка */}
+        {/* таймер + счёт серии в ОДНОЙ строке (Фидбек Task 37:
+            «счёт перекрывает прогресс соперника» — раньше чип рос
+            вниз и налезал на полосы гонки; высота панели постоянна) */}
         <div className="mj-vmid">
-          <div className={`mj-timer tabular-nums ${low ? 'mj-timer-low' : ''}`}>
-            {fmtTime(b.timeLeftMs)}
-          </div>
-          {/* счёт серии (Task 32): маленькое «2:1» под таймером —
-              только в онлайн-матче и только если серия уже пошла */}
-          {online && b.online && b.online.myWins + b.online.friendWins > 0 && (
-            <span
-              className="mj-series-chip tabular-nums"
-              data-testid="mj-series-chip"
-              title={t('series.title')}
+          <div className="mj-vmid-top">
+            <div
+              className={`mj-timer tabular-nums ${low ? 'mj-timer-low' : ''}`}
             >
-              {b.online.myWins}:{b.online.friendWins}
-            </span>
-          )}
+              {fmtTime(b.timeLeftMs)}
+            </div>
+            {/* счёт серии (Task 32): компактное «2:1» РЯДОМ с таймером —
+                только в онлайн-матче и только если серия уже пошла */}
+            {online && b.online && b.online.myWins + b.online.friendWins > 0 && (
+              <span
+                className="mj-series-chip tabular-nums"
+                data-testid="mj-series-chip"
+                title={t('series.title')}
+              >
+                {b.online.myWins}:{b.online.friendWins}
+              </span>
+            )}
+          </div>
           <div className="mj-race" aria-label="Прогресс гонки">
             <div className="mj-race-row">
               <div

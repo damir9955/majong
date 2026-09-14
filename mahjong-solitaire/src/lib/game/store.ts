@@ -155,6 +155,14 @@ export interface Battle {
     code: string;
     playerId: string;
     seed: number;
+    /** ЯКОРЬ СТАРТА (Фидбек Task 37: «синхронизация устройств»):
+     *  абсолютное локальное время, когда у ОБОИХ игроков начинается
+     *  отсчёт. Приведён от серверного startedAt с поправкой часов —
+     *  кто бы из двух ни вошёл в комнату позже, тапать начинают
+     *  одновременно (ранний не получает фору, поздний — долг). */
+    startAt: number;
+    /** постоянный uid соперника (для «Добавить в друзья») */
+    friendUid?: string;
     /** друг на связи (свежий поллинг + дебаунс: одиночный «офлайн»-вьюх
      *     не роняет баннер «потерял связь» — только 2 подряд) */
     friendOnline: boolean;
@@ -213,8 +221,11 @@ export interface Session {
   buriedIds: number[];
   /** id рубашек, которые уже перевернулись (лицом вверх, на доске) */
   revealedIds: number[];
-  /** единственная открытая «подглядка» — возвращается рубашкой вверх */
-  peekId: number | null;
+  /** ОТКРЫТЫЕ ПОДГЛЯДКИ (Фидбек Task 37): игрок может держать
+   *  открытыми ДОВЕ закрытые кости рядом — сравнивать грани;
+   *  третья вытесняет самую старую. Одинаковые — улетают парой
+   *  мгновенно, вторым тапом. */
+  peekIds: number[];
   /** оставшиеся возвраты плитки из лотка (ограничены) */
   undosLeft: number;
   /** когда партия началась (epoch-ms) — для времени в статистике */
@@ -264,6 +275,14 @@ interface GameState {
       hintsUsed: number;
       shufflesUsed: number;
       undosUsed: number;
+    };
+    /** ТОЛЬКО сетевые матчи (Фидбек Task 37: вкладка «По сети»)
+     *  — отдельно от матчей с ботом */
+    online: {
+      wins: number;
+      losses: number;
+      streak: number;
+      bestStreak: number;
     };
     friends: Record<string, FriendRecord>;
   };
@@ -397,10 +416,18 @@ function isLandscape(): boolean {
  *  к странице (performance.now), после перезагрузки окна комбо и
  *  челленджи сбрасываем, тику бота ставим «сейчас» */
 /** старые сохранённые партии не имеют startedAt/used — добираем
- *  умолчания, чтобы подробная статистика не падала на чтении */
+ *  умолчания, чтобы подробная статистика не падала на чтении.
+ *  v8 (Task 37): единственная подглядка peekId → массив peekIds */
 function ensureSessionV2(s: Session): Session {
+  const legacy = s as unknown as { peekId?: number | null; peekIds?: number[] };
+  const peekIds = Array.isArray(legacy.peekIds)
+    ? legacy.peekIds
+    : typeof legacy.peekId === 'number'
+      ? [legacy.peekId]
+      : [];
   return {
     ...s,
+    peekIds,
     startedAt: typeof s.startedAt === 'number' ? s.startedAt : Date.now(),
     used: s.used ?? { hints: 0, shuffles: 0, undos: 0 },
   };
@@ -445,7 +472,7 @@ function createSession(
     faceDownIds: shirts.freeIds,
     buriedIds: shirts.buriedIds,
     revealedIds: [],
-    peekId: null,
+    peekIds: [],
     tray: [],
     matchedPair: null,
     matchedSeq: 0,
@@ -545,18 +572,19 @@ const byId = (s: Session, id: number) => s.tiles.find((t) => t.id === id);
  *  (летящая в лоток кость ОТКРЫТА — она попадает в revealedIds) */
 const isConcealed = (s: Session, id: number) =>
   (s.faceDownIds.includes(id) &&
-    s.peekId !== id &&
+    !s.peekIds.includes(id) &&
     !s.revealedIds.includes(id)) ||
   (s.buriedIds.includes(id) && !s.revealedIds.includes(id));
 
-/** найти перевёрнутую рубашку с той же гранью (кроме excludeId) */
+/** найти перевёрнутую рубашку с той же гранью (кроме excludeId):
+ *  ищем и среди АВТООТКРЫТЫХ, и среди ОТКРЫТЫХ ПОДГЛЯДОК —
+ *  две одинаковые закрытые кости улетают в лоток вторым тапом */
 function findRevealedTwin(
   s: Session,
   matchKey: string,
   excludeId: number | null,
 ): number | null {
-  const candidates = [...s.revealedIds];
-  if (s.peekId !== null && s.peekId !== excludeId) candidates.push(s.peekId);
+  const candidates = [...s.revealedIds, ...s.peekIds];
   for (const id of candidates) {
     if (id === excludeId) continue;
     const t = byId(s, id);
@@ -627,7 +655,7 @@ function unstuckSession(s: Session): Session | null {
     tiles,
     shuffleSeq: s.shuffleSeq + 1,
     hintPair: null,
-    peekId: null,
+    peekIds: [],
   };
 }
 
@@ -721,9 +749,11 @@ function removePair(
       matchedSeq: seq,
       invalidId: null,
       hintPair: null,
-      // пара ушла — подглядка возвращается рубашкой вверх;
+      // пара ушла — подглядки этих костей гаснут;
       // авто-открытые рубашки остаются лицом вверх
-      peekId: null,
+      peekIds: s.peekIds.filter(
+        (pid) => pid !== residentId && pid !== arrivingId,
+      ),
       revealedIds,
       battle,
     },
@@ -914,6 +944,16 @@ function settleOnline(
       : league.streak <= 0
         ? league.streak - 1
         : -1;
+  // сетевая серия (вкладка «По сети»): только онлайн-матчи
+  const onl = st.stats.online;
+  const onlStreak =
+    outcome === 'win'
+      ? onl.streak >= 0
+        ? onl.streak + 1
+        : 1
+      : onl.streak <= 0
+        ? onl.streak - 1
+        : -1;
   const result: MatchResult = {
     outcome,
     reason,
@@ -937,9 +977,16 @@ function settleOnline(
       pointsBest: Math.max(league.pointsBest, points),
     },
     bank: outcome === 'win' ? grantBank(bank, bonusGrant) : bank,
-    // таблица «С друзьями»: итог встречи с этим другом
+    // сетевые матчи — своя строка статистики (Task 37: «По сети»),
+    // таблица «Друзья» — итог встречи с этим другом
     stats: {
       ...st.stats,
+      online: {
+        wins: onl.wins + (outcome === 'win' ? 1 : 0),
+        losses: onl.losses + (outcome === 'lose' ? 1 : 0),
+        streak: onlStreak,
+        bestStreak: Math.max(onl.bestStreak, onlStreak),
+      },
       friends: recordFriendMatch(
         st.stats.friends,
         b.opponent.name,
@@ -1064,6 +1111,7 @@ export const useGame = create<GameState>()(
           shufflesUsed: 0,
           undosUsed: 0,
         },
+        online: { wins: 0, losses: 0, streak: 0, bestStreak: 0 },
         friends: {},
       },
       askLevelEntry: false,
@@ -1160,15 +1208,24 @@ export const useGame = create<GameState>()(
         }
       },
 
-      /** матчмейкинг завершён — старт отсчёта времени и бота */
+      /** матчмейкинг завершён — старт отсчёта времени и бота.
+       *  Онлайн (Task 37): begin вызывается ровно в якорный момент
+       *  startAt — таймер обнуляется до полного (счёт пошёл только что,
+       *  пока длилось интро локальный отсчёт стоял). */
       beginBattle: () => {
         const s = get().session;
         if (!s || !s.battle || s.battle.started || s.status !== 'play') return;
         const now = performance.now();
+        const online = s.mode === 'online';
         set({
           session: {
             ...s,
-            battle: { ...s.battle, started: true, lastTickAt: now },
+            battle: {
+              ...s.battle,
+              started: true,
+              lastTickAt: now,
+              ...(online ? { timeLeftMs: s.battle.timeTotalMs } : {}),
+            },
           },
         });
       },
@@ -1359,14 +1416,17 @@ export const useGame = create<GameState>()(
             removePair(set, s, twin, id);
             return;
           }
-          // иначе — переворот-подглядка (плитка остаётся на доске
-          // лицом вверх). Прежняя подглядка переворачивается ОБРАТНО:
-          // взгляд игрока — только на одну карточку за раз
+          // иначе — переворот-подглядка (Фидбек Task 37: ДВЕ кости
+          // могут лежать открытыми рядом — игрок сравнивает грани,
+          // третья закрывает самую старую)
           playReveal();
+          const peekIds = [...s.peekIds.filter((pid) => pid !== id), id].slice(
+            -2,
+          );
           set({
             session: {
               ...s,
-              peekId: id,
+              peekIds,
               invalidId: null,
               hintPair: null,
             },
@@ -1384,13 +1444,13 @@ export const useGame = create<GameState>()(
           return;
         }
 
-        // 4) новая плитка в лотке
+        // 4) новая плитка в лотке (подглядки остаются открытыми —
+        //    игрок продолжает сравнивать грани)
         const tray = [...s.tray, id];
         const tiles = s.tiles.map((t) =>
           t.id === id ? { ...t, removed: true } : t,
         );
         playSelect();
-        // тап по другой плитке — подглядка возвращается рубашкой вверх;
         // снятие кости могло открыть рубашку ПОД ней — переворачиваем
         const newlyRevealed = autoRevealFrom(tiles, s);
         // подгляданная рубашка, улетающая в лоток, остаётся ЛИЦОМ
@@ -1405,7 +1465,7 @@ export const useGame = create<GameState>()(
           ...flyReveal,
         ].filter((x, i, arr) => arr.indexOf(x) === i);
         if (newlyRevealed.length > 0 || flyReveal.length > 0) playReveal();
-        const peekId: number | null = null;
+        const peekIds: number[] = s.peekIds.filter((pid) => pid !== id);
 
         if (tray.length >= TRAY_SIZE) {
           // четыре разные — поражение (можно успеть отменить)
@@ -1415,7 +1475,7 @@ export const useGame = create<GameState>()(
               tiles,
               tray,
               revealedIds,
-              peekId,
+              peekIds,
               invalidId: null,
               hintPair: null,
               pendingLose: true,
@@ -1439,7 +1499,7 @@ export const useGame = create<GameState>()(
               tiles,
               tray,
               revealedIds,
-              peekId,
+              peekIds,
               invalidId: null,
               hintPair: null,
             },
@@ -1449,7 +1509,7 @@ export const useGame = create<GameState>()(
         }
 
         if (tray.length === TRAY_SIZE - 1) playWarn();
-        set({ session: { ...s, tiles, tray, revealedIds, peekId, invalidId: null, hintPair: null } });
+        set({ session: { ...s, tiles, tray, revealedIds, peekIds, invalidId: null, hintPair: null } });
         // пар больше нет — тихо перемешать (бесплатно, как в топовых)
         const cur = useGame.getState().session;
         const unstuck = cur ? unstuckSession(cur) : null;
@@ -1561,13 +1621,13 @@ export const useGame = create<GameState>()(
           return;
         }
         playShuffle();
-        // перемешивание перетасовало грани — подглядка закрывается;
+        // перемешивание перетасовало грани — подглядки закрываются;
         // авто-открытые рубашки остаются открытыми (костей над ними нет)
         set({
           session: {
             ...s,
             tiles,
-            peekId: null,
+            peekIds: [],
             shufflesLeft: s.shufflesLeft - 1,
             used: { ...s.used, shuffles: s.used.shuffles + 1 },
             shuffleSeq: s.shuffleSeq + 1,
@@ -1739,6 +1799,12 @@ export const useGame = create<GameState>()(
           ),
         );
         const nowP = performance.now();
+        // ЯКОРЬ СТАРТА (Task 37): абсолютное локальное время начала
+        // матча — серверный startedAt с поправкой хода часов устройства.
+        // Оба игрока начинают отсчёт в ОДИН момент (± сетевая задержка):
+        // кто вошёл в комнату раньше — ждёт в интро, позже — успевает.
+        const startAt =
+          view.startedAt - view.serverNow + Date.now();
         const battle: Battle = {
           opponent: {
             name: friend?.name ?? 'Друг',
@@ -1770,6 +1836,8 @@ export const useGame = create<GameState>()(
             code: view.code,
             playerId,
             seed: view.seed,
+            startAt,
+            friendUid: friend?.uid,
             friendOnline: friend?.online ?? true,
             offlineStreak: 0,
             hostId: view.hostId,
@@ -1818,9 +1886,12 @@ export const useGame = create<GameState>()(
         if (view.status === 'playing') {
           if (!mine) {
             if (!liveOther) {
+              // якорный старт (Task 37): интро-отсчёт привязан к серверному
+              // моменту startedAt — показываем, если до него > 1.2 c
+              const startAt =
+                view.startedAt - view.serverNow + Date.now();
               get().startOnlineSession(view, creds.playerId, {
-                // интро показываем, только если старт ещё далеко впереди
-                intro: view.serverNow < view.startedAt - 2500,
+                intro: startAt - Date.now() > 1200,
               });
             }
             return;
@@ -1854,6 +1925,7 @@ export const useGame = create<GameState>()(
                   online: b.online
                     ? {
                         ...b.online,
+                        friendUid: friend?.uid ?? b.online.friendUid,
                         // АНТИ-МЕРЦАНИЕ (Фидбек «каждые 3-5 секунд теряется
                         // связь»): одиночный офлайн-вьюх — не повод
                         // показывать баннер; только 2 подряд (~8 c)
@@ -1937,7 +2009,7 @@ export const useGame = create<GameState>()(
     }),
     {
       name: 'mahjong-relax-save',
-      version: 7,
+      version: 8,
       partialize: (state) => ({
         level: state.level,
         settings: state.settings,
@@ -1979,6 +2051,12 @@ export const useGame = create<GameState>()(
                   hintsUsed?: number;
                   shufflesUsed?: number;
                   undosUsed?: number;
+                };
+                online?: {
+                  wins?: number;
+                  losses?: number;
+                  streak?: number;
+                  bestStreak?: number;
                 };
                 friends?: Record<string, FriendRecord>;
               };
@@ -2022,6 +2100,15 @@ export const useGame = create<GameState>()(
             hintsUsed: Math.max(0, p?.stats?.classic?.hintsUsed ?? 0),
             shufflesUsed: Math.max(0, p?.stats?.classic?.shufflesUsed ?? 0),
             undosUsed: Math.max(0, p?.stats?.classic?.undosUsed ?? 0),
+          },
+          // v8 (Task 37): сетевые матчи — своя строка (до этого сетевые
+          // матчи числились только в лиге; накопленное не теряем —
+          // новая строка стартует с нуля и растёт дальше)
+          online: {
+            wins: Math.max(0, p?.stats?.online?.wins ?? 0),
+            losses: Math.max(0, p?.stats?.online?.losses ?? 0),
+            streak: p?.stats?.online?.streak ?? 0,
+            bestStreak: Math.max(0, p?.stats?.online?.bestStreak ?? 0),
           },
           friends: p?.stats?.friends ?? {},
         };

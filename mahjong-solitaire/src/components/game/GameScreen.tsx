@@ -22,6 +22,9 @@ import { ChallengeBanner } from './ChallengeBanner';
 import { DuelScreen } from './DuelScreen';
 import { Standings } from './Standings';
 import { AdModal } from './AdModal';
+import { FriendsPanel } from './FriendsPanel';
+import { FriendsLayer } from './FriendsLayer';
+import { initFriends, useFriends } from '@/lib/rooms/friends';
 import { setSoundEnabled, buzz } from '@/lib/sound';
 import { confetti, showToast } from '@/lib/game/fx';
 import { TileFace } from './TileFace';
@@ -769,15 +772,18 @@ function HomeScreen({
   onOneOnOne,
   onSettings,
   onStandings,
+  onFriends,
 }: {
   onOneOnOne: () => void;
   onSettings: () => void;
   onStandings: () => void;
+  onFriends: () => void;
 }) {
   const startMode = useGame((s) => s.startMode);
   const session = useGame((s) => s.session);
   const level = useGame((s) => s.level);
   const credsOnline = !!getSavedCreds();
+  const badge = useFriends((s) => s.badgeCount());
   const t = useT();
 
   const go = (mode: GameMode) => {
@@ -795,125 +801,153 @@ function HomeScreen({
   const onlineResumable = credsOnline && resumable('online');
 
   return (
-    <div className="mj-table relative flex h-dvh flex-col items-center justify-center gap-7 px-6 sm:gap-10">
-      <div className="absolute left-3 top-[max(0.8rem,env(safe-area-inset-top))] flex gap-2 sm:left-5">
-        <button
-          type="button"
-          className="mj-circle-btn"
-          data-testid="mj-standings-btn"
-          onClick={onStandings}
-          aria-label={t('home.standings')}
-          title={t('home.standings')}
-        >
-          <IconTrophy className="h-5 w-5 sm:h-6 sm:w-6" />
-        </button>
-      </div>
-      <div className="absolute right-3 top-[max(0.8rem,env(safe-area-inset-top))] flex gap-2 sm:right-5">
-        <button
-          type="button"
-          className="mj-circle-btn"
-          data-testid="mj-settings-btn"
-          onClick={onSettings}
-          aria-label={t('home.settings')}
-          title={t('home.settings')}
-        >
-          <IconGear className="h-5 w-5 sm:h-6 sm:w-6" />
-        </button>
-      </div>
-      <div className="flex flex-col items-center gap-3">
-        {/* Фидбек «на кости поставь красивые»: три лучшие грани
-            набора — птица (1 бамбук), хризантема и красный дракон;
-            свободный веер с лёгкими наклонами, как разложенные
-            настоящие кости */}
-        <div className="flex items-end gap-1.5 sm:gap-2.5">
-          <div
-            className="mj-logo-tile"
-            style={{ transform: 'rotate(-9deg) translateY(2px)' }}
-          >
-            <TileFace defId="bam-1" />
+    <div className="mj-table relative flex h-dvh flex-col items-center px-6">
+      <div className="flex w-full max-w-sm flex-1 flex-col items-center justify-center gap-7 sm:max-w-md sm:gap-9">
+        <div className="flex flex-col items-center gap-3">
+          {/* Фидбек «на кости поставь красивые»: три лучшие грани
+              набора — птица (1 бамбук), хризантема и красный дракон;
+              свободный веер с лёгкими наклонами, как разложенные
+              настоящие кости */}
+          <div className="flex items-end gap-1.5 sm:gap-2.5">
+            <div
+              className="mj-logo-tile"
+              style={{ transform: 'rotate(-9deg) translateY(2px)' }}
+            >
+              <TileFace defId="bam-1" />
+            </div>
+            <div
+              className="mj-logo-tile"
+              style={{ transform: 'translateY(-5px) rotate(-2deg)' }}
+            >
+              <TileFace defId="flower-3" />
+            </div>
+            <div
+              className="mj-logo-tile"
+              style={{ transform: 'rotate(7deg) translateY(2px)' }}
+            >
+              <TileFace defId="drg-1" />
+            </div>
           </div>
-          <div
-            className="mj-logo-tile"
-            style={{ transform: 'translateY(-5px) rotate(-2deg)' }}
-          >
-            <TileFace defId="flower-3" />
-          </div>
-          <div
-            className="mj-logo-tile"
-            style={{ transform: 'rotate(7deg) translateY(2px)' }}
-          >
-            <TileFace defId="drg-1" />
-          </div>
+          <p className="mj-screen-title text-lg font-bold tracking-[0.3em] sm:text-2xl lg:text-3xl">
+            {t('home.title')}
+          </p>
         </div>
-        <p className="mj-screen-title text-lg font-bold tracking-[0.3em] sm:text-2xl lg:text-3xl">
-          {t('home.title')}
-        </p>
+
+        <div className="flex w-full max-w-sm flex-col gap-3 sm:max-w-md sm:gap-4 lg:max-w-lg">
+          <button className="mj-mode-card" onClick={() => go('classic')}>
+            <span
+              className="mj-mode-ico"
+              style={{
+                background: 'linear-gradient(160deg, #6fd0b6, #1f8f7a)',
+                boxShadow:
+                  'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
+              }}
+            >
+              <Flower2 className="h-7 w-7 text-white sm:h-9 sm:w-9" />
+            </span>
+            <span>
+              <b className="block text-lg font-black text-stone-800 sm:text-xl lg:text-2xl">
+                {resumable('classic') ? t('home.continue') : t('home.classic')}
+              </b>
+              <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
+                {resumable('classic')
+                  ? t('home.classicResume', { n: session?.level ?? 1 })
+                  : t('home.classicSub')}
+              </span>
+            </span>
+          </button>
+
+          {/* «1 на 1» — ВСЁ в одном месте (Task 25): автопоиск,
+              игра по коду, компьютер. Живой онлайн-матч — карточка
+              сразу ВОЗВРАЩАЕТ в него (Task 28) */}
+          <button
+            className="mj-mode-card"
+            data-testid="mj-battle-card"
+            onClick={() => (onlineResumable ? go('online') : onOneOnOne())}
+          >
+            <span
+              className="mj-mode-ico"
+              style={{
+                background: 'linear-gradient(160deg, #f2b25c, #c07a2a)',
+                boxShadow:
+                  'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
+              }}
+            >
+              <Swords className="h-7 w-7 text-white sm:h-9 sm:w-9" />
+            </span>
+            <span>
+              <b className="block text-lg font-black text-stone-800 sm:text-xl lg:text-2xl">
+                {resumable('battle') || (resumable('online') && credsOnline)
+                  ? t('home.continueMatch')
+                  : t('home.battle')}
+              </b>
+              <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
+                {(resumable('battle') || (resumable('online') && credsOnline))
+                  ? t('home.battleWaiting', { n: session?.level ?? 1 })
+                  : t('home.battleSub')}
+              </span>
+            </span>
+          </button>
+        </div>
+
+        {/* чип уровня: «Уровень N» — как в классических маджонгах */}
+        <span className="mj-level-chip text-[13px] font-black sm:text-base lg:text-lg">
+          {t('home.level', { n: level })}
+        </span>
+
+        {/* снизу: кто прямо сейчас ждёт соперника (Task 28) */}
+        <WaitingPlayers hidden={onlineResumable} />
       </div>
 
-      <div className="flex w-full max-w-sm flex-col gap-3 sm:max-w-md sm:gap-4 lg:max-w-lg">
-        <button className="mj-mode-card" onClick={() => go('classic')}>
-          <span
-            className="mj-mode-ico"
-            style={{
-              background: 'linear-gradient(160deg, #6fd0b6, #1f8f7a)',
-              boxShadow:
-                'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
-            }}
-          >
-            <Flower2 className="h-7 w-7 text-white sm:h-9 sm:w-9" />
-          </span>
-          <span>
-            <b className="block text-lg font-black text-stone-800 sm:text-xl lg:text-2xl">
-              {resumable('classic') ? t('home.continue') : t('home.classic')}
-            </b>
-            <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
-              {resumable('classic')
-                ? t('home.classicResume', { n: session?.level ?? 1 })
-                : t('home.classicSub')}
-            </span>
-          </span>
-        </button>
-
-        {/* «1 на 1» — ВСЁ в одном месте (Task 25): автопоиск,
-            игра по коду, компьютер. Живой онлайн-матч — карточка
-            сразу ВОЗВРАЩАЕТ в него (Task 28) */}
+      {/* НИЖНИЙ РЯД (Task 37): друзья / статистика / настройки —
+          большие квадратные кнопки с округлыми углами; у «Друзей»
+          огонёк-индикатор (заявки, приглашения, непрочитанные) */}
+      <div className="mj-menu-dock">
         <button
-          className="mj-mode-card"
-          data-testid="mj-battle-card"
-          onClick={() => (onlineResumable ? go('online') : onOneOnOne())}
+          type="button"
+          className="mj-menu-sq"
+          data-testid="mj-menu-friends"
+          onClick={() => {
+            buzz(12);
+            onFriends();
+          }}
+          aria-label={t('fr.title')}
         >
-          <span
-            className="mj-mode-ico"
-            style={{
-              background: 'linear-gradient(160deg, #f2b25c, #c07a2a)',
-              boxShadow:
-                'inset 0 1px 0 rgba(255,255,255,.4), 0 4px 10px rgba(0,0,0,.3)',
-            }}
-          >
-            <Swords className="h-7 w-7 text-white sm:h-9 sm:w-9" />
-          </span>
-          <span>
-            <b className="block text-lg font-black text-stone-800 sm:text-xl lg:text-2xl">
-              {resumable('battle') || (resumable('online') && credsOnline)
-                ? t('home.continueMatch')
-                : t('home.battle')}
-            </b>
-            <span className="mt-0.5 block text-[13px] leading-snug text-stone-600 sm:text-[15px]">
-              {(resumable('battle') || (resumable('online') && credsOnline))
-                ? t('home.battleWaiting', { n: session?.level ?? 1 })
-                : t('home.battleSub')}
+          <Users className="h-7 w-7 sm:h-8 sm:w-8" />
+          <b>{t('fr.title')}</b>
+          {badge > 0 && (
+            <span className="mj-menu-sq-badge" data-testid="mj-friends-badge">
+              {badge > 99 ? '99+' : badge}
             </span>
-          </span>
+          )}
+        </button>
+        <button
+          type="button"
+          className="mj-menu-sq"
+          data-testid="mj-menu-stats"
+          onClick={() => {
+            buzz(12);
+            onStandings();
+          }}
+          aria-label={t('home.standings')}
+        >
+          <IconTrophy className="h-7 w-7 sm:h-8 sm:w-8" />
+          <b>{t('home.standings')}</b>
+        </button>
+        <button
+          type="button"
+          className="mj-menu-sq"
+          data-testid="mj-menu-settings"
+          onClick={() => {
+            buzz(12);
+            onSettings();
+          }}
+          aria-label={t('home.settings')}
+        >
+          <IconGear className="h-7 w-7 sm:h-8 sm:w-8" />
+          <b>{t('home.settings')}</b>
         </button>
       </div>
-
-      {/* чип уровня: «Уровень N» — как в классических маджонгах */}
-      <span className="mj-level-chip text-[13px] font-black sm:text-base lg:text-lg">
-        {t('home.level', { n: level })}
-      </span>
-
-      {/* снизу: кто прямо сейчас ждёт соперника (Task 28) */}
-      <WaitingPlayers hidden={onlineResumable} />
     </div>
   );
 }
@@ -921,10 +955,13 @@ function HomeScreen({
 /* ---------- Верхняя панель: как на макете ---------- */
 
 /**
- * [Домой] [лоток] [номер] — одна строка сверху: белая круглая
- * кнопка слева, компактный лоток в центре, номер уровня справа.
- * Кнопки управления — внизу (HUD). Выход в меню ПРОГРЕСС НЕ ТЕРЯЕТ:
- * партия сохраняется и продолжается по кнопке «Продолжить».
+ * [Домой] …… [лоток] …… [уровень] — РОВНАЯ СЕТКА (Фидбек Task 37):
+ * боковые колонки ОДИНАКОВОЙ ширины → лоток стоит ТОЧНО по центру
+ * экрана на любом устройстве, расстояния слева/справа равные.
+ * Уровень справа — компактный круглый бейдж с номером («прописать
+ * иначе»), не широкая капсула. Кнопки управления — внизу (HUD).
+ * Выход в меню ПРОГРЕСС НЕ ТЕРЯЕТ: партия сохраняется и
+ * продолжается по кнопке «Продолжить».
  */
 function TopBar({ onHome }: { onHome: () => void }) {
   const session = useGame((s) => s.session);
@@ -933,23 +970,35 @@ function TopBar({ onHome }: { onHome: () => void }) {
   if (!session) return null;
 
   return (
-    <header className="mj-topbar z-20 flex shrink-0 items-center gap-1.5 px-2 pb-1 pt-[max(0.35rem,env(safe-area-inset-top))] sm:gap-3 sm:px-3">
-      <button
-        type="button"
-        className="mj-circle-btn mj-circle-btn-home shrink-0"
-        onClick={onHome}
-        aria-label={t('hud.home')}
-        title={t('hud.homeTitle')}
-        data-testid="mj-home-btn"
-      >
-        <IconHome className="h-[26px] w-[26px] sm:h-[32px] sm:w-[32px] lg:h-[36px] lg:w-[36px]" />
-      </button>
-      <div className="flex min-w-0 flex-1 justify-center">
-        <Tray />
+    <header className="mj-topbar z-20 shrink-0 px-2 pb-1 pt-[max(0.35rem,env(safe-area-inset-top))] sm:px-3">
+      <div className="mj-topbar-grid">
+        {/* левая колонка: кнопка «Домой» к левому краю */}
+        <button
+          type="button"
+          className="mj-circle-btn mj-circle-btn-home shrink-0"
+          onClick={onHome}
+          aria-label={t('hud.home')}
+          title={t('hud.homeTitle')}
+          data-testid="mj-home-btn"
+        >
+          <IconHome className="h-[26px] w-[26px] sm:h-[32px] sm:w-[32px] lg:h-[36px] lg:w-[36px]" />
+        </button>
+
+        {/* центр: лоток — ТОЧНО посередине экрана */}
+        <div className="flex min-w-0 justify-center">
+          <Tray />
+        </div>
+
+        {/* правая колонка: компактный бейдж уровня — просто номер */}
+        <span
+          className="mj-level-badge shrink-0 tabular-nums"
+          data-testid="mj-level-badge"
+          title={t('home.level', { n: session.level })}
+          aria-label={t('home.level', { n: session.level })}
+        >
+          {session.level}
+        </span>
       </div>
-      <span className="mj-level-chip shrink-0 text-[13px] font-black tabular-nums sm:text-base lg:text-lg">
-        {t('home.level', { n: session.level })}
-      </span>
     </header>
   );
 }
@@ -1206,6 +1255,8 @@ export function GameScreen() {
   const [oneOpen, setOneOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [standingsOpen, setStandingsOpen] = useState(false);
+  // панель друзей (Task 37)
+  const [friendsOpen, setFriendsOpen] = useState(false);
   // подтверждение выхода из онлайн-матча (не сразу — а с вопросом)
   const [exitAsk, setExitAsk] = useState(false);
 
@@ -1213,6 +1264,13 @@ export function GameScreen() {
   useEffect(() => {
     document.body.dataset.mjTheme = theme;
   }, [theme]);
+
+  // ДРУЗЬЯ (Task 37): подключить стор к серверу один раз — заявки,
+  // переписка и приглашения приходят на любом экране
+  useEffect(() => {
+    const off = initFriends();
+    return off;
+  }, []);
 
   // тикер боя: таймер, соперник, челленджи (≈5 раз/сек).
   // В «Классике» tick ничего не делает.
@@ -1339,11 +1397,21 @@ export function GameScreen() {
   }, [session?.sid]);
 
   if (standingsOpen) {
-    return <Standings onClose={() => setStandingsOpen(false)} />;
+    return (
+      <>
+        <Standings onClose={() => setStandingsOpen(false)} />
+        <FriendsLayer />
+      </>
+    );
   }
 
   if (oneOpen) {
-    return <DuelScreen onClose={() => setOneOpen(false)} />;
+    return (
+      <>
+        <DuelScreen onClose={() => setOneOpen(false)} />
+        <FriendsLayer />
+      </>
+    );
   }
 
   if (showMenu || !session) {
@@ -1353,6 +1421,7 @@ export function GameScreen() {
           onOneOnOne={() => setOneOpen(true)}
           onSettings={() => setSettingsOpen(true)}
           onStandings={() => setStandingsOpen(true)}
+          onFriends={() => setFriendsOpen(true)}
         />
         {/* устройство помнит живую комнату — предлагаем вернуться
             в незаконченный матч или начать новую (Task 28) */}
@@ -1361,6 +1430,9 @@ export function GameScreen() {
           onOpenOne={() => setOneOpen(true)}
         />
         {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+        {friendsOpen && <FriendsPanel onClose={() => setFriendsOpen(false)} />}
+        {/* приглашения в битву и уведомления друзей — поверх меню */}
+        <FriendsLayer />
       </>
     );
   }
@@ -1444,6 +1516,8 @@ export function GameScreen() {
         />
       )}
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {/* приглашения в битву и уведомления друзей — и поверх партии */}
+      <FriendsLayer />
     </div>
   );
 }

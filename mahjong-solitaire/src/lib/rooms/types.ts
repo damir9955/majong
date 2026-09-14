@@ -5,6 +5,53 @@
 
 export type RoomStatus = 'waiting' | 'playing' | 'result';
 
+/* ---------- друзья (Task 37) ---------- */
+
+export interface FriendInfo {
+  uid: string;
+  name: string;
+  online: boolean;
+}
+export interface FriendReqInfo {
+  uid: string;
+  name: string;
+  at: number;
+}
+export interface FriendInviteInfo {
+  from: string;
+  fromName: string;
+  code: string;
+  at: number;
+}
+export interface FriendsStateView {
+  code: string;
+  friends: FriendInfo[];
+  reqs: FriendReqInfo[];
+  /** uid'ы, кому я уже отправил заявку */
+  sent: string[];
+  invites: FriendInviteInfo[];
+  /** непрочитанные сообщения по uid друга */
+  unread: Record<string, number>;
+}
+
+export interface FriendEvent {
+  kind: 'req' | 'accept' | 'msg' | 'invite' | 'invite_declined' | 'removed';
+  uid: string;
+  name: string;
+  /** для msg */
+  text?: string;
+  at?: number;
+  /** для invite — код комнаты */
+  code?: string;
+}
+
+export interface ChatMsgView {
+  from: string;
+  name: string;
+  text: string;
+  at: number;
+}
+
 /** причина завершения матча (версия сервера) */
 export type RoomFinishReason =
   | 'cleared' // кто-то собрал доску первым
@@ -26,6 +73,8 @@ export interface RoomPlayerView {
   finished: 'cleared' | 'tray' | null;
   /** счёт серии побед с этим соперником (Task 32) */
   wins: number;
+  /** постоянный uid игрока (Task 37: «Добавить в друзья» из матча) */
+  uid?: string;
 }
 
 export interface RoomResultView {
@@ -82,7 +131,11 @@ export type RoomErrorCode =
   | 'ROOM_FULL'
   | 'ROOM_EMPTY'
   | 'NOT_YET'
-  | 'NETWORK';
+  | 'NETWORK'
+  | 'BAD_TARGET'
+  | 'NO_REQ'
+  | 'NOT_FRIENDS'
+  | 'ALREADY_FRIENDS';
 
 export class RoomError extends Error {
   code: RoomErrorCode;

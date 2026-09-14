@@ -60,8 +60,13 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
  *  тогда перед полётом ей нужно сначала развернуться (FLIP_MS) */
 function wasConcealed(sess: Session | null | undefined, id: number): boolean {
   if (!sess) return false;
+  const peekIds = Array.isArray(sess.peekIds)
+    ? sess.peekIds
+    : [(sess as unknown as { peekId?: number | null }).peekId].filter(
+        (x): x is number => typeof x === 'number',
+      );
   if (sess.faceDownIds.includes(id)) {
-    return sess.peekId !== id && !sess.revealedIds.includes(id);
+    return !peekIds.includes(id) && !sess.revealedIds.includes(id);
   }
   if (sess.buriedIds.includes(id)) return !sess.revealedIds.includes(id);
   return false;
@@ -92,7 +97,7 @@ export function Board() {
   const faceDownIds = session?.faceDownIds;
   const buriedIds = session?.buriedIds;
   const revealedIds = session?.revealedIds;
-  const peekId = session?.peekId;
+  const peekIds = session?.peekIds;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -170,12 +175,12 @@ export function Board() {
 
   const concealedSet = useMemo(() => {
     const m = new Set<number>();
-    // свободные рубашки: закрыты, кроме текущей подглядки (peekId)
-    // и уже открытых навсегда (revealedIds — в т.ч. улетающие в лоток:
-    // кость летит и взрывается ЛИЦОМ ВВЕРХ, не рубашкой)
+    // свободные рубашки: закрыты, кроме ОТКРЫТЫХ ПОДГЛЯДОК (их две —
+    // Task 37) и уже открытых навсегда (revealedIds — в т.ч. улетающие
+    // в лоток: кость летит и взрывается ЛИЦОМ ВВЕРХ, не рубашкой)
     if (faceDownIds) {
       for (const id of faceDownIds) {
-        if (id !== peekId && !revealedIds?.includes(id)) m.add(id);
+        if (!peekIds?.includes(id) && !revealedIds?.includes(id)) m.add(id);
       }
     }
     // закопанные рубашки: закрыты, пока не открылись сами
@@ -185,7 +190,7 @@ export function Board() {
       }
     }
     return m;
-  }, [faceDownIds, buriedIds, revealedIds, peekId]);
+  }, [faceDownIds, buriedIds, revealedIds, peekIds]);
 
   /* накрытые плитки (Task 28): сверху на позиции (x, y, z+1)
    * стоит живая кость — у такой НЕТ 3D-граней («она в стене»),

@@ -15,7 +15,15 @@
  *   subscribeStatus(cb) — 'connecting' | 'open' | 'retrying' | 'idle'
  */
 
-import { RoomError, type OpenRoomInfo, type RoomView, type SearchingInfo } from './types';
+import {
+  RoomError,
+  type ChatMsgView,
+  type FriendEvent,
+  type FriendsStateView,
+  type OpenRoomInfo,
+  type RoomView,
+  type SearchingInfo,
+} from './types';
 
 const CREDS_KEY = 'mahjong-room';
 const NAME_KEY = 'mahjong-name';
@@ -165,6 +173,8 @@ class WsClient {
   private eventSubs = new Set<(e: OpponentMatchEvent) => void>();
   private errSubs = new Set<(code: string) => void>();
   private statusSubs = new Set<(s: WsStatus) => void>();
+  private friendsSubs = new Set<(st: FriendsStateView) => void>();
+  private frEventSubs = new Set<(e: FriendEvent) => void>();
 
   connect(): void {
     ensurePresenceWorker();
@@ -318,6 +328,20 @@ class WsClient {
     return () => this.statusSubs.delete(cb);
   }
 
+  /* ---------- друзья: подписки (Task 37) ---------- */
+
+  onFriends(cb: (st: FriendsStateView) => void): () => void {
+    this.friendsSubs.add(cb);
+    this.connect();
+    this.rawSend({ t: 'f_sync' });
+    return () => this.friendsSubs.delete(cb);
+  }
+
+  onFriendEvent(cb: (e: FriendEvent) => void): () => void {
+    this.frEventSubs.add(cb);
+    return () => this.frEventSubs.delete(cb);
+  }
+
   getStatus(): WsStatus {
     return this.status;
   }
@@ -388,6 +412,38 @@ class WsClient {
       }
       return;
     }
+    // друзья: состояние приходит и ответом на запрос (с rid), и
+    // живым пушем (без). Подписчики стора должны видеть ОБА случая,
+    // поэтому диспетчеризуем ДО разбора rid (rid-запрос ниже всё
+    // равно получит свой ответ)
+    if (t === 'friends') {
+      const st = m.state as FriendsStateView | undefined;
+      if (st && Array.isArray(st.friends)) {
+        for (const cb of [...this.friendsSubs]) {
+          try {
+            cb(st);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+    // друзья: состояние приходит и ответом на запрос (с rid), и
+    // живым пушем (без). Подписчики стора должны видеть ОБА случая,
+    // поэтому диспетчеризуем ДО разбора rid (rid-запрос ниже всё
+    // равно получит свой ответ)
+    if (t === 'friends') {
+      const st = m.state as FriendsStateView | undefined;
+      if (st && Array.isArray(st.friends)) {
+        for (const cb of [...this.friendsSubs]) {
+          try {
+            cb(st);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
     // ответ на запрос по rid
     const rid = typeof m.rid === 'number' ? m.rid : null;
     if (rid !== null && this.pending.has(rid)) {
@@ -407,6 +463,26 @@ class WsClient {
     }
     // чистые пуши
     switch (t) {
+      case 'f_event': {
+        const kind = typeof m.kind === 'string' ? m.kind : '';
+        if (!kind) return;
+        const ev: FriendEvent = {
+          kind: kind as FriendEvent['kind'],
+          uid: String(m.uid ?? ''),
+          name: String(m.name ?? ''),
+          text: typeof m.text === 'string' ? m.text : undefined,
+          at: typeof m.at === 'number' ? m.at : undefined,
+          code: typeof m.code === 'string' ? m.code : undefined,
+        };
+        for (const cb of [...this.frEventSubs]) {
+          try {
+            cb(ev);
+          } catch {
+            // ignore
+          }
+        }
+        return;
+      }
       case 'room': {
         const v = m.view as RoomView | undefined;
         if (!v || typeof v.code !== 'string') return;
@@ -769,6 +845,104 @@ export function subscribeErr(cb: (code: string) => void) {
 }
 export function subscribeStatus(cb: (s: WsStatus) => void) {
   return wsClient.onStatus(cb);
+}
+
+/* ---------- друзья (Task 37): подписки и api ---------- */
+
+/** состояние друзей: список/заявки/инвайты/непрочитанные.
+ *  Первая подписка запрашивает f_sync; далее сервер присылает
+ *  обновления сам (hello, события) */
+export function subscribeFriends(cb: (st: FriendsStateView) => void) {
+  return wsClient.onFriends(cb);
+}
+export function subscribeFriendEvent(cb: (e: FriendEvent) => void) {
+  return wsClient.onFriendEvent(cb);
+}
+
+/** мой постоянный uid (генерируется на устройстве) */
+export function getMyUid(): string {
+  return getUid();
+}
+
+/** отправить заявку в друзья (по короткому коду или uid) */
+export async function apiFriendAdd(
+  target: { to?: string; code?: string },
+): Promise<FriendsStateView | null> {
+  const data = await wsClient.request({ t: 'f_add', ...target });
+  return (data.t === 'friends' ? data.state : null) as FriendsStateView | null;
+}
+
+/** принять заявку в друзья */
+export async function apiFriendAccept(
+  fromUid: string,
+): Promise<FriendsStateView | null> {
+  const data = await wsClient.request({ t: 'f_accept', from: fromUid });
+  return (data.t === 'friends' ? data.state : null) as FriendsStateView | null;
+}
+
+/** отклонить заявку */
+export async function apiFriendDecline(fromUid: string): Promise<void> {
+  await wsClient.request({ t: 'f_decline', from: fromUid });
+}
+
+/** удалить из друзей */
+export async function apiFriendRemove(
+  uid: string,
+): Promise<FriendsStateView | null> {
+  const data = await wsClient.request({ t: 'f_remove', uid });
+  return (data.t === 'friends' ? data.state : null) as FriendsStateView | null;
+}
+
+/** сообщение другу */
+export async function apiFriendMsg(
+  toUid: string,
+  text: string,
+): Promise<void> {
+  await wsClient.request({ t: 'f_msg', to: toUid, text }, 5000);
+}
+
+/** отметить переписку прочитанной */
+export function apiFriendRead(withUid: string): void {
+  wsClient.connect();
+  wsClient.request({ t: 'f_read', with: withUid }, 4000).catch(() => {});
+}
+
+/** история переписки с другом */
+export async function apiFriendChat(
+  withUid: string,
+): Promise<ChatMsgView[]> {
+  const data = await wsClient.request({ t: 'f_chat_load', with: withUid }, 6000);
+  return Array.isArray(data.msgs) ? (data.msgs as ChatMsgView[]) : [];
+}
+
+/** позвать друга в битву: создаю комнату и жду его ответа.
+ *  Возвращает вьюху моей комнаты (я — хост) */
+export async function apiFriendInvite(
+  toUid: string,
+  level: number,
+): Promise<{ playerId: string; view: RoomView }> {
+  const data = await wsClient.request({ t: 'f_invite', to: toUid, level });
+  const playerId = typeof data.playerId === 'string' ? data.playerId : '';
+  if (playerId === '' || data.t !== 'room') {
+    throw new RoomError('NETWORK', 'Некорректный ответ сервера');
+  }
+  return { playerId, view: toView(data) };
+}
+
+/** ответ на приглашение в битву. Согласие возвращает комнату матча */
+export async function apiFriendInviteReply(
+  fromUid: string,
+  accept: boolean,
+): Promise<{ playerId: string; view: RoomView } | null> {
+  const data = await wsClient.request({
+    t: 'f_invite_reply',
+    from: fromUid,
+    accept,
+  });
+  if (data.t === 'room' && typeof data.playerId === 'string') {
+    return { playerId: data.playerId, view: toView(data) };
+  }
+  return null;
 }
 
 /** прогреть соединение заранее (например, при входе в меню) */

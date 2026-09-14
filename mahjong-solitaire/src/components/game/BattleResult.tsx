@@ -23,10 +23,24 @@ import {
   leagueProgress,
 } from '@/lib/game/league';
 import { useT, useLang, leagueName } from '@/lib/i18n';
-import { apiLeave, clearCreds } from '@/lib/rooms/roomApi';
-import { confetti } from '@/lib/game/fx';
+import {
+  apiFriendAdd,
+  apiLeave,
+  clearCreds,
+  getSavedName,
+} from '@/lib/rooms/roomApi';
+import { useFriends } from '@/lib/rooms/friends';
+import { confetti, showToast } from '@/lib/game/fx';
 import { playTrophy, buzz } from '@/lib/sound';
-import { Trophy, Lightbulb, Shuffle, Swords, Hourglass } from 'lucide-react';
+import {
+  Trophy,
+  Lightbulb,
+  Shuffle,
+  Swords,
+  Hourglass,
+  UserPlus,
+  Check,
+} from 'lucide-react';
 
 function BonusChip({ kind, delay }: { kind: BonusItem; delay: number }) {
   const t = useT();
@@ -53,6 +67,30 @@ export function BattleResult() {
   // «Отказаться» от предложения реванша — прячем вопрос,
   // обычные кнопки остаются доступны
   const [declined, setDeclined] = useState(false);
+
+  // «Добавить в друзья» (Task 37): онлайн-соперник с постоянным uid,
+  // которого ещё нет в друзьях
+  const oppUid = session?.battle?.online?.friendUid;
+  const isFriend = useFriends((s) =>
+    oppUid ? s.friends.some((f) => f.uid === oppUid) : true,
+  );
+  const [frSent, setFrSent] = useState(false);
+  const [frBusy, setFrBusy] = useState(false);
+
+  const addFriend = async () => {
+    if (!oppUid || frBusy) return;
+    setFrBusy(true);
+    try {
+      await apiFriendAdd({ to: oppUid });
+      setFrSent(true);
+      buzz(12);
+      showToast(t('fr.sentToast', { name: session?.battle?.opponent.name ?? '' }));
+    } catch {
+      showToast(t('room.network'));
+    } finally {
+      setFrBusy(false);
+    }
+  };
 
   const res = session?.battle?.result ?? null;
   const bonuses = session?.bonusGrant ?? [];
@@ -234,6 +272,27 @@ export function BattleResult() {
               <BonusChip key={`${b}-${i}`} kind={b} delay={450 + i * 170} />
             ))}
           </div>
+        )}
+
+        {/* «Добавить в друзья» — прямо из матча (Task 37) */}
+        {online && oppUid && !isFriend && (
+          <button
+            type="button"
+            className="mj-btn-secondary mj-fr-add-btn mt-3"
+            data-testid="mj-add-friend-btn"
+            disabled={frSent || frBusy}
+            onClick={() => void addFriend()}
+          >
+            {frSent ? (
+              <>
+                <Check className="h-4 w-4" /> {t('fr.sent')}
+              </>
+            ) : (
+              <>
+                <UserPlus className="h-4 w-4" /> {t('fr.addOpponent')}
+              </>
+            )}
+          </button>
         )}
 
         {/* ---- вопрос о реванше: соперник уже согласен ---- */}

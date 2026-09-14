@@ -50,6 +50,22 @@
  *  это и есть присутствие игрока (lastSeen обновляется и в свёрнутой
  *  вкладке, где таймеры страницы душатся до ~1/мин)
  *
+ * ДРУЗЬЯ (Task 37, KV): постоянный uid игрока — из hello. Возможности:
+ *  ← {t:'f_sync'}                     полное состояние (и после hello)
+ *  → {t:'friends', state}
+ *  ← {t:'f_add', to | code}            отправить заявку в друзья
+ *  ← {t:'f_accept', from}              принять (встречные заявки — сразу оба)
+ *  ← {t:'f_decline', from}             отклонить
+ *  ← {t:'f_remove', uid}               удалить из друзей
+ *  ← {t:'f_msg', to, text}             сообщение другу (≤ 300 симв.)
+ *  ← {t:'f_read', with}                прочитать переписку
+ *  ← {t:'f_chat_load', with} → {t:'f_chat', with, msgs}
+ *  ← {t:'f_invite', to, level}         позвать в битву (создаём комнату)
+ *  → {t:'room', view, playerId}        (я — хост, жду ответа друга)
+ *  ← {t:'f_invite_reply', from, accept} ответ друга на приглашение
+ *  → {t:'f_event', kind:'req'|'accept'|'msg'|'invite'|...} события
+ *  → {t:'friends', state}              обновление состояния обеим сторонам
+ *
  * СЧЁТ СЕРИИ (wins): у каждого игрока в комнате есть счётчик побед;
  * растёт при любом исходе в его пользу (cleared/tray/timeout/
  * disconnect/left), НЕ сбрасывается при реванше и «дальше» —
@@ -92,6 +108,25 @@ const FRESH_ROOM_RETRIES = 4;
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // без I O 0 1
 const CODE_LEN = 5;
 
+/* ---- друзья (Task 37) ---- */
+/** друзей максимум */
+const FRIENDS_MAX = 50;
+/** заявок максимум (входящих и исходящих) */
+const FRIEND_REQS_MAX = 20;
+/** сообщений в истории чата пары */
+const CHAT_MSGS_MAX = 100;
+/** максимальная длина сообщения */
+const CHAT_TEXT_MAX = 300;
+/** приглашение в битву живёт 60 c */
+const INVITE_TTL_MS = 60_000;
+/** «онлайн»: uid подавал признаки жизни не позже этого */
+const FRIEND_ONLINE_MS = 30_000;
+/** как часто писать маркер присутствия в KV (с каждого сокета) */
+const ONLINE_TOUCH_MS = 12_000;
+/** короткий код для добавления в друзья */
+const FC_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const FC_LEN = 6;
+
 /** пары по уровню (цикл 10 уровней — 10 схем, см. layouts.ts) */
 const PAIRS_BY_LEVEL = [14, 20, 22, 32, 36, 18, 21, 26, 32, 40];
 
@@ -114,6 +149,8 @@ interface PlayerState {
   finished: 'cleared' | 'tray' | null;
   /** счёт серии побед с этим соперником */
   wins: number;
+  /** постоянный uid игрока (Task 37: «Добавить в друзья» из матча) */
+  uid?: string;
 }
 
 interface RoomEventInfo {
@@ -150,6 +187,8 @@ interface TicketState {
   level: number;
   createdAt: number;
   lastSeen: number;
+  /** постоянный uid владельца тикета (Task 37) */
+  uid?: string;
   /** подобрали: комната готова */
   paired: {
     code: string;
@@ -176,6 +215,8 @@ interface RoomView {
     online: boolean;
     finished: 'cleared' | 'tray' | null;
     wins: number;
+    /** постоянный uid игрока (для «Добавить в друзья», Task 37) */
+    uid?: string;
   }[];
   result: { winnerId: string; reason: RoomFinishReason } | null;
   visibility: 'open' | 'closed';
@@ -460,6 +501,7 @@ function view(r: RoomState): RoomView {
       online: t - p.lastSeen < PRESENCE_MS,
       finished: p.finished,
       wins: p.wins,
+      uid: p.uid,
     })),
     result: r.result ? { ...r.result } : null,
     visibility: r.visibility,
@@ -486,6 +528,8 @@ interface Sock {
   lobby: boolean;
   /** активный тикет матчмейкинга */
   mmTicket: string | null;
+  /** когда последний раз писали маркер присутствия в KV (друзья) */
+  lastOnlineTouch: number;
   alive: boolean;
 }
 
@@ -865,6 +909,283 @@ function ensureLobbyLoop(): void {
   lobbyTimer = setInterval(() => void tick(), 2000);
 }
 
+/* ==================== ДРУЗЬЯ (Task 37) ====================
+ *
+ * KV-ключи:
+ *  ['fr', uid]  → FrState (друзья, заявки, инвайты, непрочитанные,
+ *                 короткий код для добавления)
+ *  ['fc', code] → uid (обратный индекс короткого кода)
+ *  ['chat', a, b] → история сообщений пары (uids по возрастанию,
+ *                 максимум CHAT_MSGS_MAX записей)
+ *  ['on', uid]  → timestamp последнего присутствия (для «онлайн»)
+ */
+
+interface FrFriend {
+  uid: string;
+  name: string;
+  at: number;
+}
+interface FrReq {
+  uid: string;
+  name: string;
+  at: number;
+}
+interface FrInvite {
+  from: string;
+  fromName: string;
+  code: string;
+  at: number;
+}
+interface FrState {
+  code: string;
+  friends: FrFriend[];
+  reqs: FrReq[];
+  sent: { uid: string; at: number }[];
+  invites: FrInvite[];
+  unread: Record<string, number>;
+}
+interface ChatMsg {
+  from: string;
+  name: string;
+  text: string;
+  at: number;
+}
+
+function newFrCode(): string {
+  return Array.from(
+    { length: FC_LEN },
+    () => FC_CHARS[Math.floor(Math.random() * FC_CHARS.length)],
+  ).join('');
+}
+
+/** состояние игрока (создаётся при первом касании): короткий код
+ *  регистрируется в ['fc', code] → uid */
+async function getFr(uid: string): Promise<FrState | null> {
+  if (!uid || uid === 'anon') return null;
+  const e = await kv.get<FrState>(['fr', uid]);
+  if (e?.value) return e.value;
+  // создать: код без коллизий (пара попыток)
+  for (let i = 0; i < 4; i++) {
+    const code = newFrCode();
+    const taken = await kv.get(['fc', code]);
+    if (taken?.value) continue;
+    const st: FrState = {
+      code,
+      friends: [],
+      reqs: [],
+      sent: [],
+      invites: [],
+      unread: {},
+    };
+    await kv.set(['fr', uid], st);
+    await kv.set(['fc', code], uid);
+    return st;
+  }
+  return null;
+}
+
+async function putFr(uid: string, st: FrState): Promise<void> {
+  await kv.set(['fr', uid], st);
+}
+
+/** онлайн ли uid (по маркеру присутствия) */
+async function isOnlineUid(uid: string): Promise<boolean> {
+  // свой изолят знает лучше: есть живой локальный сокет с этим uid
+  for (const s of sockets) {
+    if (s.uid === uid) return true;
+  }
+  const e = await kv.get<number>(['on', uid]);
+  return !!e?.value && now() - e.value < FRIEND_ONLINE_MS;
+}
+
+/** вычислить «онлайн» для списка друзей за один проход */
+async function onlineMap(uids: string[]): Promise<Record<string, boolean>> {
+  const out: Record<string, boolean> = {};
+  await Promise.all(
+    uids.map(async (u) => {
+      out[u] = await isOnlineUid(u);
+    }),
+  );
+  return out;
+}
+
+/** публичное состояние друзей для клиента */
+async function frView(uid: string): Promise<Record<string, unknown> | null> {
+  const st = await getFr(uid);
+  if (!st) return null;
+  const t = now();
+  const on = await onlineMap(st.friends.map((f) => f.uid));
+  return {
+    code: st.code,
+    friends: st.friends.map((f) => ({
+      uid: f.uid,
+      name: f.name,
+      online: on[f.uid] ?? false,
+    })),
+    reqs: st.reqs.map((r) => ({ uid: r.uid, name: r.name, at: r.at })),
+    sent: st.sent.map((s) => s.uid),
+    invites: st.invites
+      .filter((i) => t - i.at < INVITE_TTL_MS)
+      .map((i) => ({
+        from: i.from,
+        fromName: i.fromName,
+        code: i.code,
+        at: i.at,
+      })),
+    unread: st.unread,
+  };
+}
+
+/** разослать состояние друзьям всем локальным сокетам uid */
+async function pushFr(uid: string): Promise<void> {
+  const v = await frView(uid);
+  if (!v) return;
+  for (const s of sockets) {
+    if (s.uid === uid) send(s, { t: 'friends', state: v });
+  }
+}
+
+/** событие друзьям (жилое уведомление) всем локальным сокетам uid */
+function frEvent(uid: string, ev: Record<string, unknown>): void {
+  for (const s of sockets) {
+    if (s.uid === uid) send(s, { t: 'f_event', ...ev });
+  }
+}
+
+/** чат пары: ключ из uid'ов ПО ВОЗРАСТАНИЮ — оба пишут в один список */
+function chatKey(a: string, b: string): KvKey {
+  const [x, y] = [a, b].sort();
+  return ['chat', x, y];
+}
+
+async function getChat(a: string, b: string): Promise<ChatMsg[]> {
+  const e = await kv.get<ChatMsg[]>(chatKey(a, b));
+  return Array.isArray(e?.value) ? e.value : [];
+}
+
+async function appendChat(
+  from: string,
+  fromName: string,
+  to: string,
+  text: string,
+): Promise<ChatMsg> {
+  const msgs = await getChat(from, to);
+  const msg: ChatMsg = { from, name: fromName, text, at: now() };
+  msgs.push(msg);
+  await kv.set(chatKey(from, to), msgs.slice(-CHAT_MSGS_MAX));
+  return msg;
+}
+
+/** присутствие: маркер в KV — не чаще ONLINE_TOUCH_MS */
+function touchOnline(s: Sock): void {
+  if (!s.uid || s.uid === 'anon') return;
+  const t = now();
+  if (t - s.lastOnlineTouch < ONLINE_TOUCH_MS) return;
+  s.lastOnlineTouch = t;
+  kv.set(['on', s.uid], t).catch(() => {});
+}
+
+/** разобрать « кому»: uid или короткий код → uid (или null) */
+async function resolveTarget(
+  m: Record<string, unknown>,
+): Promise<string | null> {
+  const to = typeof m.to === 'string' ? m.to.trim() : '';
+  const code = typeof m.code === 'string' ? m.code.trim().toUpperCase() : '';
+  if (to) return to;
+  if (code) {
+    const e = await kv.get<string>(['fc', code]);
+    return e?.value ?? null;
+  }
+  return null;
+}
+
+function sanitizeText(raw: unknown): string {
+  const s = typeof raw === 'string' ? raw.trim().replace(/\s+/g, ' ') : '';
+  return [...s].slice(0, CHAT_TEXT_MAX).join('');
+}
+
+/** заявка в друзья: my → target. Встречные заявки — сразу дружба. */
+async function frAdd(
+  s: Sock,
+  m: Record<string, unknown>,
+): Promise<void> {
+  const target = await resolveTarget(m);
+  if (!target || target === s.uid) {
+    errOf(s, m, 'BAD_TARGET');
+    return;
+  }
+  const [mine, theirs] = await Promise.all([
+    getFr(s.uid),
+    getFr(target),
+  ]);
+  if (!mine || !theirs) {
+    errOf(s, m, 'BAD_TARGET');
+    return;
+  }
+  if (mine.friends.some((f) => f.uid === target)) {
+    errOf(s, m, 'ALREADY_FRIENDS');
+    return;
+  }
+  // ВСТРЕЧНАЯ заявка: target уже просился ко мне — сразу дружим
+  const mutual = mine.reqs.some((r) => r.uid === target);
+  if (mutual) {
+    await frAccept(s, { ...m, from: target });
+    return;
+  }
+  // уже отправляли — тихо обновляем имя и время
+  if (!mine.sent.some((x) => x.uid === target)) {
+    if (mine.sent.length >= FRIEND_REQS_MAX) mine.sent.shift();
+    mine.sent.push({ uid: target, at: now() });
+  }
+  if (!theirs.reqs.some((r) => r.uid === s.uid)) {
+    if (theirs.reqs.length >= FRIEND_REQS_MAX) theirs.reqs.shift();
+    theirs.reqs.push({ uid: s.uid, name: s.name, at: now() });
+  }
+  await putFr(s.uid, mine);
+  await putFr(target, theirs);
+  const resp = await frView(s.uid);
+  if (resp) send(s, { t: 'friends', state: resp, rid: m.rid });
+  frEvent(target, { kind: 'req', uid: s.uid, name: s.name });
+  await pushFr(target);
+}
+
+/** принять заявку: с обеих сторон — друзья */
+async function frAccept(
+  s: Sock,
+  m: Record<string, unknown>,
+): Promise<void> {
+  const from = typeof m.from === 'string' ? m.from.trim() : '';
+  const mine = await getFr(s.uid);
+  const theirs = await getFr(from);
+  if (!mine || !theirs) {
+    errOf(s, m, 'BAD_TARGET');
+    return;
+  }
+  const req = mine.reqs.find((r) => r.uid === from);
+  if (!req) {
+    errOf(s, m, 'NO_REQ');
+    return;
+  }
+  mine.reqs = mine.reqs.filter((r) => r.uid !== from);
+  mine.sent = mine.sent.filter((x) => x.uid !== from);
+  if (!mine.friends.some((f) => f.uid === from)) {
+    if (mine.friends.length >= FRIENDS_MAX) mine.friends.shift();
+    mine.friends.push({ uid: from, name: req.name, at: now() });
+  }
+  theirs.reqs = theirs.reqs.filter((r) => r.uid !== s.uid);
+  theirs.sent = theirs.sent.filter((x) => x.uid !== s.uid);
+  if (!theirs.friends.some((f) => f.uid === s.uid)) {
+    if (theirs.friends.length >= FRIENDS_MAX) theirs.friends.shift();
+    theirs.friends.push({ uid: s.uid, name: s.name, at: now() });
+  }
+  await putFr(s.uid, mine);
+  await putFr(from, theirs);
+  const resp = await frView(s.uid);
+  if (resp) send(s, { t: 'friends', state: resp, rid: m.rid });
+  frEvent(from, { kind: 'accept', uid: s.uid, name: s.name });
+  await pushFr(from);
+}
+
 /* ==================== МАТЧМЕЙКИНГ ==================== */
 
 /** подпишись на свой тикет: когда другой изолят его «подберёт» —
@@ -946,6 +1267,7 @@ async function createTicketFor(
     level,
     createdAt: now(),
     lastSeen: now(),
+    uid: sock.uid,
     paired: null,
   };
   await kv.set(['mm', id], tk);
@@ -1012,6 +1334,7 @@ async function pairTickets(a: TicketState, b: TicketState): Promise<boolean> {
       lastSeen: now(),
       finished: null,
       wins: 0,
+      uid: a.uid,
     },
     {
       id: guestId,
@@ -1022,6 +1345,7 @@ async function pairTickets(a: TicketState, b: TicketState): Promise<boolean> {
       lastSeen: now(),
       finished: null,
       wins: 0,
+      uid: b.uid,
     },
   ];
   const ea = await kv.get<TicketState>(['mm', a.id]);
@@ -1070,6 +1394,7 @@ async function joinFirstOpenRoom(tk: TicketState): Promise<boolean> {
       lastSeen: now(),
       finished: null,
       wins: 0,
+      uid: tk.uid,
     });
     r.status = 'playing';
     r.startedAt = now() + INTRO_BUDGET_MS;
@@ -1099,6 +1424,8 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
   } catch {
     return;
   }
+  // присутствие для друзей: любой обмен — «я онлайн» (с троттлингом)
+  touchOnline(s);
   const t = typeof m.t === 'string' ? m.t : '';
   switch (t) {
     /* ---------- представиться/вернуться в комнату ---------- */
@@ -1108,6 +1435,11 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
         s.name = sanitizeName(m.name);
       }
       send(s, { t: 'hello', ok: true, uid: s.uid });
+      // друзья: состояние при каждом приветствии (заявки/чат/инвайты)
+      if (s.uid !== 'anon') {
+        await getFr(s.uid).catch(() => {});
+        await pushFr(s.uid).catch(() => {});
+      }
       const code = normalizeCode(m.code);
       const pid = typeof m.playerId === 'string' ? m.playerId : null;
       if (code && pid) {
@@ -1187,6 +1519,7 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
             lastSeen: now(),
             finished: null,
             wins: 0,
+            uid: s.uid,
           },
         ],
         result: null,
@@ -1231,6 +1564,7 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
         lastSeen: now(),
         finished: null,
         wins: 0,
+        uid: s.uid,
       });
       const res = await mutateRoom(code, (r) => {
         if (r.status !== 'waiting' || r.players.length >= 2) return 'abort';
@@ -1578,6 +1912,253 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
       return;
     }
 
+    /* ---------- ДРУЗЬЯ (Task 37) ---------- */
+    case 'f_sync': {
+      const v = await frView(s.uid);
+      if (v) send(s, { t: 'friends', state: v, rid: m.rid });
+      else send(s, { t: 'ok', rid: m.rid });
+      return;
+    }
+    case 'f_add': {
+      await frAdd(s, m);
+      return;
+    }
+    case 'f_accept': {
+      await frAccept(s, m);
+      return;
+    }
+    case 'f_decline': {
+      const from = typeof m.from === 'string' ? m.from.trim() : '';
+      const mine = await getFr(s.uid);
+      if (mine) {
+        mine.reqs = mine.reqs.filter((r) => r.uid !== from);
+        await putFr(s.uid, mine);
+        const resp = await frView(s.uid);
+        if (resp) send(s, { t: 'friends', state: resp, rid: m.rid });
+        // у отправителя заявки — убрать из sent
+        const theirs = await getFr(from);
+        if (theirs) {
+          theirs.sent = theirs.sent.filter((x) => x.uid !== s.uid);
+          await putFr(from, theirs);
+          await pushFr(from);
+        }
+      }
+      return;
+    }
+    case 'f_remove': {
+      const uid = typeof m.uid === 'string' ? m.uid.trim() : '';
+      const mine = await getFr(s.uid);
+      const theirs = await getFr(uid);
+      // СНАЧАЛА убираем переписку (до пушей — клиент не должен
+      // успеть прочитать уже удалённую дружбу)
+      await kv.delete(chatKey(s.uid, uid)).catch(() => {});
+      if (mine) {
+        mine.friends = mine.friends.filter((f) => f.uid !== uid);
+        delete mine.unread[uid];
+        await putFr(s.uid, mine);
+        const resp = await frView(s.uid);
+        if (resp) send(s, { t: 'friends', state: resp, rid: m.rid });
+      }
+      if (theirs) {
+        theirs.friends = theirs.friends.filter((f) => f.uid !== s.uid);
+        delete theirs.unread[s.uid];
+        await putFr(uid, theirs);
+        frEvent(uid, { kind: 'removed', uid: s.uid, name: s.name });
+        await pushFr(uid);
+      }
+      return;
+    }
+    case 'f_msg': {
+      const to = typeof m.to === 'string' ? m.to.trim() : '';
+      const text = sanitizeText(m.text);
+      if (!to || !text) {
+        errOf(s, m, 'BAD_TARGET');
+        return;
+      }
+      const mine = await getFr(s.uid);
+      if (!mine || !mine.friends.some((f) => f.uid === to)) {
+        errOf(s, m, 'NOT_FRIENDS');
+        return;
+      }
+      const msg = await appendChat(s.uid, s.name, to, text);
+      // непрочитанные — у получателя
+      const theirs = await getFr(to);
+      if (theirs) {
+        theirs.unread[s.uid] = (theirs.unread[s.uid] ?? 0) + 1;
+        await putFr(to, theirs);
+      }
+      send(s, { t: 'ok', rid: m.rid });
+      frEvent(to, {
+        kind: 'msg',
+        uid: s.uid,
+        name: s.name,
+        text: msg.text,
+        at: msg.at,
+      });
+      await pushFr(to);
+      return;
+    }
+    case 'f_read': {
+      const withUid = typeof m.with === 'string' ? m.with.trim() : '';
+      const mine = await getFr(s.uid);
+      if (mine && mine.unread[withUid]) {
+        delete mine.unread[withUid];
+        await putFr(s.uid, mine);
+      }
+      send(s, { t: 'ok', rid: m.rid });
+      return;
+    }
+    case 'f_chat_load': {
+      const withUid = typeof m.with === 'string' ? m.with.trim() : '';
+      const msgs = await getChat(s.uid, withUid);
+      send(s, { t: 'f_chat', with: withUid, msgs, rid: m.rid });
+      return;
+    }
+    case 'f_invite': {
+      // зову друга в битву: создаю закрытую комнату и жду в ней,
+      // другу уходит приглашение с кодом комнаты
+      const to = typeof m.to === 'string' ? m.to.trim() : '';
+      const level = clamp(Math.floor(Number(m.level) || 1), 1, 999);
+      const mine = await getFr(s.uid);
+      if (!mine || !mine.friends.some((f) => f.uid === to)) {
+        errOf(s, m, 'NOT_FRIENDS');
+        return;
+      }
+      await dropTicket(s);
+      let code = '';
+      for (let i = 0; i < 5; i++) {
+        code = newCode();
+        const taken = await kv.get(['room', code]);
+        if (!taken?.value) break;
+        code = '';
+      }
+      if (!code) {
+        errOf(s, m, 'NETWORK');
+        return;
+      }
+      const hostId = rndId();
+      const room: RoomState = {
+        code,
+        level,
+        seed: newSeed(),
+        status: 'waiting',
+        hostId,
+        visibility: 'closed',
+        startedAt: 0,
+        timeTotalMs: timeForLevel(level),
+        createdAt: now(),
+        players: [
+          {
+            id: hostId,
+            name: s.name,
+            hue: rndHue(),
+            score: 0,
+            pairsDone: 0,
+            lastSeen: now(),
+            finished: null,
+            wins: 0,
+            uid: s.uid,
+          },
+        ],
+        result: null,
+        advanceBy: {},
+        lastEvent: null,
+      };
+      const res = await kv.atomic()
+        .check({
+          key: ['room', code],
+          value: null,
+          versionstamp: null as unknown as string,
+        })
+        .set(['room', code], room)
+        .commit();
+      if (!res.ok) {
+        errOf(s, m, 'NETWORK');
+        return;
+      }
+      bindSock(s, code, hostId);
+      ensureRoomWatch(code);
+      // приглашение другу (живёт INVITE_TTL_MS)
+      const theirs = await getFr(to);
+      if (theirs) {
+        const tnow = now();
+        theirs.invites = theirs.invites.filter(
+          (i) => i.from !== s.uid && tnow - i.at < INVITE_TTL_MS,
+        );
+        if (theirs.invites.length >= 5) theirs.invites.shift();
+        theirs.invites.push({
+          from: s.uid,
+          fromName: s.name,
+          code,
+          at: tnow,
+        });
+        await putFr(to, theirs);
+        frEvent(to, {
+          kind: 'invite',
+          uid: s.uid,
+          name: s.name,
+          code,
+        });
+        await pushFr(to);
+      }
+      send(s, { t: 'room', view: view(room), playerId: hostId, rid: m.rid });
+      return;
+    }
+    case 'f_invite_reply': {
+      const from = typeof m.from === 'string' ? m.from.trim() : '';
+      const accept = m.accept === true;
+      const mine = await getFr(s.uid);
+      if (!mine) {
+        errOf(s, m, 'BAD_TARGET');
+        return;
+      }
+      const inv = mine.invites.find((i) => i.from === from);
+      mine.invites = mine.invites.filter(
+        (i) => i.from !== from || now() - i.at >= INVITE_TTL_MS,
+      );
+      await putFr(s.uid, mine);
+      if (!accept || !inv) {
+        if (inv) {
+          frEvent(from, { kind: 'invite_declined', uid: s.uid, name: s.name });
+          await pushFr(from);
+        }
+        send(s, { t: 'friends', state: await frView(s.uid), rid: m.rid });
+        return;
+      }
+      // СОГЛАСЕН: входим в комнату приглашавшего (как обычный join)
+      await dropTicket(s);
+      const code = inv.code;
+      const joinerId = rndId();
+      const joiner = () => ({
+        id: joinerId,
+        name: s.name,
+        hue: rndHue(),
+        score: 0,
+        pairsDone: 0,
+        lastSeen: now(),
+        finished: null,
+        wins: 0,
+        uid: s.uid,
+      });
+      const res = await mutateRoom(code, (r) => {
+        if (r.status !== 'waiting' || r.players.length >= 2) return 'abort';
+        r.players.push(joiner());
+        r.status = 'playing';
+        r.startedAt = now() + INTRO_BUDGET_MS;
+        return r;
+      });
+      if (!res.ok || !res.room || !res.room.players.some((p) => p.id === joinerId)) {
+        errOf(s, m, 'ROOM_NOT_FOUND');
+        return;
+      }
+      const room = res.room;
+      bindSock(s, room.code, joinerId);
+      ensureRoomWatch(room.code);
+      pushLocal(room.code, room);
+      send(s, { t: 'room', view: view(room), playerId: joinerId, rid: m.rid });
+      return;
+    }
+
     case 'ping': {
       // фоновая вкладка: таймеры зажаты браузером, но сокет жив и
       // отвечает на hb — считаем это присутствием (lastSeen)
@@ -1638,6 +2219,7 @@ async function handle(req: Request): Promise<Response> {
       bindEpoch: 0,
       lobby: false,
       mmTicket: null,
+      lastOnlineTouch: 0,
       alive: true,
     };
     socket.onopen = () => {

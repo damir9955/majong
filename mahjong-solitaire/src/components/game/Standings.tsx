@@ -1,23 +1,27 @@
 'use client';
 
 /**
- * СТАТИСТИКА v2 — полностью переработанный экран (Task 36).
+ * СТАТИСТИКА v3 (Task 37 — фидбек «ничего не понятно, всё криво»).
  *
- * Было: три вкладки с сухими строками «Побед — 3», ничего не
- * понятно и всё криво. Стало:
- *  — «ОБЗОР»: лига-герой с прогрессом до следующей, KPI-плитки,
- *    кольцо винрейта и ДОСТИЖЕНИЯ с прогрессом (новое!);
- *  — «КЛАССИКА»: подробности — уровни, пары, серии, лучшее
- *    время, время в игре, потраченные бонусы;
- *  — «МАТЧИ»: лига, трофеи (сейчас/пик), полоса побед-поражений,
- *    винрейт, текущая и ЛУЧШАЯ серия;
- *  — «ДРУЗЬЯ»: аватары, W—L, винрейт-чип.
+ *  — «ОБЗОР»: лига-герой, KPI, кольцо процента побед и ДОСТИЖЕНИЯ —
+ *    компактная сетка квадратных плиток (3 в ряд, влезает без
+ *    горизонтальной прокрутки); тап по плитке — подробная карточка:
+ *    описание, прогресс, вехи (бронза → серебро → золото);
+ *  — «КЛАССИКА»: подробности — уровни, пары, серии, время, бонусы;
+ *  — «ПО СЕТИ» (вместо прежней «Друзей»): победы и поражения —
+ *    БОЛЬШИЕ разноцветные карточки, процент побед, серия; отдельная
+ *    строка только для сетевых матчей (бот не мешается);
+ *  — «ДРУЗЬЯ»: настоящие друзья (система друзей) + история встреч:
+ *    победы/поражения по каждому, словами, без загадочных «П — П».
+ *
+ * «Винрейт» переименован в «Процент побед» (фидбек: слово непонятно).
  */
 
 import { useState } from 'react';
 import { useGame, type FriendRecord } from '@/lib/game/store';
 import { useT, leagueName, useLang } from '@/lib/i18n';
 import { leagueIndexForPoints, LEAGUES, leagueProgress } from '@/lib/game/league';
+import { useFriends } from '@/lib/rooms/friends';
 import {
   ArrowLeft,
   Trophy,
@@ -36,9 +40,10 @@ import {
   Star,
   Target,
   BarChart3,
+  X,
 } from 'lucide-react';
 
-type Tab = 'overview' | 'classic' | 'matches' | 'friends';
+type Tab = 'overview' | 'classic' | 'online' | 'friends';
 
 /* ---------- форматирование ---------- */
 
@@ -51,11 +56,12 @@ function fmtTime(ms: number, t: ReturnType<typeof useT>): string {
   return `${h} ${t('tu.h')} ${m % 60} ${t('tu.min')}`;
 }
 
-/* ---------- достижения (новое) ---------- */
+/* ---------- достижения (компактно + подробности по тапу) ---------- */
 
 interface AchDef {
   id: string;
   label: string;
+  desc: string;
   icon: typeof Star;
   value: number;
   /** вехи: первая достигнутая веха = бронза, …, последняя = золото */
@@ -76,6 +82,7 @@ function useAchievements(): AchDef[] {
     {
       id: 'pairs',
       label: t('ach.pairs'),
+      desc: t('ach.pairs.desc'),
       icon: Star,
       value: classic.pairsMatched,
       tiers: [1, 50, 250, 1000],
@@ -83,6 +90,7 @@ function useAchievements(): AchDef[] {
     {
       id: 'levels',
       label: t('ach.levels'),
+      desc: t('ach.levels.desc'),
       icon: Target,
       value: classic.levelsCleared,
       tiers: [1, 5, 25, 100],
@@ -90,6 +98,7 @@ function useAchievements(): AchDef[] {
     {
       id: 'wins',
       label: t('ach.wins'),
+      desc: t('ach.wins.desc'),
       icon: Swords,
       value: league.wins,
       tiers: [1, 10, 50],
@@ -97,6 +106,7 @@ function useAchievements(): AchDef[] {
     {
       id: 'streak',
       label: t('ach.streak'),
+      desc: t('ach.streak.desc'),
       icon: Flame,
       value: league.bestStreak,
       tiers: [2, 5, 10],
@@ -104,6 +114,7 @@ function useAchievements(): AchDef[] {
     {
       id: 'friends',
       label: t('ach.friends'),
+      desc: t('ach.friends.desc'),
       icon: Handshake,
       value: friendsGames,
       tiers: [1, 5, 20],
@@ -111,6 +122,7 @@ function useAchievements(): AchDef[] {
     {
       id: 'league',
       label: t('ach.league'),
+      desc: t('ach.league.desc'),
       icon: Crown,
       value: leagueIndexForPoints(league.pointsBest),
       tiers: [1, 3, 5, 6],
@@ -140,42 +152,142 @@ function achState(def: AchDef): {
   return { doneAll, nextTier, from, progress, tier: Math.max(0, tier) };
 }
 
-function AchCard({ def }: { def: AchDef }) {
+/** компактная квадратная плитка достижения: иконка + мини-кольцо */
+function AchTile({
+  def,
+  onOpen,
+}: {
+  def: AchDef;
+  onOpen: () => void;
+}) {
+  const st = achState(def);
+  const Icon = def.icon;
+  const r = 15.9;
+  const c = 2 * Math.PI * r;
+  return (
+    <button
+      type="button"
+      className={`mj-st2-ach-tile ${st.doneAll ? 'mj-st2-ach-tile-done' : ''}`}
+      data-testid={`mj-ach-${def.id}`}
+      onClick={onOpen}
+      aria-label={def.label}
+    >
+      <svg viewBox="0 0 36 36" className="mj-st2-ach-ring">
+        <circle
+          cx="18"
+          cy="18"
+          r={r}
+          fill="none"
+          stroke="rgba(0,0,0,.09)"
+          strokeWidth="3.6"
+        />
+        <circle
+          cx="18"
+          cy="18"
+          r={r}
+          fill="none"
+          stroke={st.doneAll ? '#d99f2b' : '#1f8f7a'}
+          strokeWidth="3.6"
+          strokeLinecap="round"
+          strokeDasharray={`${(c * st.progress).toFixed(1)} ${c.toFixed(1)}`}
+          transform="rotate(-90 18 18)"
+        />
+      </svg>
+      {st.doneAll ? (
+        <Medal className="h-5 w-5" />
+      ) : (
+        <Icon className="h-5 w-5" />
+      )}
+      <span className="mj-st2-ach-tile-n tabular-nums">
+        {st.doneAll ? <Check className="h-3.5 w-3.5" /> : def.value}
+      </span>
+    </button>
+  );
+}
+
+/** подробная карточка достижения (тап по плитке) */
+function AchDetail({
+  def,
+  onClose,
+}: {
+  def: AchDef;
+  onClose: () => void;
+}) {
   const t = useT();
   const st = achState(def);
   const Icon = def.icon;
   return (
-    <div
-      className={st.doneAll ? 'mj-st2-ach mj-st2-ach-done' : 'mj-st2-ach'}
-      data-testid={`mj-ach-${def.id}`}
-    >
-      <span className="mj-st2-ach-ico">
-        {st.doneAll ? (
-          <Medal className="h-5 w-5" />
-        ) : (
-          <Icon className="h-5 w-5" />
-        )}
-      </span>
-      <span className="mj-st2-ach-body">
-        <b>{def.label}</b>
-        <span className="mj-st2-bar">
-          <i style={{ width: `${Math.round(st.progress * 100)}%` }} />
-        </span>
-        <span className="mj-st2-ach-meta">
-          {st.doneAll ? (
-            <>
-              <Check className="h-3.5 w-3.5" /> {t('ach.done')}
-            </>
-          ) : (
-            t('ach.progress', { n: Math.min(def.value, st.nextTier), m: st.nextTier })
-          )}
-        </span>
-      </span>
+    <div className="mj-overlay" data-testid={`mj-ach-detail-${def.id}`}>
+      <div className="mj-card relative w-full max-w-sm p-6">
+        <button
+          type="button"
+          className="mj-close-x"
+          onClick={onClose}
+          aria-label="×"
+        >
+          <X className="h-5 w-5" />
+        </button>
+        <div className="flex items-center gap-3">
+          <span
+            className={`mj-st2-ach-ico-lg ${st.doneAll ? 'mj-st2-ach-ico-lg-done' : ''}`}
+          >
+            {st.doneAll ? <Medal className="h-7 w-7" /> : <Icon className="h-7 w-7" />}
+          </span>
+          <div className="min-w-0">
+            <h2 className="text-lg font-black leading-tight text-[#22432e]">
+              {def.label}
+            </h2>
+            <p className="text-xs font-bold text-stone-500">
+              {st.doneAll
+                ? t('ach.done')
+                : t('ach.progress', { n: Math.min(def.value, st.nextTier), m: st.nextTier })}
+            </p>
+          </div>
+        </div>
+
+        <p className="mt-3 text-sm font-semibold leading-snug text-stone-600">
+          {def.desc}
+        </p>
+
+        {/* вехи: достигнутые — золотые */}
+        <div className="mt-4 flex flex-wrap gap-2">
+          {def.tiers.map((tier, i) => {
+            const done = def.value >= tier;
+            return (
+              <span
+                key={tier}
+                className={`mj-st2-tier ${done ? 'mj-st2-tier-done' : ''}`}
+              >
+                {done && <Check className="h-3.5 w-3.5" />}
+                {tier}
+              </span>
+            );
+          })}
+        </div>
+
+        <div className="mt-4">
+          <div className="mj-st2-bar mj-st2-bar-lg">
+            <i
+              style={{
+                width: `${Math.round(st.progress * 100)}%`,
+                background: st.doneAll
+                  ? 'linear-gradient(90deg, #f0c96a, #d99f2b)'
+                  : undefined,
+              }}
+            />
+          </div>
+          <p className="mt-1.5 text-center text-[11px] font-bold text-stone-500">
+            {st.doneAll
+              ? t('ach.maxTier')
+              : `${def.value} / ${st.nextTier}`}
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
 
-/* ---------- кольцо винрейта ---------- */
+/* ---------- кольцо процента побед ---------- */
 
 function WinRateRing({
   percent,
@@ -245,6 +357,7 @@ function OverviewTab() {
     0,
   );
   const achs = useAchievements();
+  const [achOpen, setAchOpen] = useState<AchDef | null>(null);
 
   return (
     <div className="flex flex-col gap-3.5">
@@ -356,13 +469,16 @@ function OverviewTab() {
         </div>
       </div>
 
-      {/* достижения */}
+      {/* достижения: компактная сетка квадратных плиток, тап — подробно */}
       <p className="mj-st2-title">{t('ach.title')}</p>
-      <div className="mj-st2-ach-grid">
+      <div className="mj-st2-ach-tiles" data-testid="mj-ach-tiles">
         {achs.map((a) => (
-          <AchCard key={a.id} def={a} />
+          <AchTile key={a.id} def={a} onOpen={() => setAchOpen(a)} />
         ))}
       </div>
+      <p className="mj-st2-ach-hint">{t('ach.tapHint')}</p>
+
+      {achOpen && <AchDetail def={achOpen} onClose={() => setAchOpen(null)} />}
     </div>
   );
 }
@@ -422,83 +538,43 @@ function ClassicTab() {
   );
 }
 
-function MatchesTab() {
+/** «ПО СЕТИ»: только живые соперники (бот — отдельно, не мешает) */
+function OnlineTab() {
   const t = useT();
-  const lang = useLang((s) => s.lang);
-  const league = useGame((s) => s.league);
-  const idx = leagueIndexForPoints(league.points);
-  const cur = LEAGUES[idx];
-  const next = LEAGUES[idx + 1];
-  const progress = leagueProgress(league.points);
-  const total = league.wins + league.losses;
-  const winrate = total > 0 ? Math.round((league.wins / total) * 100) : 0;
+  const onl = useGame((s) => s.stats.online);
+  const total = onl.wins + onl.losses;
+  const winrate = total > 0 ? Math.round((onl.wins / total) * 100) : 0;
   if (total === 0) {
-    return <p className="mj-st-empty">{t('st.emptyMatches')}</p>;
+    return <p className="mj-st-empty">{t('st.emptyOnline')}</p>;
   }
-  const wl = [
-    league.wins,
-    league.losses,
-  ];
-  const wlPct =
-    total > 0 ? Math.round((wl[0] / (wl[0] + wl[1] || 1)) * 100) : 0;
   return (
     <div className="flex flex-col gap-3.5">
-      {/* лига-герой */}
-      <div className="mj-st2-hero" style={{ borderColor: cur.color }}>
-        <div className="mj-st2-hero-top">
-          <span
-            className="mj-st2-hero-orb"
-            style={{
-              background: `radial-gradient(circle at 32% 28%, ${cur.color}, ${cur.color}88 62%, rgba(0,0,0,.25))`,
-              boxShadow: `0 4px 14px ${cur.color}66`,
-            }}
-          >
-            <Trophy className="h-6 w-6 text-white" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="mj-st2-hero-league" style={{ color: cur.color }}>
-              {leagueName(idx, lang)}
-            </p>
-            <p className="mj-st2-hero-pts">
-              {league.points} {t('st.trophies').toLowerCase()}
-              {league.pointsBest > league.points && (
-                <span className="mj-st2-hero-peak">
-                  · {t('st.peak')} {league.pointsBest}
-                </span>
-              )}
-            </p>
-          </div>
+      {/* победы/поражения — две большие понятные карточки */}
+      <div className="mj-st2-wl-cards" data-testid="mj-st-online-wl">
+        <div className="mj-st2-wl-card mj-st2-wl-card-w">
+          <Swords className="h-5 w-5" />
+          <b className="tabular-nums">{onl.wins}</b>
+          <span>{t('st.winsN', { n: onl.wins })}</span>
         </div>
-        <div className="mj-st2-bar mj-st2-bar-lg">
-          <i
-            style={{
-              width: `${Math.round(progress * 100)}%`,
-              background: `linear-gradient(90deg, ${cur.color}, ${next?.color ?? cur.color})`,
-            }}
-          />
+        <div className="mj-st2-wl-card mj-st2-wl-card-l">
+          <X className="h-5 w-5" />
+          <b className="tabular-nums">{onl.losses}</b>
+          <span>{t('st.lossesN', { n: onl.losses })}</span>
         </div>
-        <p className="mj-st2-hero-next">
-          {next
-            ? t('st.toNext', {
-                n: next.min - league.points,
-                name: leagueName(idx + 1, lang),
-              })
-            : t('st.maxLeague')}
-        </p>
       </div>
 
-      {/* победы/поражения — полоса доли */}
-      <div className="mj-st2-wl" data-testid="mj-st-wl">
+      {/* доля побед полосой */}
+      <div className="mj-st2-wl">
         <div className="mj-st2-wl-nums">
           <span className="mj-st2-wl-w">
-            {t('st.wins')} <b>{wl[0]}</b>
+            {t('st.wins')} <b>{onl.wins}</b>
           </span>
           <span className="mj-st2-wl-l">
-            <b>{wl[1]}</b> {t('st.losses')}
+            <b>{onl.losses}</b> {t('st.losses')}
           </span>
         </div>
         <div className="mj-st2-wl-bar">
-          <i style={{ width: `${wlPct}%` }} />
+          <i style={{ width: `${winrate}%` }} />
         </div>
       </div>
 
@@ -509,28 +585,28 @@ function MatchesTab() {
           <span>{t('st.winrate')}</span>
         </div>
         <div className="mj-st2-kpi">
+          <Swords className="h-4 w-4" />
+          <b>{total}</b>
+          <span>{t('st.onlineTotal')}</span>
+        </div>
+        <div className="mj-st2-kpi">
           <Flame className="h-4 w-4" />
-          <b>
-            {league.streak >= 0 ? `+${league.streak}` : league.streak}
-          </b>
+          <b>{onl.streak >= 0 ? `+${onl.streak}` : onl.streak}</b>
           <span>{t('st.curStreak')}</span>
         </div>
         <div className="mj-st2-kpi">
           <Medal className="h-4 w-4" />
-          <b>{league.bestStreak}</b>
+          <b>{onl.bestStreak}</b>
           <span>{t('st.bestStreak')}</span>
-        </div>
-        <div className="mj-st2-kpi">
-          <Trophy className="h-4 w-4" />
-          <b>{league.pointsBest}</b>
-          <span>{t('st.peak')}</span>
         </div>
       </div>
     </div>
   );
 }
 
-function FriendRow({ rec, t }: { rec: FriendRecord; t: ReturnType<typeof useT> }) {
+/* ---------- ДРУЗЬЯ: настоящие друзья + история встреч ---------- */
+
+function FriendStatRow({ rec, t }: { rec: FriendRecord; t: ReturnType<typeof useT> }) {
   const total = rec.wins + rec.losses;
   const winrate = total > 0 ? Math.round((rec.wins / total) * 100) : 0;
   return (
@@ -551,8 +627,13 @@ function FriendRow({ rec, t }: { rec: FriendRecord; t: ReturnType<typeof useT> }
         <b className="block truncate text-sm font-black text-stone-800">
           {rec.name}
         </b>
-        <span className="block text-xs font-semibold text-stone-500">
-          {t('st.played')} {rec.played} · {t('st.wl')} {rec.wins}—{rec.losses}
+        <span className="mt-0.5 flex flex-wrap items-center gap-1.5">
+          <i className="mj-st2-chip mj-st2-chip-w">
+            {t('st.winsN', { n: rec.wins })}
+          </i>
+          <i className="mj-st2-chip mj-st2-chip-l">
+            {t('st.lossesN', { n: rec.losses })}
+          </i>
         </span>
       </div>
       <span
@@ -571,14 +652,26 @@ function FriendRow({ rec, t }: { rec: FriendRecord; t: ReturnType<typeof useT> }
 function FriendsTab() {
   const t = useT();
   const friends = useGame((s) => s.stats.friends);
-  const list = Object.values(friends).sort((a, b) => b.played - a.played);
+  const realFriends = useFriends((s) => s.friends);
+  // настоящие друзья — первыми (у кого нет истории встреч, всё равно покажем)
+  const list: FriendRecord[] = realFriends.map((f) => {
+    const rec = friends[f.name];
+    return (
+      rec ?? { name: f.name, hue: 150, played: 0, wins: 0, losses: 0 }
+    );
+  });
+  // история встреч с игроками, которых нет в друзьях
+  for (const rec of Object.values(friends)) {
+    if (!realFriends.some((f) => f.name === rec.name)) list.push(rec);
+  }
+  list.sort((a, b) => b.played - a.played);
   if (list.length === 0) {
-    return <p className="mj-st-empty">{t('st.emptyFriends')}</p>;
+    return <p className="mj-st-empty">{t('st.emptyFriendsV2')}</p>;
   }
   return (
     <div className="flex flex-col gap-2">
       {list.map((rec) => (
-        <FriendRow key={rec.name} rec={rec} t={t} />
+        <FriendStatRow key={rec.name} rec={rec} t={t} />
       ))}
     </div>
   );
@@ -591,7 +684,7 @@ export function Standings({ onClose }: { onClose: () => void }) {
   const tabs: [Tab, typeof Trophy, string][] = [
     ['overview', LayoutGrid, t('st.overview')],
     ['classic', Flower2, t('st.classic')],
-    ['matches', Swords, t('st.matches')],
+    ['online', Swords, t('st.online')],
     ['friends', Users, t('st.friends')],
   ];
 
@@ -616,8 +709,12 @@ export function Standings({ onClose }: { onClose: () => void }) {
       </div>
 
       {/* прокручиваемая зона: экран не должен обрезаться на маленьких
-          телефонах — вкладки прилипают сверху, контент катается */}
-      <div className="mj-card w-full max-w-sm flex-1 overflow-y-auto overscroll-contain p-4 sm:max-w-md sm:p-5">
+          телефонах — вкладки прилипают сверху, контент катается
+          (и только ВНИЗ: горизонтальной прокрутки нет) */}
+      <div
+        className="mj-card w-full max-w-sm flex-1 overflow-y-auto overflow-x-hidden overscroll-contain p-4 sm:max-w-md sm:p-5"
+        data-testid="mj-standings-card"
+      >
         <div className="mj-st-tabs mj-st-tabs-four" data-testid="mj-standings-tabs">
           {tabs.map(([id, Icon, label]) => (
             <button
@@ -635,7 +732,7 @@ export function Standings({ onClose }: { onClose: () => void }) {
         <div className="mt-4" data-testid="mj-standings-body">
           {tab === 'overview' && <OverviewTab />}
           {tab === 'classic' && <ClassicTab />}
-          {tab === 'matches' && <MatchesTab />}
+          {tab === 'online' && <OnlineTab />}
           {tab === 'friends' && <FriendsTab />}
         </div>
       </div>
