@@ -948,6 +948,16 @@ function HomeScreen({
           <b>{t('home.settings')}</b>
         </button>
       </div>
+
+      {/* правовая ссылка (для Google Play): политика конфиденциальности */}
+      <a
+        className="mj-privacy-link"
+        href="/privacy-policy.html"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        {t('home.privacy')}
+      </a>
     </div>
   );
 }

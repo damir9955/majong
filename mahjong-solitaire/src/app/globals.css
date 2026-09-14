@@ -522,23 +522,29 @@ body[data-mj-theme='mint'] {
    соединяются и взрываются, остаток соскальзывает на их место.
    Ширина подогнана РОВНО под 4 слота — та же формула, что в
    traySlots.ts (2*padX + 4*(h-2*padY)/1.28 + 3*gap): по виду
-   влезает столько, сколько реально принимает игра. Зона
-   ЗАМЕТНО КРУПНЕЕ, чем раньше (слоты ~40px на телефоне) —
-   кости в лотке хорошо читаются. Высота ограничена и шириной,
-   и ВЫСОТОЙ экрана — в альбомной ориентации лоток не
-   съедает доску. */
+   влезает столько, сколько реально принимает игра.
+   ФИДБЕК Task 38: раньше фон был фото-деревом (wood.webp) —
+   из-за швов текстуры пустой лоток выглядел как «картинка из
+   трёх досок». Теперь это ГЛАДКАЯ глубокая ниша без единого
+   шва: только мягкие градиенты, тёплая тень сверху и латунный
+   контур — никакой фактуры «досок» на любом столе. */
 .mj-tray-zone {
   width: min(94vw, calc((clamp(62px, min(14vw, 16vh), 118px) - 14px) * 3.125 + 28px));
   height: clamp(62px, min(14vw, 16vh), 118px);
   border-radius: 14px;
   background:
-    linear-gradient(180deg, rgba(20, 13, 6, 0.22), rgba(6, 4, 2, 0.5)),
-    url('/tex/wood.webp') center / cover;
+    radial-gradient(
+      130% 160% at 50% -20%,
+      rgba(255, 236, 190, 0.1),
+      rgba(255, 236, 190, 0) 52%
+    ),
+    linear-gradient(180deg, #2a1a0a 0%, #1d1207 55%, #150d05 100%);
   box-shadow:
-    inset 0 5px 16px rgba(0, 0, 0, 0.72),
-    inset 0 -1px 0 rgba(255, 235, 190, 0.12),
-    0 1px 0 rgba(255, 214, 130, 0.2);
-  border: 1px solid rgba(170, 140, 80, 0.5);
+    inset 0 5px 16px rgba(0, 0, 0, 0.75),
+    inset 0 2px 5px rgba(0, 0, 0, 0.55),
+    inset 0 -1px 0 rgba(255, 235, 190, 0.13),
+    0 1px 0 rgba(255, 214, 130, 0.18);
+  border: 1px solid rgba(150, 110, 55, 0.5);
   transition: border-color 0.25s ease;
 }
 
@@ -2921,6 +2927,24 @@ body[data-mj-theme='mint'] {
   50% {
     transform: scale(1.12);
   }
+}
+
+/* правовая ссылка под нижним рядом меню (Google Play): тихая,
+   полупрозрачная — не спорит с кнопками, но доступна ревьюеру */
+.mj-privacy-link {
+  padding: 2px 14px max(10px, env(safe-area-inset-bottom));
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(243, 234, 208, 0.6);
+  text-decoration: underline dotted rgba(243, 234, 208, 0.35);
+  text-underline-offset: 3px;
+  transition: color 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.mj-privacy-link:active,
+.mj-privacy-link:hover {
+  color: rgba(255, 233, 179, 0.95);
 }
 
 /* ============ ДРУЗЬЯ (Task 37): панель, строки, чат ============ */

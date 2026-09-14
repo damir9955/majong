@@ -64,7 +64,7 @@ async function collectShellUrls(): Promise<{
   html: Response;
   urls: string[];
 }> {
-  const res = await fetch('/', { cache: 'no-store' });
+  const res = await fetch(freshUrl('/'), { cache: 'no-store' });
   if (!res.ok) throw new Error('html ' + res.status);
   const clone = res.clone();
   const text = await res.text();
@@ -84,6 +84,13 @@ async function collectShellUrls(): Promise<{
 }
 
 /* ---------- скачивание с прогрессом ---------- */
+
+/** маркер «мимо кеша» — SW видит его и идёт в СЕТЬ (Task 38):
+ *  без него загрузчик получал от SW СТАРУЮ копию из кеша и
+ *  «обновление» навсегда оставляло игрока на старых файлах */
+function freshUrl(url: string): string {
+  return `${url}${url.includes('?') ? '&' : '?'}__mjfresh=1`;
+}
 
 export interface DownloadResult {
   ok: boolean;
@@ -128,7 +135,8 @@ export async function downloadAllAssets(
 
   const fetchOne = async (url: string) => {
     try {
-      const res = await fetch(url, { cache: 'no-store' });
+      // freshUrl — СВЕЖАЯ копия из сети; в кеш кладём под ЧИСТЫМ url
+      const res = await fetch(freshUrl(url), { cache: 'reload' });
       if (res.ok) {
         await cache.put(url, res.clone());
       } else {
@@ -137,7 +145,7 @@ export async function downloadAllAssets(
     } catch {
       // один повтор — сеть моргнула
       try {
-        const retry = await fetch(url, { cache: 'reload' });
+        const retry = await fetch(freshUrl(url), { cache: 'reload' });
         if (retry.ok) await cache.put(url, retry.clone());
         else throw new Error(String(retry.status));
       } catch {

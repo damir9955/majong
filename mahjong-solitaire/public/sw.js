@@ -36,10 +36,12 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-/** тихая ревалидация: свежая копия подменяет кеш для следующего запуска */
+/** тихая ревалидация: свежая копия подменяет кеш для следующего запуска.
+ *  cache:'reload' — ОБЯЗАТЕЛЬНО мимо HTTP-кеша браузера: без него
+ *  «свежая» копия может прийти с диска и версия никогда не сменится */
 async function revalidate(request, cache) {
   try {
-    const fresh = await fetch(request);
+    const fresh = await fetch(request, { cache: 'reload' });
     if (fresh && fresh.ok && fresh.type === 'basic') {
       await cache.put(request, fresh.clone());
     }
@@ -64,6 +66,40 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.startsWith('/api/')) return;
   // WebSocket-апгрейды сюда не попадают (SW их не видит) — на всякий
   if (url.protocol === 'ws:' || url.protocol === 'wss:') return;
+
+  // ?__mjfresh=1 — запрос ЗАГРУЗЧИКА/ОБНОВЛЕНИЯ мимо кеша (Task 38).
+  // Раньше загрузчик качал файлы обычным fetch — SW перехватывал его
+  // и отдавал СТАРУЮ копию из кеша: «обновление» перезаписывало старую
+  // сборку под маркером новой версии, и игрок застревал на старых
+  // файлах навсегда. Теперь такие запросы идут в СЕТЬ (мимо кеша и
+  // мимо HTTP-кеша), а в кеш ложатся под ЧИСТЫМ адресом.
+  if (url.searchParams.has('__mjfresh')) {
+    const clean = new URL(url.toString());
+    clean.searchParams.delete('__mjfresh');
+    event.respondWith(
+      (async () => {
+        const cache = await caches.open(CACHE);
+        try {
+          const res = await fetch(clean.toString(), { cache: 'reload' });
+          if (res && res.ok && res.type === 'basic') {
+            await cache.put(clean.toString(), res.clone());
+          }
+          return res;
+        } catch {
+          // сети нет — отдаём имеющееся
+          const hit = await cache.match(clean.toString(), {
+            ignoreVary: true,
+          });
+          if (hit) return hit;
+          return new Response('offline', {
+            status: 503,
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+          });
+        }
+      })(),
+    );
+    return;
+  }
 
   event.respondWith(
     (async () => {

@@ -749,11 +749,10 @@ function removePair(
       matchedSeq: seq,
       invalidId: null,
       hintPair: null,
-      // пара ушла — подглядки этих костей гаснут;
+      // пара ушла — ВСЕ подглядки гаснут (их было не больше одной):
+      // любое действие закрывает перевёрнутую рубашку обратно;
       // авто-открытые рубашки остаются лицом вверх
-      peekIds: s.peekIds.filter(
-        (pid) => pid !== residentId && pid !== arrivingId,
-      ),
+      peekIds: [],
       revealedIds,
       battle,
     },
@@ -1416,13 +1415,14 @@ export const useGame = create<GameState>()(
             removePair(set, s, twin, id);
             return;
           }
-          // иначе — переворот-подглядка (Фидбек Task 37: ДВЕ кости
-          // могут лежать открытыми рядом — игрок сравнивает грани,
-          // третья закрывает самую старую)
+          // Фидбек Task 38: ОДНА подглядка — как в классике.
+          // Тап по закрытой кости переворачивает её; тап по ВТОРОЙ
+          // такой же — обе мгновенно улетают в лоток парой (ветка
+          // twin выше); тап по ДРУГОЙ кости закрывает прежнюю
+          // подглядку и открывает новую. Открытые держать нельзя —
+          // игрок просил: «если открыть, то закрываются потом».
           playReveal();
-          const peekIds = [...s.peekIds.filter((pid) => pid !== id), id].slice(
-            -2,
-          );
+          const peekIds = [id];
           set({
             session: {
               ...s,
@@ -1444,8 +1444,8 @@ export const useGame = create<GameState>()(
           return;
         }
 
-        // 4) новая плитка в лотке (подглядки остаются открытыми —
-        //    игрок продолжает сравнивать грани)
+        // 4) новая плитка в лотке — подглядка гаснет: любое другое
+        //    действие закрывает перевёрнутую рубашку обратно
         const tray = [...s.tray, id];
         const tiles = s.tiles.map((t) =>
           t.id === id ? { ...t, removed: true } : t,
@@ -1465,7 +1465,9 @@ export const useGame = create<GameState>()(
           ...flyReveal,
         ].filter((x, i, arr) => arr.indexOf(x) === i);
         if (newlyRevealed.length > 0 || flyReveal.length > 0) playReveal();
-        const peekIds: number[] = s.peekIds.filter((pid) => pid !== id);
+        // подглядка гаснет: плитка ушла в лоток, перевёрнутая
+        // рубашка закрывается обратно (классика Task 38)
+        const peekIds: number[] = [];
 
         if (tray.length >= TRAY_SIZE) {
           // четыре разные — поражение (можно успеть отменить)
