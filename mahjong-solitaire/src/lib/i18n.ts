@@ -136,6 +136,7 @@ const RU: Record<string, string> = {
   // реванш по согласию обоих (Task 25)
   'rem.waiting': 'Ждём согласия соперника…',
   'rem.offer': 'Соперник предлагает реванш — согласен?',
+  'rem.offerNext': 'Соперник предлагает следующий уровень — согласен?',
   'rem.accept': 'Согласиться',
   'rem.decline': 'Отказаться',
 
@@ -505,6 +506,7 @@ const EN: Record<string, string> = {
   // реванш по согласию (Task 25)
   'rem.waiting': 'Waiting for the opponent to accept…',
   'rem.offer': 'Opponent offers a rematch — accept?',
+  'rem.offerNext': 'Opponent offers the next level — accept?',
   'rem.accept': 'Accept',
   'rem.decline': 'Decline',
 

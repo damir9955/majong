@@ -103,12 +103,12 @@ export function BattleResult() {
   const on = session?.battle?.online;
   const myAdvance = on?.myAdvance ?? null;
   const oppAdvance = on?.oppAdvance ?? null;
-  // соперник уже предложил реванш, а я ещё не отвечал
+  // соперник уже предложил реванш/следующий уровень, а я ещё не отвечал
   const askAccept =
-    online && !oppGone && oppAdvance === 'rematch' && !myAdvance && !declined;
+    online && !oppGone && !!oppAdvance && !myAdvance && !declined;
   // я предложил — жду согласия соперника
   const waitingConsent =
-    online && !oppGone && myAdvance === 'rematch' && !oppAdvance;
+    online && !oppGone && !!myAdvance && !oppAdvance;
 
   useEffect(() => {
     if (!res) return;
@@ -299,7 +299,7 @@ export function BattleResult() {
         {askAccept && (
           <div className="mj-rematch-ask mt-4" data-testid="mj-rematch-ask">
             <p className="text-[15px] font-bold text-stone-800">
-              {t('rem.offer')}
+              {oppAdvance === 'next' ? t('rem.offerNext') : t('rem.offer')}
             </p>
             <div className="mt-3 flex items-center justify-center gap-3">
               <button
@@ -307,7 +307,9 @@ export function BattleResult() {
                 data-testid="mj-rematch-accept"
                 onClick={() => {
                   buzz(15);
-                  restartLevel();
+                  // соглашаемся тем же предложением, что сделал соперник
+                  if (oppAdvance === 'next') nextLevel();
+                  else restartLevel();
                 }}
               >
                 {t('rem.accept')}
@@ -354,6 +356,20 @@ export function BattleResult() {
                   }}
                 >
                   {t('res.rematch')}
+                </button>
+              )}
+              {/* «Дальше» — следующий уровень (Task 44: раньше в онлайн
+                  были только «Реванш»/«Меню» — уровень никогда не рос) */}
+              {!myAdvance && (
+                <button
+                  className="mj-btn"
+                  data-testid="mj-btn-next"
+                  onClick={() => {
+                    buzz(15);
+                    nextLevel();
+                  }}
+                >
+                  {t('res.next')}
                 </button>
               )}
               <button className="mj-btn mj-btn-ghost" onClick={exitRoom}>
