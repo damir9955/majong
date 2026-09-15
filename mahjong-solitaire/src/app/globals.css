@@ -466,7 +466,11 @@ body[data-mj-theme='mint'] {
 }
 
 /* логотип на сплеше — фото-костяшка от края до края (Task 25);
-   position:relative — внутри .mj-art (фотогрань) заливает её целиком */
+   position:relative — внутри .mj-art (фотогрань) заливает её целиком.
+   Task 40: ВОЗВРАЩЁН «отражение» — полоса света проезжает по
+   полированной кости (как бликует настоящая костяка под лампой):
+   статичный диагональный глянец + анимированный отсвет, у каждой
+   кости — своя задержка (веер вспыхивает по очереди) */
 .mj-logo-tile {
   position: relative;
   overflow: hidden;
@@ -477,8 +481,66 @@ body[data-mj-theme='mint'] {
   border-radius: 10px;
   box-shadow:
     inset 0 0 0 1px rgba(56, 45, 26, 0.18),
+    inset 0 2px 3px rgba(255, 255, 255, 0.30),
     0 4px 8px rgba(0, 0, 0, 0.26),
     0 8px 16px rgba(0, 0, 0, 0.22);
+}
+/* статичный глянец полированной кости (поверх фото) */
+.mj-logo-tile::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    transparent 34%,
+    rgba(255, 255, 255, 0.14) 47%,
+    rgba(255, 255, 255, 0.04) 56%,
+    transparent 70%
+  );
+}
+/* проезжающий отсвет — «отражение» (z-index: поверх фото) */
+.mj-logo-tile::before {
+  content: '';
+  position: absolute;
+  top: -12%;
+  left: 0;
+  width: 46%;
+  height: 124%;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.38) 50%,
+    transparent 100%
+  );
+  transform: translateX(-160%) skewX(-14deg);
+  animation: mj-logo-sheen 5.2s cubic-bezier(0.45, 0, 0.25, 1) infinite;
+  will-change: transform;
+}
+/* веер: кости вспыхивают по очереди */
+.mj-logo-tile:nth-child(2)::before {
+  animation-delay: 0.4s;
+}
+.mj-logo-tile:nth-child(3)::before {
+  animation-delay: 0.8s;
+}
+@keyframes mj-logo-sheen {
+  0%, 58% {
+    transform: translateX(-160%) skewX(-14deg);
+  }
+  88%, 100% {
+    transform: translateX(330%) skewX(-14deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mj-logo-tile::before {
+    animation: none;
+    opacity: 0;
+  }
 }
 @media (min-width: 640px) {
   .mj-logo-tile {
@@ -613,39 +675,68 @@ body[data-mj-theme='mint'] {
   justify-self: end;
 }
 
-/* компактный круглый бейдж уровня (Task 37): просто номер —
-   ровесник кнопке «Домой», не широкая капсула */
+/* бейдж уровня (Task 39): вертикальная капсула с ПОДПИСЬЮ
+   «УРОВЕНЬ» — понятно, что число это уровень, а не просто цифра;
+   костяной тёмный стиль в тон кнопке «Домой», высота ~кнопке */
 .mj-level-badge {
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-width: 40px;
-  height: 40px;
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: 15px;
-  font-weight: 900;
-  color: #ffe9b3;
+  gap: 1px;
+  min-width: 46px;
+  max-width: 74px;
+  height: 44px;
+  padding: 3px 8px 4px;
+  border-radius: 13px;
   background: linear-gradient(180deg, rgba(72, 50, 22, 0.95), rgba(38, 26, 10, 0.95));
   border: 1px solid rgba(217, 180, 100, 0.5);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.14),
     inset 0 -1px 0 rgba(0, 0, 0, 0.35),
     0 2px 6px rgba(0, 0, 0, 0.3);
+}
+.mj-level-badge-label {
+  font-size: 7.5px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  line-height: 1;
+  color: rgba(255, 233, 179, 0.8);
+  white-space: nowrap;
+}
+.mj-level-badge-n {
+  font-size: 17px;
+  font-weight: 900;
+  line-height: 1.05;
+  color: #ffe9b3;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 @media (min-width: 700px) {
   .mj-level-badge {
-    min-width: 52px;
+    min-width: 58px;
     height: 52px;
-    font-size: 19px;
+    border-radius: 15px;
+    padding: 4px 10px 5px;
+  }
+  .mj-level-badge-label {
+    font-size: 8.5px;
+  }
+  .mj-level-badge-n {
+    font-size: 21px;
   }
 }
 @media (min-width: 1100px) {
   .mj-level-badge {
-    min-width: 58px;
+    min-width: 62px;
     height: 58px;
-    font-size: 22px;
+    padding: 5px 10px 6px;
+  }
+  .mj-level-badge-label {
+    font-size: 9px;
+  }
+  .mj-level-badge-n {
+    font-size: 24px;
   }
 }
 
@@ -3049,8 +3140,9 @@ body[data-mj-theme='mint'] {
 
 /* сообщения чата: мои — справа зелёные, друга — слева светлые */
 .mj-fr-msg {
+  position: relative;
   max-width: 78%;
-  padding: 8px 12px;
+  padding: 7px 11px 15px;
   border-radius: 15px;
   border-bottom-left-radius: 5px;
   background: rgba(240, 236, 226, 0.95);
@@ -3061,6 +3153,20 @@ body[data-mj-theme='mint'] {
   line-height: 1.35;
   word-break: break-word;
 }
+.mj-fr-msg p {
+  margin: 0;
+}
+/* время — мелким в правом нижнем углу пузыря */
+.mj-fr-msg-time {
+  position: absolute;
+  right: 9px;
+  bottom: 4px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(56, 66, 59, 0.45);
+  line-height: 1;
+}
 .mj-fr-msg-me {
   border-bottom-left-radius: 15px;
   border-bottom-right-radius: 5px;
@@ -3068,13 +3174,92 @@ body[data-mj-theme='mint'] {
   border-color: rgba(46, 107, 82, 0.35);
   color: #1d4a37;
 }
+.mj-fr-msg-me .mj-fr-msg-time {
+  color: rgba(29, 74, 55, 0.5);
+}
+
+/* ---- окно чата (Task 39: «выровни нормально, кривое окно») ---- */
+/* слой: телефон — во весь экран, планшет/десктоп — аккуратная
+   карточка по центру (в samsung DeX/больших экранах не растягиваем) */
+.mj-fr-chat-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  background: rgba(4, 16, 12, 0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: mj-fade 0.3s ease;
+  padding: 0;
+}
+.mj-fr-chat-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: none;
+  border-radius: 0;
+  background: linear-gradient(180deg, #fbf7ec, #f4efe3);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+@media (min-width: 640px) {
+  .mj-fr-chat-layer {
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .mj-fr-chat-card {
+    width: 400px;
+    height: min(600px, calc(100dvh - 48px));
+    max-width: 100%;
+    border-radius: 20px;
+    border: 1px solid rgba(201, 212, 198, 0.9);
+  }
+}
+/* шапка/лента/ввод */
+.mj-fr-chat-head {
+  padding: 10px 12px 9px;
+  border-bottom: 1px solid rgba(120, 104, 66, 0.14);
+  background: rgba(255, 255, 255, 0.55);
+  padding-left: max(12px, env(safe-area-inset-left));
+  padding-right: max(12px, env(safe-area-inset-right));
+  padding-top: max(10px, env(safe-area-inset-top));
+}
+.mj-fr-chat-list {
+  padding: 10px 12px;
+  padding-left: max(12px, env(safe-area-inset-left));
+  padding-right: max(12px, env(safe-area-inset-right));
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  background:
+    radial-gradient(circle at 18% 12%, rgba(46, 107, 82, 0.05), transparent 46%),
+    radial-gradient(circle at 84% 88%, rgba(160, 90, 25, 0.04), transparent 42%);
+}
+/* строка сообщения: СВОИ прижимаются ВПРАВО, друга — ВЛЕВО */
+.mj-fr-chat-row {
+  display: flex;
+  justify-content: flex-start;
+}
+.mj-fr-chat-row-me {
+  justify-content: flex-end;
+}
+.mj-fr-chat-input {
+  padding: 9px 12px;
+  padding-bottom: max(9px, env(safe-area-inset-bottom));
+  padding-left: max(12px, env(safe-area-inset-left));
+  padding-right: max(12px, env(safe-area-inset-right));
+  border-top: 1px solid rgba(120, 104, 66, 0.14);
+  background: rgba(255, 255, 255, 0.6);
+}
 
 /* онлайн-точка аватара (.mj-online-dot уже определён выше, в разделе панели матча) */
 
 /* ============ Статистика v3 (Task 37) ============ */
 
 /* достижения: компактная сетка квадратных плиток (3 в ряд) —
-   иконка в кольце прогресса + число; тап открывает подробности */
+   иконка в кольце прогресса сверху, число ПОД кольцом (Task 39:
+   цифра больше не наезжает на круг); тап открывает подробности */
 .mj-st2-ach-tiles {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -3083,9 +3268,11 @@ body[data-mj-theme='mint'] {
 .mj-st2-ach-tile {
   position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  aspect-ratio: 1 / 1;
+  justify-content: flex-start;
+  gap: 3px;
+  padding: 8px 4px 6px;
   border-radius: 16px;
   background: rgba(255, 254, 248, 0.92);
   border: 1px solid rgba(201, 212, 198, 0.9);
@@ -3097,17 +3284,23 @@ body[data-mj-theme='mint'] {
 .mj-st2-ach-tile:active {
   transform: scale(0.93);
 }
+/* обёртка кольца: фиксированный размер, иконка строго в центре */
+.mj-st2-ach-ringwrap {
+  position: relative;
+  width: 46px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
 .mj-st2-ach-tile svg.mj-st2-ach-ring {
   position: absolute;
-  inset: 7px;
-  width: calc(100% - 14px);
-  height: calc(100% - 14px);
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 .mj-st2-ach-tile-n {
-  position: absolute;
-  bottom: 4px;
-  left: 0;
-  right: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3115,6 +3308,7 @@ body[data-mj-theme='mint'] {
   font-weight: 900;
   color: #7a877c;
   line-height: 1;
+  min-height: 12px;
 }
 /* выполнено: латунное золото */
 .mj-st2-ach-tile-done {
@@ -3227,6 +3421,11 @@ body[data-mj-theme='mint'] {
 .mj-st2-chip-l {
   color: #7c3330;
   background: #f6dcd7;
+}
+/* «всего игр» — нейтральная (Task 39) */
+.mj-st2-chip-total {
+  color: #4a5261;
+  background: #e3e8e6;
 }
 
 /* cache-bust: t37-st */

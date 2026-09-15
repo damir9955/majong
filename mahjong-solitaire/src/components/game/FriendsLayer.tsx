@@ -61,12 +61,17 @@ export function FriendsLayer() {
   const live = invites.find((i) => !dismissed.current.has(`${i.from}|${i.code}`));
   if (!live) return null;
 
-  /** согласиться: сервер возвращает комнату матча — в бой! */
+  /** согласиться: сервер возвращает комнату матча — в бой!
+   *  свой уровень едет с собой: матч — от меньшего (Task 39) */
   const accept = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      const res = await apiFriendInviteReply(live.from, true);
+      const res = await apiFriendInviteReply(
+        live.from,
+        true,
+        useGame.getState().level,
+      );
       if (res) {
         saveCreds({
           code: res.view.code,

@@ -216,6 +216,7 @@ const RU: Record<string, string> = {
   'hud.undoLeft': 'Вернуть последнюю плитку из лотка (осталось {n})',
   'hud.shuffle': 'Перемешать',
   'hud.hint': 'Подсказка',
+  'hud.levelShort': 'УРОВЕНЬ',
   'vs.you': 'Вы',
   'vs.me': 'Я',
 
@@ -358,10 +359,18 @@ const RU: Record<string, string> = {
   'ach.friends.desc': 'Играй с друзьями по сети: добавляй по ID или прямо из матча — встречи считаются.',
   'ach.league': 'Покоритель лиг',
   'ach.league.desc': 'Поднимайся по лигам от Бронзы до Легенды: трофеи за победы двигают тебя вверх.',
+  'ach.games': 'Марафонец',
+  'ach.games.desc': 'Играй партии «Классики» — каждая зачисляется, даже неудачная: главное не останавливаться.',
+  'ach.online': 'Сетевой боец',
+  'ach.online.desc': 'Побеждай в сетевых матчах с живыми соперниками — по коду, с другом или быстрым матчем.',
+  'ach.points': 'Коллекционер трофеев',
+  'ach.points.desc': 'Набирай трофеи за победы — лучший результат за всё время считается сюда.',
+  'st.totalGames': 'Всего игр',
 
   // друзья (Task 37)
   'fr.title': 'Друзья',
   'fr.myId': 'Мой ID — нажми, чтобы скопировать',
+  'fr.idCopied': 'ID скопирован',
   'fr.codePlaceholder': 'ID друга',
   'fr.reqs': 'Заявки',
   'fr.list': 'Мои друзья',
@@ -572,6 +581,7 @@ const EN: Record<string, string> = {
   'hud.undoLeft': 'Return the last tile to the board ({n} left)',
   'hud.shuffle': 'Shuffle',
   'hud.hint': 'Hint',
+  'hud.levelShort': 'LEVEL',
   'vs.you': 'You',
   'vs.me': 'Me',
 
@@ -707,10 +717,18 @@ const EN: Record<string, string> = {
   'ach.friends.desc': 'Play online with friends: add them by ID or right after a match — every game counts.',
   'ach.league': 'League Hero',
   'ach.league.desc': 'Climb the leagues from Bronze to Legend: trophies for wins push you up.',
+  'ach.games': 'Marathoner',
+  'ach.games.desc': 'Play Classic games — every one counts, even the failed ones: just keep going.',
+  'ach.online': 'Online Fighter',
+  'ach.online.desc': 'Win online matches against live players — by code, with a friend or quick match.',
+  'ach.points': 'Trophy Collector',
+  'ach.points.desc': 'Earn trophies for wins — your all-time best score counts here.',
+  'st.totalGames': 'Total games',
 
   // friends (Task 37)
   'fr.title': 'Friends',
   'fr.myId': 'My ID — tap to copy',
+  'fr.idCopied': 'ID copied',
   'fr.codePlaceholder': "Friend's ID",
   'fr.reqs': 'Requests',
   'fr.list': 'My friends',

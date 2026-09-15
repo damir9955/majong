@@ -11,6 +11,7 @@ import { create } from 'zustand';
 import {
   apiFriendChat,
   apiFriendRead,
+  getMyUid,
   subscribeFriendEvent,
   subscribeFriends,
 } from './roomApi';
@@ -70,17 +71,37 @@ export const useFriends = create<FriendsStore>((set, get) => ({
       unread: st.unread ?? {},
     }),
 
-  setChat: (withUid, msgs) =>
-    set((s) => ({ chats: { ...s.chats, [withUid]: msgs } })),
+  setChat: (withUid, rawMsgs) =>
+    set((s) => ({
+      chats: {
+        ...s.chats,
+        // нормализуем автора (Task 39): история с сервера хранит
+        // uid — свои сообщения помечаем 'me', иначе ВСЯ история
+        // (включая мою) рисовалась слева, как сообщения друга
+        [withUid]: (rawMsgs ?? []).map((m) => ({
+          ...m,
+          from: m.from === 'me' || m.from === getMyUid() ? 'me' : m.from,
+        })),
+      },
+    })),
 
   appendMsg: (withUid, msg) =>
     set((s) => {
       const cur = s.chats[withUid] ?? [];
-      // дедуп: серверная история + живое событие могли дублироваться
-      if (cur.some((m) => m.at === msg.at && m.from === msg.from)) {
-        return {};
-      }
-      return { chats: { ...s.chats, [withUid]: [...cur, msg] } };
+      // дедуп по времени И автору (свой/чужой — после нормализации
+      // «me», живое событие и история совпадают)
+      const mine = msg.from === 'me' || msg.from === getMyUid();
+      const dup = cur.some((m) => {
+        const mMine = m.from === 'me' || m.from === getMyUid();
+        return m.at === msg.at && mMine === mine;
+      });
+      if (dup) return {};
+      return {
+        chats: {
+          ...s.chats,
+          [withUid]: [...cur, { ...msg, from: mine ? 'me' : msg.from }],
+        },
+      };
     }),
 
   clearUnread: (uid) => {

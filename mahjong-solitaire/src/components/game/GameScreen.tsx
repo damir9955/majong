@@ -237,7 +237,11 @@ function WaitingPlayers({ hidden }: { hidden: boolean }) {
     setJoining(roomCode);
     try {
       const nm = getSavedName().trim() || 'Игрок';
-      const { playerId, view } = await apiJoinRoom(roomCode, nm);
+      const { playerId, view } = await apiJoinRoom(
+        roomCode,
+        nm,
+        useGame.getState().level,
+      );
       saveCreds({
         code: roomCode,
         playerId,
@@ -999,14 +1003,22 @@ function TopBar({ onHome }: { onHome: () => void }) {
           <Tray />
         </div>
 
-        {/* правая колонка: компактный бейдж уровня — просто номер */}
+        {/* правая колонка: бейдж уровня — с ПОДПИСЬЮ «УРОВЕНЬ»
+            (Фидбек Task 39: «сделай понятным, что это не просто
+            цифра») — вертикальная капсула: сверху мелкая подпись,
+            снизу крупный номер, костяной стиль как у «Домой» */}
         <span
-          className="mj-level-badge shrink-0 tabular-nums"
+          className="mj-level-badge shrink-0"
           data-testid="mj-level-badge"
           title={t('home.level', { n: session.level })}
           aria-label={t('home.level', { n: session.level })}
         >
-          {session.level}
+          <span className="mj-level-badge-label">
+            {t('hud.levelShort')}
+          </span>
+          <b className="mj-level-badge-n tabular-nums">
+            {session.level}
+          </b>
         </span>
       </div>
     </header>
@@ -1274,6 +1286,25 @@ export function GameScreen() {
   useEffect(() => {
     document.body.dataset.mjTheme = theme;
   }, [theme]);
+
+  // ПОРТРЕТ ВСЕГДА (Фидбек Task 39): форс-портрет в установленной
+  // PWA/браузере — экран не вертится на бок при наклоне телефона.
+  // В TWA (Google Play) портрет задаёт манифест; здесь — JS-замок
+  // для веба (работает в fullscreen/standalone; в обычной вкладке
+  // браузер может не разрешить — тогда просто не мешаем)
+  useEffect(() => {
+    try {
+      const so = screen.orientation as
+        | (ScreenOrientation & { lock?: (o: string) => Promise<void> })
+        | undefined;
+      so?.lock?.('portrait').catch(() => {
+        /* браузер не разрешил (нужен fullscreen) — не страшно:
+           манифест и CSS-раскладка держат портрет */
+      });
+    } catch {
+      // API нет — не мешаем
+    }
+  }, []);
 
   // ДРУЗЬЯ (Task 37): подключить стор к серверу один раз — заявки,
   // переписка и приглашения приходят на любом экране

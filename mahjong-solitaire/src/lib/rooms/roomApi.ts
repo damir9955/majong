@@ -680,13 +680,20 @@ export async function apiListOpenRooms(): Promise<OpenRoomInfo[]> {
   return Array.isArray(data.rooms) ? (data.rooms as OpenRoomInfo[]) : [];
 }
 
-/** войти в комнату по коду (друг) */
+/** войти в комнату по коду (друг). level — мой текущий уровень:
+ *  сервер стартует матч от МЕНЬШЕГО из двух (Task 39) */
 export async function apiJoinRoom(
   code: string,
   name: string,
+  level?: number,
 ): Promise<{ playerId: string; view: RoomView }> {
   try {
-    const data = await wsClient.request({ t: 'join', code, name });
+    const data = await wsClient.request({
+      t: 'join',
+      code,
+      name,
+      level: level != null && Number.isFinite(level) ? Math.max(1, Math.floor(level)) : undefined,
+    });
     const playerId = typeof data.playerId === 'string' ? data.playerId : '';
     if (playerId === '' || data.t !== 'room') {
       throw new RoomError('NETWORK', 'Некорректный ответ сервера');
@@ -696,7 +703,12 @@ export async function apiJoinRoom(
     // свежая комната может «проявляться» на другом изоляте — ещё раз
     if (e instanceof RoomError && e.code === 'ROOM_NOT_FOUND') {
       await new Promise((r) => setTimeout(r, 600));
-      const data = await wsClient.request({ t: 'join', code, name });
+      const data = await wsClient.request({
+        t: 'join',
+        code,
+        name,
+        level: level != null && Number.isFinite(level) ? Math.max(1, Math.floor(level)) : undefined,
+      });
       const playerId = typeof data.playerId === 'string' ? data.playerId : '';
       if (playerId === '' || data.t !== 'room') {
         throw new RoomError('NETWORK', 'Некорректный ответ сервера');
@@ -929,15 +941,18 @@ export async function apiFriendInvite(
   return { playerId, view: toView(data) };
 }
 
-/** ответ на приглашение в битву. Согласие возвращает комнату матча */
+/** ответ на приглашение в битву. Согласие возвращает комнату матча.
+ *  level — мой уровень: матч стартует от меньшего из двух (Task 39) */
 export async function apiFriendInviteReply(
   fromUid: string,
   accept: boolean,
+  level?: number,
 ): Promise<{ playerId: string; view: RoomView } | null> {
   const data = await wsClient.request({
     t: 'f_invite_reply',
     from: fromUid,
     accept,
+    level: level != null && Number.isFinite(level) ? Math.max(1, Math.floor(level)) : undefined,
   });
   if (data.t === 'room' && typeof data.playerId === 'string') {
     return { playerId: data.playerId, view: toView(data) };

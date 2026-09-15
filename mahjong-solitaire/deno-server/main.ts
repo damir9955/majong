@@ -1,5 +1,5 @@
 /**
- * МАДЖОНГ · мультиплеер-сервер v2 (Deno Deploy: WebSocket + Deno KV).
+ * МАДЖОНГ · мультиплеер-сервер v2 (Deno Deploy: WebSocket + KV/SQL).
  *
  * ЗАЧЕМ v2: прошлая версия хранила комнаты только в KV и падала
  * в двух местах: (1) приветствие с устаревшими кредами получало
@@ -9,6 +9,17 @@
  * вход по коду падал с «не найдено». Теперь: join с ретраями,
  * hello БЕЗ страшных ошибок, счёт серии побед (wins), гигиена
  * очереди матчмейкинга.
+ *
+ * ХРАНИЛИЩЕ (Task 39): Deno KV на Deno Deploy ОТКЛЮЧЁН (сентябрь
+ * 2025) — Deno.openKv() падает, сервер уходил в режим «память»,
+ * и каждый изолят жил со своей копией состояния: друзья и переписка
+ * исчезали через минуты, комнаты «вылетали» на ровном месте.
+ * Теперь первый приоритет — SQL-хранилище (Postgres через
+ * DATABASE_URL, напр. бесплатный Neon): ВСЕ изоляты видят одно
+ * состояние, друзья/чаты/комнаты переживают любые рестарты.
+ * Интерфейс тот же Kv (get/set/delete/list/atomic-CAS/watch),
+ * watch для SQL — поллинг 1.2 c (пуши вьюх оппоненту ≤ 1.2 c).
+ * Фолбэки: MJ_KV=memory (тесты), Deno.openKv() если вдруг жив.
  *
  * АРХИТЕКТУРА (несколько изолятов Deno Deploy):
  *  - состояние комнат и тикетов — ТОЛЬКО в KV (ключи ['room',code],
@@ -262,7 +273,7 @@ interface Kv {
   watch(keys: KvKey[]): ReadableStream<KvEntry<unknown>[]>;
 }
 
-let kvMode: 'deno' | 'memory' = 'deno';
+let kvMode: 'deno' | 'memory' | 'sql' = 'deno';
 
 /** KV поверх Map — аварийный режим (нет базы у приложения) и локальные
  *  тесты. Семантики те же: versionstamp монотонный, CAS честный. */
@@ -401,12 +412,272 @@ class MemoryKv implements Kv {
   }
 }
 
+/** SQL-хранилище поверх Postgres (Task 39): постоянство для
+ *  Deno Deploy без Deno KV. Один интерфейс Kv — остальной код
+ *  сервера не меняется. Ключи — текст k = parts(encodeURIComponent)
+ *  через '/'; versionstamp — монотонная последовательность
+ *  mj_kv_vs_seq; CAS — SELECT ... FOR UPDATE в транзакции;
+ *  watch — поллинг 1.2 c (потребитель дедупит по versionstamp). */
+const SQL_POLL_MS = 1200;
+
+type SqlTagged = {
+  // deno-lint-ignore no-explicit-any
+  <T = Record<string, unknown>>(
+    strings: TemplateStringsArray,
+    ...vals: unknown[]
+  ): Promise<T[]>;
+  begin<T>(fn: (tx: SqlTagged) => Promise<T>): Promise<T>;
+  json(value: unknown): unknown;
+};
+
+interface SqlRow {
+  k: string;
+  v: unknown;
+  vs: string | number;
+}
+
+class SqlKv implements Kv {
+  #sql: SqlTagged;
+  ready = false;
+
+  constructor(sql: SqlTagged) {
+    this.#sql = sql;
+  }
+
+  /** создать схему/таблицу (идемпотентно; схема mj — на хостах
+   *  без public-схемы вроде filess.io) */
+  async init(): Promise<void> {
+    await this.#sql`CREATE SCHEMA IF NOT EXISTS mj`;
+    await this.#sql`
+      CREATE TABLE IF NOT EXISTS mj.mj_kv (
+        k text PRIMARY KEY,
+        v jsonb NOT NULL,
+        vs bigint NOT NULL DEFAULT 0
+      )`;
+    await this.#sql`
+      CREATE SEQUENCE IF NOT EXISTS mj.mj_kv_vs_seq AS bigint START 1000`;
+    await this.#sql`CREATE INDEX IF NOT EXISTS mj_kv_k_idx ON mj.mj_kv (k)`;
+    this.ready = true;
+  }
+
+  #k(key: KvKey): string {
+    return key.map((p) => encodeURIComponent(String(p))).join('/');
+  }
+
+  async get<T>(key: KvKey): Promise<KvEntry<T> | null> {
+    const rows = await this.#sql<SqlRow & { vs: string | number }>`
+      SELECT k, v, vs FROM mj.mj_kv WHERE k = ${this.#k(key)}`;
+    const r = rows[0];
+    if (!r) return null;
+    return { key, value: r.v as T, versionstamp: String(r.vs) };
+  }
+
+  async set(key: KvKey, value: unknown): Promise<KvCommitResult> {
+    const k = this.#k(key);
+    await this.#sql`
+      INSERT INTO mj.mj_kv (k, v, vs)
+      VALUES (${k}, ${this.#sql.json(value)}::jsonb, nextval('mj.mj_kv_vs_seq'))
+      ON CONFLICT (k) DO UPDATE
+        SET v = EXCLUDED.v, vs = EXCLUDED.vs`;
+    return { ok: true };
+  }
+
+  async delete(key: KvKey): Promise<KvCommitResult> {
+    await this.#sql`DELETE FROM mj.mj_kv WHERE k = ${this.#k(key)}`;
+    return { ok: true };
+  }
+
+  async *list<T>(
+    selector: KvListSelector,
+    opts?: { limit?: number },
+  ): AsyncIterable<KvEntry<T>> {
+    const prefix = selector.prefix
+      .map((p) => encodeURIComponent(String(p)))
+      .join('/');
+    const lim = opts?.limit;
+    const rows = lim != null
+      ? await this.#sql<{ k: string; v: T; vs: string | number }>`
+          SELECT k, v, vs FROM mj.mj_kv
+          WHERE starts_with(k, ${prefix})
+          ORDER BY k LIMIT ${lim}`
+      : await this.#sql<{ k: string; v: T; vs: string | number }>`
+          SELECT k, v, vs FROM mj.mj_kv
+          WHERE starts_with(k, ${prefix})
+          ORDER BY k`;
+    for (const r of rows) {
+      const key = r.k.split('/').map((p) => decodeURIComponent(p));
+      yield { key, value: r.v, versionstamp: String(r.vs) };
+    }
+  }
+
+  atomic(): KvAtomic {
+    interface Op {
+      kind: 'check' | 'set' | 'delete';
+      entry?: KvEntry<unknown>;
+      key?: KvKey;
+      value?: unknown;
+    }
+    const ops: Op[] = [];
+    const self = this;
+    return {
+      check(entry: KvEntry<unknown>) {
+        ops.push({ kind: 'check', entry });
+        return this;
+      },
+      set(key: KvKey, value: unknown) {
+        ops.push({ kind: 'set', key, value });
+        return this;
+      },
+      delete(key: KvKey) {
+        ops.push({ kind: 'delete', key });
+        return this;
+      },
+      async commit(): Promise<KvCommitResult> {
+        if (ops.length === 0) return { ok: true };
+        try {
+          await self.#sql.begin(async (tx) => {
+            // строгие вставки: check с «ключа нет» + set того же ключа
+            // — обычный INSERT (конфликт = честный проигрыш CAS)
+            const strictInsert = new Set<string>();
+            for (const op of ops) {
+              if (op.kind !== 'check' || !op.entry || !op.entry.key) continue;
+              const k = self.#k(op.entry.key);
+              const want = op.entry.versionstamp ?? null;
+              const rows = await tx<{ vs: string | number | null }>`
+                SELECT vs FROM mj.mj_kv WHERE k = ${k} FOR UPDATE`;
+              const cur = rows[0] ? String(rows[0].vs) : null;
+              if (cur !== (want === null ? null : String(want))) {
+                throw new Error('kv-cas-mismatch');
+              }
+              if (cur === null) strictInsert.add(k);
+            }
+            for (const op of ops) {
+              if (op.kind === 'set' && op.key) {
+                const k = self.#k(op.key);
+                if (strictInsert.has(k)) {
+                  await tx`
+                    INSERT INTO mj.mj_kv (k, v, vs)
+                    VALUES (${k}, ${self.#sql.json(op.value)}::jsonb, nextval('mj.mj_kv_vs_seq'))`;
+                } else {
+                  await tx`
+                    INSERT INTO mj.mj_kv (k, v, vs)
+                    VALUES (${k}, ${self.#sql.json(op.value)}::jsonb, nextval('mj.mj_kv_vs_seq'))
+                    ON CONFLICT (k) DO UPDATE
+                      SET v = EXCLUDED.v, vs = EXCLUDED.vs`;
+                }
+              } else if (op.kind === 'delete' && op.key) {
+                await tx`DELETE FROM mj.mj_kv WHERE k = ${self.#k(op.key)}`;
+              }
+            }
+          });
+          return { ok: true };
+        } catch (_e) {
+          return { ok: false };
+        }
+      },
+    };
+  }
+
+  watch(keys: KvKey[]): ReadableStream<KvEntry<unknown>[]> {
+    const kk = keys.map((k) => this.#k(k));
+    let timer: ReturnType<typeof setInterval> | null = null;
+    let closed = false;
+    return new ReadableStream<KvEntry<unknown>[]>({
+      start: (ctrl) => {
+        const poll = async () => {
+          if (closed) return;
+          try {
+            const out: KvEntry<unknown>[] = [];
+            for (let i = 0; i < kk.length; i++) {
+              const rows = await this.#sql<SqlRow>`
+                SELECT k, v, vs FROM mj.mj_kv WHERE k = ${kk[i]}`;
+              const r = rows[0];
+              out.push(
+                r
+                  ? {
+                      key: keys[i],
+                      value: r.v,
+                      versionstamp: String(r.vs),
+                    }
+                  : {
+                      key: keys[i],
+                      value: null,
+                      versionstamp: '00000000000000000000',
+                    },
+              );
+            }
+            ctrl.enqueue(out);
+          } catch {
+            // SQL моргнул — следующий тик
+          }
+        };
+        void poll();
+        timer = setInterval(() => void poll(), SQL_POLL_MS);
+      },
+      cancel: () => {
+        closed = true;
+        if (timer) clearInterval(timer);
+      },
+    });
+  }
+}
+
 /** открыть KV, не уронив сервер: без базы работаем в памяти */
 async function openKvSafe(): Promise<Kv> {
   if (Deno.env.get('MJ_KV') === 'memory') {
     kvMode = 'memory';
     console.warn('[kv] MJ_KV=memory — режим памяти (один изолят, для отладки)');
     return new MemoryKv();
+  }
+  // 1) SQL-хранилище (Task 39): DATABASE_URL — постоянство и общее
+  //    состояние всех изолятов (Deno KV на Deploy отключён с 2025)
+  const dbUrl = Deno.env.get('DATABASE_URL')?.trim();
+  if (dbUrl) {
+    // Подключение к SQL с ретраями (Task 41): единая ошибка на
+    // старте НЕ должна ронять сервер в память навсегда — база может
+    // моргнуть TCP-рейтлимитом/рестартом; пробуем 5 раз с паузами
+    const SQL_BOOT_ATTEMPTS = 5;
+    for (let attempt = 1; attempt <= SQL_BOOT_ATTEMPTS; attempt++) {
+      try {
+        const { default: postgres } = await import('npm:postgres@3.4.5');
+        let url = dbUrl;
+        // TLS: добавляем sslmode=require только хостам, которые его
+        // поддерживают (Neon/Supabase/Aiven/облака). filess.io и
+        // «голые» хосты оставляем как есть — иначе рукопожатие падает
+        if (
+          !/[?&]sslmode=/.test(url) &&
+          !/localhost|127\.0\.0\.1/.test(url) &&
+          /neon\.tech|supabase|aiven|amazonaws|\.aws\.|azure|render\.com|railway|fly\.io|koyeb|alwaysdata|cr\.dev|cockroach/i.test(url)
+        ) {
+          url += (url.includes('?') ? '&' : '?') + 'sslmode=require';
+        }
+        const sql = postgres(url, {
+          max: 4,
+          idle_timeout: 20,
+          connect_timeout: 8,
+          // подготовленные выражения мешают pg_bouncer-пулам (Neon pooling)
+          prepare: false,
+        }) as unknown as SqlTagged;
+        const sqlKv = new SqlKv(sql);
+        await sqlKv.init();
+        kvMode = 'sql';
+        console.log(
+          `[kv] SQL-хранилище подключено (Postgres, попытка ${attempt}) — друзья, чаты и комнаты постоянны`,
+        );
+        return sqlKv;
+      } catch (err) {
+        const msg = err instanceof Error ? (err.message || String(err)) : String(err);
+        if (attempt < SQL_BOOT_ATTEMPTS) {
+          console.warn(
+            `[kv] SQL попытка ${attempt}/${SQL_BOOT_ATTEMPTS} не вышла (${msg.slice(0, 120)}) — ещё раз через 3 с`,
+          );
+          await new Promise((r) => setTimeout(r, 3000));
+        } else {
+          console.warn(`[kv] SQL не подключился за ${SQL_BOOT_ATTEMPTS} попыток: ${msg.slice(0, 200)}`);
+        }
+      }
+    }
+    // падаем дальше — попробуем Deno KV и память
   }
   try {
     const real = await Deno.openKv();
@@ -425,6 +696,17 @@ async function openKvSafe(): Promise<Kv> {
       '[kv] Deno.openKv() не смог открыться: ' +
         (err instanceof Error ? err.message : String(err)),
     );
+    if (!dbUrl) {
+      console.warn(
+        '[kv] НЕТ DATABASE_URL — постоянное хранилище недоступно!',
+      );
+      console.warn(
+        '[kv] Друзья/чаты/комнаты будут жить только в памяти одного изолята.',
+      );
+      console.warn(
+        '[kv] Задай DATABASE_URL (бесплатный Neon: neon.tech → Create project → Connection string) в переменных окружения.',
+      );
+    }
     console.warn(
       '[kv] Работаем в РЕЖИМЕ ПАМЯТИ — комнаты сбросятся при рестарте изолята.',
     );
@@ -783,7 +1065,10 @@ function finishRoom(
 }
 
 /** свипер: досматривает авт-исходы комнат с локальными сокетами.
- *  Пушим локально ТОЛЬКО если watch недоступен (фолбэк). */
+ *  Пушим локально ТОЛЬКО если watch недоступен (фолбэк).
+ *  Task 39: чистка тикетов — только когда на изоляте есть живые
+ *  сокеты (иначе SQL-база без дела не будится — Neon не тратит
+ *  compute-часы на пустых изолятах). */
 async function sweep(): Promise<void> {
   const t = now();
   for (const code of [...roomWatches.keys()]) {
@@ -797,18 +1082,23 @@ async function sweep(): Promise<void> {
       pushLocal(code, res.room);
     }
   }
-  // тикеты: мёртвые — вон
-  try {
-    for await (const e of kv.list<TicketState>({ prefix: ['mm'] })) {
-      const tk = e.value;
-      if (tk && t - tk.lastSeen > TICKET_TTL_MS) await kv.delete(e.key);
+  // тикеты: мёртвые — вон (только при живых сокетах — см. комментарий)
+  if (sockets.size > 0) {
+    try {
+      for await (const e of kv.list<TicketState>({ prefix: ['mm'] })) {
+        const tk = e.value;
+        if (tk && t - tk.lastSeen > TICKET_TTL_MS) await kv.delete(e.key);
+      }
+    } catch {
+      // KV моргнул — в следующий тик
     }
-  } catch {
-    // KV моргнул — в следующий тик
   }
 }
 
-/** janitor: протухшие комнаты ВСЕ (даже без локальных сокетов) */
+/** janitor: протухшие комнаты ВСЕ (даже без локальных сокетов).
+ *  Task 39: с SQL-базой ходим только при живых сокетах (экономия
+ *  compute-часов Neon) + редкий фоновый заход раз в 30 минут —
+ *  чтобы совсем заброшенные комнаты всё же убирались. */
 async function janitor(): Promise<void> {
   const t = now();
   try {
@@ -1307,15 +1597,18 @@ async function tryMatchAll(): Promise<void> {
 
 async function pairTickets(a: TicketState, b: TicketState): Promise<boolean> {
   const code = newCode();
+  // УРОВЕНЬ МАТЧА (Фидбек Task 39): стартуем от МЕНЬШЕГО уровня
+  // игроков — слабому не дают боев не по зубам, сильному не скучно
+  const level = clamp(Math.min(a.level, b.level), 1, 999);
   const room: RoomState = {
     code,
-    level: clamp(a.level, 1, 999),
+    level,
     seed: newSeed(),
     status: 'playing',
     hostId: rndId(),
     visibility: 'closed',
     startedAt: now() + INTRO_BUDGET_MS,
-    timeTotalMs: timeForLevel(a.level),
+    timeTotalMs: timeForLevel(level),
     createdAt: now(),
     players: [],
     result: null,
@@ -1383,8 +1676,11 @@ async function joinFirstOpenRoom(tk: TicketState): Promise<boolean> {
   }
   if (!target) return false;
   const guestId = rndId();
+  // входящий в открытую игру — тоже от меньшего уровня (Task 39)
   const res = await mutateRoom(target.code, (r) => {
     if (r.status !== 'waiting' || r.players.length >= 2) return 'abort';
+    r.level = clamp(Math.min(r.level, tk.level), 1, 999);
+    r.timeTotalMs = timeForLevel(r.level);
     r.players.push({
       id: guestId,
       name: tk.name,
@@ -1554,6 +1850,12 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
         return;
       }
       const name = sanitizeName(m.name);
+      // уровень входящего: комната стартует от МЕНЬШЕГО (Task 39)
+      const joinerLevel = clamp(
+        Math.floor(Number(m.level) || 0) || 999,
+        1,
+        999,
+      );
       const joinerId = rndId();
       const joiner = () => ({
         id: joinerId,
@@ -1568,6 +1870,10 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
       });
       const res = await mutateRoom(code, (r) => {
         if (r.status !== 'waiting' || r.players.length >= 2) return 'abort';
+        if (joinerLevel < r.level) {
+          r.level = joinerLevel;
+          r.timeTotalMs = timeForLevel(r.level);
+        }
         r.players.push(joiner());
         r.status = 'playing';
         r.startedAt = now() + INTRO_BUDGET_MS;
@@ -1588,6 +1894,10 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
         // редкий случай: комната «проявилась» между попытками — ещё раз
         const retry = await mutateRoom(code, (r) => {
           if (r.status !== 'waiting' || r.players.length >= 2) return 'abort';
+          if (joinerLevel < r.level) {
+            r.level = joinerLevel;
+            r.timeTotalMs = timeForLevel(r.level);
+          }
           r.players.push(joiner());
           r.status = 'playing';
           r.startedAt = now() + INTRO_BUDGET_MS;
@@ -1737,9 +2047,11 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
           // голос СОХРАНЯЕМ: второй игрок увидит предложение
           return r;
         }
-        // оба согласны — старт нового матча (счёт серии НЕ сбрасываем)
+        // оба согласны — старт нового матча (счёт серии НЕ сбрасываем).
+        // «Дальше» поднимает уровень сразу на 2 (Фидбек Task 39:
+        // не топчемся на одном, прогресс заметнее)
         r.advanceBy = {};
-        if (kind === 'next') r.level = clamp(r.level + 1, 1, 999);
+        if (kind === 'next') r.level = clamp(r.level + 2, 1, 999);
         r.seed = newSeed();
         r.result = null;
         r.lastEvent = null;
@@ -2128,6 +2440,12 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
       // СОГЛАСЕН: входим в комнату приглашавшего (как обычный join)
       await dropTicket(s);
       const code = inv.code;
+      // уровень отвечающего: комната — от МЕНЬШЕГО (Task 39)
+      const myLevel = clamp(
+        Math.floor(Number(m.level) || 0) || 999,
+        1,
+        999,
+      );
       const joinerId = rndId();
       const joiner = () => ({
         id: joinerId,
@@ -2142,6 +2460,10 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
       });
       const res = await mutateRoom(code, (r) => {
         if (r.status !== 'waiting' || r.players.length >= 2) return 'abort';
+        if (myLevel < r.level) {
+          r.level = myLevel;
+          r.timeTotalMs = timeForLevel(r.level);
+        }
         r.players.push(joiner());
         r.status = 'playing';
         r.startedAt = now() + INTRO_BUDGET_MS;
@@ -2263,9 +2585,10 @@ async function handle(req: Request): Promise<Response> {
       ok: true,
       isolate: ISOLATE,
       kv: kvMode,
+      persistent: kvMode === 'sql',
       sockets: sockets.size,
       rooms,
-      v: 2,
+      v: 3,
     });
   }
   if (url.pathname === '/') {
@@ -2273,7 +2596,7 @@ async function handle(req: Request): Promise<Response> {
       ok: true,
       multiplayer: 'deno',
       ws: `${url.protocol === 'https:' ? 'wss' : 'ws'}://${url.host}/ws`,
-      v: 2,
+      v: 3,
     });
   }
   return new Response('Not Found', { status: 404 });
@@ -2281,9 +2604,16 @@ async function handle(req: Request): Promise<Response> {
 
 /* фоновые циклы изолята */
 setInterval(() => void sweep().catch(() => {}), 1500);
-// janitor со случайным смещением — чтобы изоляты не ходили строем
+// janitor: частый заход — только при живых сокетах; редкий фоновый —
+// раз в 30 минут всем изолятам (пустые тоже чистят забытые комнаты)
 const janitorDelay = 60_000 + Math.floor(Math.random() * 240_000);
-setInterval(() => void janitor().catch(() => {}), 300_000 + janitorDelay % 60_000);
+setInterval(
+  () => {
+    if (sockets.size > 0) void janitor().catch(() => {});
+  },
+  300_000 + janitorDelay % 60_000,
+);
+setInterval(() => void janitor().catch(() => {}), 2 * 60 * 60_000);
 setTimeout(() => void janitor().catch(() => {}), janitorDelay);
 
 // hb: живость соединений (браузерные WS сами не пингуют).

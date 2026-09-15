@@ -14,7 +14,10 @@ export default function manifest(): MetadataRoute.Manifest {
     start_url: '/',
     scope: '/',
     display: 'standalone',
-    orientation: 'any',
+    // ПОРТРЕТ ВСЕГДА (Фидбек Task 39): TWA/PWA не вертится на бок
+    // при наклоне телефона — даже если системная блокировка ориентации
+    // на устройстве включена, приложение держит портрет само
+    orientation: 'portrait',
     background_color: '#0c2214',
     theme_color: '#0c2214',
     lang: 'ru',

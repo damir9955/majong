@@ -360,7 +360,11 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
     setErr('');
     try {
       saveName(nm);
-      const { playerId, view: v } = await apiJoinRoom(c, nm);
+      const { playerId, view: v } = await apiJoinRoom(
+        c,
+        nm,
+        useGame.getState().level,
+      );
       saveCreds({
         code: c,
         playerId,

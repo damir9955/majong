@@ -576,16 +576,19 @@ const isConcealed = (s: Session, id: number) =>
     !s.revealedIds.includes(id)) ||
   (s.buriedIds.includes(id) && !s.revealedIds.includes(id));
 
-/** найти перевёрнутую рубашку с той же гранью (кроме excludeId):
- *  ищем и среди АВТООТКРЫТЫХ, и среди ОТКРЫТЫХ ПОДГЛЯДОК —
- *  две одинаковые закрытые кости улетают в лоток вторым тапом */
-function findRevealedTwin(
+/** найти ПЕРЕВЁРНУТУЮ ИГРОКОМ рубашку с той же гранью (кроме
+ *  excludeId): пара из двух закрытых костей собирается только
+ *  когда ОБЕ открыты самим игроком (тап → переворот, тап → пара).
+ *  Авто-раскрытые рубашки (revealedIds) НЕ участвуют: они —
+ *  обычные открытые кости, пары с ними игра не собирает сама
+ *  (Фидбек Task 39: «сам собирает пары, особенно закрытые
+ *  даже с центра поля»). */
+function findPeekTwin(
   s: Session,
   matchKey: string,
   excludeId: number | null,
 ): number | null {
-  const candidates = [...s.revealedIds, ...s.peekIds];
-  for (const id of candidates) {
+  for (const id of s.peekIds) {
     if (id === excludeId) continue;
     const t = byId(s, id);
     if (!t || t.removed) continue;
@@ -1397,8 +1400,33 @@ export const useGame = create<GameState>()(
         const matchKey = getTileDef(tile.defId).matchKey;
         const concealed = isConcealed(s, id);
 
-        // 1) совпадение с жителем лотка — пара (для закрытой плитки
-        //    это «счастливое открытие»: рубашка переворачивается в полёте)
+        // ЗАКРЫТАЯ кость (Фидбек Task 39: «сам собирает пары»):
+        // НИКОГДА не улетает в лоток «счастливым открытием» и не
+        // составляет пар с авто-раскрытыми рубашками. Единственный
+        // путь в лоток — вторая ТАКАЯ ЖЕ закрытая кость, которую
+        // игрок открыл сам: тап → переворот, тап → обе летят парой
+        if (concealed) {
+          const twin = findPeekTwin(s, matchKey, id);
+          if (twin !== null) {
+            removePair(set, s, twin, id);
+            return;
+          }
+          // переворот-подглядка: тап по закрытой кости открывает её;
+          // тап по ДРУГОЙ кости закрывает прежнюю и открывает новую
+          playReveal();
+          set({
+            session: {
+              ...s,
+              peekIds: [id],
+              invalidId: null,
+              hintPair: null,
+            },
+          });
+          return;
+        }
+
+        // ОТКРЫТАЯ кость (обычная, авто-раскрытая рубашка или
+        // подглядка): житель лотка с той же гранью — пара
         const matchIdx = s.tray.findIndex(
           (tid) => getTileDef(byId(s, tid)!.defId).matchKey === matchKey,
         );
@@ -1407,45 +1435,8 @@ export const useGame = create<GameState>()(
           return;
         }
 
-        // 2) закрытая плитка: если среди открытых рубашек есть
-        //    точно такая же — обе сразу уходят в лоток парой
-        if (concealed) {
-          const twin = findRevealedTwin(s, matchKey, id);
-          if (twin !== null) {
-            removePair(set, s, twin, id);
-            return;
-          }
-          // Фидбек Task 38: ОДНА подглядка — как в классике.
-          // Тап по закрытой кости переворачивает её; тап по ВТОРОЙ
-          // такой же — обе мгновенно улетают в лоток парой (ветка
-          // twin выше); тап по ДРУГОЙ кости закрывает прежнюю
-          // подглядку и открывает новую. Открытые держать нельзя —
-          // игрок просил: «если открыть, то закрываются потом».
-          playReveal();
-          const peekIds = [id];
-          set({
-            session: {
-              ...s,
-              peekIds,
-              invalidId: null,
-              hintPair: null,
-            },
-          });
-          return;
-        }
-
-        // 3) открытая плитка: перевёрнутая рубашка с той же гранью —
-        //    обе немедленно летят в лоток и взрываются парой
-        // (исключаем САМУ тапнутую плитку: если её уже переворачивали,
-        //  она не может стать парой сама с собой)
-        const peekTwin = findRevealedTwin(s, matchKey, id);
-        if (peekTwin !== null) {
-          removePair(set, s, peekTwin, id);
-          return;
-        }
-
-        // 4) новая плитка в лотке — подглядка гаснет: любое другое
-        //    действие закрывает перевёрнутую рубашку обратно
+        // новая плитка в лотке — подглядка гаснет: любое другое
+        // действие закрывает перевёрнутую рубашку обратно
         const tray = [...s.tray, id];
         const tiles = s.tiles.map((t) =>
           t.id === id ? { ...t, removed: true } : t,

@@ -12,7 +12,7 @@
  *    версия скачивается в фоне и применится при СЛЕДУЮЩЕМ запуске.
  */
 
-export const GAME_VERSION = 'v37';
+export const GAME_VERSION = 'v40';
 
 /** имя кеша — то же, что в public/sw.js (менять только в обоих местах) */
 export const SW_CACHE = 'mj-static';

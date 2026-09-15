@@ -94,6 +94,14 @@ function Av({
  *  уходит в бесконечный цикл перерисовки) */
 const NO_MSGS: ChatMsgView[] = [];
 
+/** время сообщения «14:05» / «вчера»-подобное — просто ЧЧ:ММ */
+function msgTime(at: number): string {
+  const d = new Date(at);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
 function ChatView({
   friend,
   onBack,
@@ -140,48 +148,69 @@ function ChatView({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="mj-friends-chat">
-      <div className="flex items-center gap-2.5 border-b border-stone-200/70 pb-2.5">
+    <div
+      className="mj-fr-chat flex h-full min-h-0 flex-col"
+      data-testid="mj-friends-chat"
+    >
+      {/* шапка: назад · аватар · имя · онлайн-статус */}
+      <div className="mj-fr-chat-head flex items-center gap-2.5">
         <button
           type="button"
-          className="mj-circle-btn mj-circle-btn-sm"
+          className="mj-circle-btn mj-circle-btn-sm shrink-0"
           onClick={onBack}
           aria-label={t('room.back')}
         >
           <ArrowLeft className="h-5 w-5" />
         </button>
-        <Av name={friend.name} online={friend.online} size={34} />
-        <b className="min-w-0 truncate text-base font-black text-stone-800">
-          {friend.name}
-        </b>
+        <Av name={friend.name} online={friend.online} size={36} />
+        <div className="min-w-0 flex-1">
+          <b className="block truncate text-[15px] font-black leading-tight text-stone-800">
+            {friend.name}
+          </b>
+          <span
+            className={`text-[11px] font-bold ${
+              friend.online ? 'text-emerald-600' : 'text-stone-400'
+            }`}
+          >
+            {friend.online ? t('fr.online') : t('fr.offline')}
+          </span>
+        </div>
       </div>
 
+      {/* лента: свои — СПРАВА зелёные, друга — СЛЕВА светлые */}
       <div
         ref={listRef}
-        className="mt-2.5 min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain py-1"
+        className="mj-fr-chat-list mt-2 min-h-0 flex-1 overflow-y-auto overscroll-contain py-1"
       >
         {msgs.length === 0 && (
           <p className="mj-st-empty mt-6">{t('fr.chatEmpty')}</p>
         )}
         {msgs.map((m, i) => {
           const mine = m.from === 'me';
+          const prev = msgs[i - 1];
+          const sameSide = prev && prev.from === m.from;
           return (
             <div
               key={`${m.at}-${i}`}
-              className={`flex ${mine ? 'justify-end' : 'justify-start'}`}
+              className={`mj-fr-chat-row ${mine ? 'mj-fr-chat-row-me' : ''} ${
+                sameSide ? '' : 'mt-2'
+              }`}
             >
               <div
                 className={`mj-fr-msg ${mine ? 'mj-fr-msg-me' : ''}`}
                 data-testid="mj-fr-msg"
+                data-mine={mine ? '1' : '0'}
               >
                 <p>{m.text}</p>
+                <span className="mj-fr-msg-time">{msgTime(m.at)}</span>
               </div>
             </div>
           );
         })}
       </div>
 
-      <div className="mt-2 flex items-center gap-2 border-t border-stone-200/70 pt-2.5">
+      {/* ввод: поле + кнопка «отправить» */}
+      <div className="mj-fr-chat-input mt-2 flex items-center gap-2">
         <input
           className="mj-input min-w-0 flex-1"
           value={text}
@@ -322,7 +351,9 @@ export function FriendsPanel({ onClose }: { onClose: () => void }) {
     buzz(10);
     try {
       await navigator.clipboard.writeText(text);
-      showToast(t('room.copied', { what: t('fr.myId') }));
+      // Task 40: короткий понятный тост (было «Мой ID — нажми,
+      // чтобы скопировать скопирован» — бессмыслица)
+      showToast(t('fr.idCopied'));
     } catch {
       showToast(t('room.copyManual', { text }));
     }
@@ -410,8 +441,8 @@ export function FriendsPanel({ onClose }: { onClose: () => void }) {
   /* ---------- чат с другом ---------- */
   if (chatWith) {
     return (
-      <div className="mj-overlay !items-stretch !justify-stretch p-0">
-        <div className="mj-card mj-fr-panel !max-w-none !rounded-none sm:!rounded-2xl sm:!max-w-sm">
+      <div className="mj-fr-chat-layer" data-testid="mj-friends-chat-layer">
+        <div className="mj-fr-chat-card">
           <ChatView friend={chatWith} onBack={() => setChatWith(null)} />
         </div>
       </div>

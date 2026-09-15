@@ -40,6 +40,7 @@ import {
   Star,
   Target,
   BarChart3,
+  Globe2,
   X,
 } from 'lucide-react';
 
@@ -68,11 +69,15 @@ interface AchDef {
   tiers: number[];
 }
 
-/** собрать достижения из живой статистики (без нового трекинга) */
+/** собрать достижения из живой статистики (без нового трекинга).
+ *  Task 39: вехи ПЕРЕБАЛАНСИРОВАНЫ (было слишком легко — «слишком
+ *  быстро набираются») и добавлены 3 новых: Марафонец (партии
+ *  классики), Сетевой боец (победы по сети), Коллекционер трофеев */
 function useAchievements(): AchDef[] {
   const t = useT();
   const classic = useGame((s) => s.stats.classic);
   const league = useGame((s) => s.league);
+  const online = useGame((s) => s.stats.online);
   const friends = useGame((s) => s.stats.friends);
   const friendsGames = Object.values(friends).reduce(
     (acc, r) => acc + r.played,
@@ -85,7 +90,7 @@ function useAchievements(): AchDef[] {
       desc: t('ach.pairs.desc'),
       icon: Star,
       value: classic.pairsMatched,
-      tiers: [1, 50, 250, 1000],
+      tiers: [25, 150, 600, 2500],
     },
     {
       id: 'levels',
@@ -93,7 +98,7 @@ function useAchievements(): AchDef[] {
       desc: t('ach.levels.desc'),
       icon: Target,
       value: classic.levelsCleared,
-      tiers: [1, 5, 25, 100],
+      tiers: [3, 15, 60, 200],
     },
     {
       id: 'wins',
@@ -101,7 +106,7 @@ function useAchievements(): AchDef[] {
       desc: t('ach.wins.desc'),
       icon: Swords,
       value: league.wins,
-      tiers: [1, 10, 50],
+      tiers: [5, 25, 100, 300],
     },
     {
       id: 'streak',
@@ -109,7 +114,7 @@ function useAchievements(): AchDef[] {
       desc: t('ach.streak.desc'),
       icon: Flame,
       value: league.bestStreak,
-      tiers: [2, 5, 10],
+      tiers: [3, 7, 15, 30],
     },
     {
       id: 'friends',
@@ -117,7 +122,7 @@ function useAchievements(): AchDef[] {
       desc: t('ach.friends.desc'),
       icon: Handshake,
       value: friendsGames,
-      tiers: [1, 5, 20],
+      tiers: [3, 15, 50, 150],
     },
     {
       id: 'league',
@@ -125,7 +130,31 @@ function useAchievements(): AchDef[] {
       desc: t('ach.league.desc'),
       icon: Crown,
       value: leagueIndexForPoints(league.pointsBest),
-      tiers: [1, 3, 5, 6],
+      tiers: [2, 4, 5, 7],
+    },
+    {
+      id: 'games',
+      label: t('ach.games'),
+      desc: t('ach.games.desc'),
+      icon: LayoutGrid,
+      value: classic.games,
+      tiers: [10, 75, 300, 1000],
+    },
+    {
+      id: 'online',
+      label: t('ach.online'),
+      desc: t('ach.online.desc'),
+      icon: Globe2,
+      value: online.wins,
+      tiers: [3, 15, 60, 200],
+    },
+    {
+      id: 'points',
+      label: t('ach.points'),
+      desc: t('ach.points.desc'),
+      icon: Medal,
+      value: league.pointsBest,
+      tiers: [100, 500, 1500, 3000],
     },
   ];
 }
@@ -152,7 +181,9 @@ function achState(def: AchDef): {
   return { doneAll, nextTier, from, progress, tier: Math.max(0, tier) };
 }
 
-/** компактная квадратная плитка достижения: иконка + мини-кольцо */
+/** компактная квадратная плитка достижения (Task 39): иконка в
+ *  КОЛЬЦЕ прогресса сверху, число — ПОД кольцом (не наезжает на
+ *  круг — фидбек «цифра налегает на кружок прогресса») */
 function AchTile({
   def,
   onOpen,
@@ -172,32 +203,34 @@ function AchTile({
       onClick={onOpen}
       aria-label={def.label}
     >
-      <svg viewBox="0 0 36 36" className="mj-st2-ach-ring">
-        <circle
-          cx="18"
-          cy="18"
-          r={r}
-          fill="none"
-          stroke="rgba(0,0,0,.09)"
-          strokeWidth="3.6"
-        />
-        <circle
-          cx="18"
-          cy="18"
-          r={r}
-          fill="none"
-          stroke={st.doneAll ? '#d99f2b' : '#1f8f7a'}
-          strokeWidth="3.6"
-          strokeLinecap="round"
-          strokeDasharray={`${(c * st.progress).toFixed(1)} ${c.toFixed(1)}`}
-          transform="rotate(-90 18 18)"
-        />
-      </svg>
-      {st.doneAll ? (
-        <Medal className="h-5 w-5" />
-      ) : (
-        <Icon className="h-5 w-5" />
-      )}
+      <span className="mj-st2-ach-ringwrap">
+        <svg viewBox="0 0 36 36" className="mj-st2-ach-ring">
+          <circle
+            cx="18"
+            cy="18"
+            r={r}
+            fill="none"
+            stroke="rgba(0,0,0,.09)"
+            strokeWidth="3.6"
+          />
+          <circle
+            cx="18"
+            cy="18"
+            r={r}
+            fill="none"
+            stroke={st.doneAll ? '#d99f2b' : '#1f8f7a'}
+            strokeWidth="3.6"
+            strokeLinecap="round"
+            strokeDasharray={`${(c * st.progress).toFixed(1)} ${c.toFixed(1)}`}
+            transform="rotate(-90 18 18)"
+          />
+        </svg>
+        {st.doneAll ? (
+          <Medal className="h-5 w-5" />
+        ) : (
+          <Icon className="h-5 w-5" />
+        )}
+      </span>
       <span className="mj-st2-ach-tile-n tabular-nums">
         {st.doneAll ? <Check className="h-3.5 w-3.5" /> : def.value}
       </span>
@@ -614,20 +647,24 @@ function FriendStatRow({ rec, t }: { rec: FriendRecord; t: ReturnType<typeof use
       <div
         className="mj-av"
         style={{
-          width: 34,
-          height: 34,
+          width: 38,
+          height: 38,
           background: `linear-gradient(160deg, hsl(${rec.hue} 52% 62%), hsl(${rec.hue} 48% 40%))`,
           borderColor: 'rgba(255,255,255,.55)',
         }}
         aria-hidden
       >
-        <span style={{ fontSize: 15 }}>{rec.name[0]?.toUpperCase() ?? '·'}</span>
+        <span style={{ fontSize: 16 }}>{rec.name[0]?.toUpperCase() ?? '·'}</span>
       </div>
       <div className="min-w-0 flex-1">
         <b className="block truncate text-sm font-black text-stone-800">
           {rec.name}
         </b>
+        {/* Task 39: подробнее — всего игр, победы, поражения */}
         <span className="mt-0.5 flex flex-wrap items-center gap-1.5">
+          <i className="mj-st2-chip mj-st2-chip-total">
+            {t('st.totalGames')}: {total}
+          </i>
           <i className="mj-st2-chip mj-st2-chip-w">
             {t('st.winsN', { n: rec.wins })}
           </i>
