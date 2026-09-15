@@ -10,16 +10,23 @@
  * hello БЕЗ страшных ошибок, счёт серии побед (wins), гигиена
  * очереди матчмейкинга.
  *
- * ХРАНИЛИЩЕ (Task 39): Deno KV на Deno Deploy ОТКЛЮЧЁН (сентябрь
- * 2025) — Deno.openKv() падает, сервер уходил в режим «память»,
- * и каждый изолят жил со своей копией состояния: друзья и переписка
- * исчезали через минуты, комнаты «вылетали» на ровном месте.
- * Теперь первый приоритет — SQL-хранилище (Postgres через
- * DATABASE_URL, напр. бесплатный Neon): ВСЕ изоляты видят одно
- * состояние, друзья/чаты/комнаты переживают любые рестарты.
- * Интерфейс тот же Kv (get/set/delete/list/atomic-CAS/watch),
- * watch для SQL — поллинг 1.2 c (пуши вьюх оппоненту ≤ 1.2 c).
- * Фолбэки: MJ_KV=memory (тесты), Deno.openKv() если вдруг жив.
+ * ХРАНИЛИЩЕ (Task 39→42): Deno KV на старом Deno Deploy был
+ * отключён (сентябрь 2025); В НОВОЙ консоли Deno Deploy KV снова
+ * доступен как managed-база (Databases → Provision Database → Deno KV,
+ * затем Deno.openKv() коннектится сам) — это ЛУЧШИЙ путь. Запасной —
+ * SQL-хранилище (Postgres через DATABASE_URL, напр. filess/Neon):
+ * ВСЕ изоляты видят одно состояние, друзья/чаты/комнаты переживают
+ * любые рестарты. Интерфейс тот же Kv (get/set/delete/list/atomic-CAS/
+ * watch), watch для SQL — поллинг 1.2 c (пуши вьюх оппоненту ≤ 1.2 c).
+ * Фолбэки: MJ_KV=memory (тесты), локальный Deno.openKv() (dev-файл).
+ *
+ * СТАРТ (Task 42): подключение хранилища НЕ блокирует запуск. Раньше
+ * топ-левел await с ретраями (до 55 c) держал Deno.serve — деплой в
+ * Playground не укладывался в окно Warm up (~5 c) и падал целиком
+ * (Warm up/Route/Register crons Failed, «Not yet deployed»). Теперь
+ * сервер слушает мгновенно, начиная с MemoryKv; постоянное хранилище
+ * поднимается фоном (ретраи с бэкоффом), при успехе содержимое памяти
+ * переносится в него и биндинг меняется на лету.
  *
  * АРХИТЕКТУРА (несколько изолятов Deno Deploy):
  *  - состояние комнат и тикетов — ТОЛЬКО в KV (ключи ['room',code],
@@ -83,8 +90,8 @@
  * серия живёт, пока в комнате одни и те же два игрока.
  *
  * ЗАПУСК: локально  deno run --unstable-kv --allow-net --allow-env main.ts
- *          на Deploy без флагов (KV там стабилен). MJ_KV=memory —
- *          аварийный режим без KV (один изолят, только для отладки).
+ *          на Deploy без флагов. MJ_KV=memory — аварийный режим без
+ *          KV (один изолят, только для отладки).
  */
 
 /* ============================== КОНСТАНТЫ ============================== */
@@ -273,12 +280,14 @@ interface Kv {
   watch(keys: KvKey[]): ReadableStream<KvEntry<unknown>[]>;
 }
 
-let kvMode: 'deno' | 'memory' | 'sql' = 'deno';
+let kvMode: 'deno' | 'memory' | 'sql' = 'memory';
+/** 'booting' — фоновое подключение постоянного хранилища ещё идёт */
+let kvBoot: 'booting' | 'ready' = 'booting';
 
 /** KV поверх Map — аварийный режим (нет базы у приложения) и локальные
  *  тесты. Семантики те же: versionstamp монотонный, CAS честный. */
 class MemoryKv implements Kv {
-  #data = new Map<string, { value: unknown; vs: string }>();
+  #data = new Map<string, { value: unknown; vs: string; key: KvKey }>();
   #vs = 0;
   #watchers = new Map<string, Set<() => void>>();
   #ks(key: KvKey): string {
@@ -304,7 +313,7 @@ class MemoryKv implements Kv {
   async set(key: KvKey, value: unknown): Promise<KvCommitResult> {
     const ks = this.#ks(key);
     const vs = this.#bump();
-    this.#data.set(ks, { value, vs });
+    this.#data.set(ks, { value, vs, key });
     await this.#fire([key]);
     return { ok: true };
   }
@@ -366,7 +375,7 @@ class MemoryKv implements Kv {
         for (const op of ops) {
           if (op.kind === 'set' && op.key) {
             const vs = self.#bump();
-            self.#data.set(self.#ks(op.key), { value: op.value, vs });
+            self.#data.set(self.#ks(op.key), { value: op.value, vs, key: op.key });
             touched.push(op.key);
           } else if (op.kind === 'delete' && op.key) {
             if (self.#data.delete(self.#ks(op.key))) touched.push(op.key);
@@ -409,6 +418,16 @@ class MemoryKv implements Kv {
         }
       },
     });
+  }
+  /** снимок для миграции на постоянное хранилище (Task 42): ключи
+   *  хранятся в исходном виде — переносим без потерь */
+  *entries(): IterableIterator<{ key: KvKey; value: unknown }> {
+    for (const { key, value } of this.#data.values()) {
+      yield { key: [...key], value };
+    }
+  }
+  size(): number {
+    return this.#data.size;
   }
 }
 
@@ -622,63 +641,64 @@ class SqlKv implements Kv {
   }
 }
 
-/** открыть KV, не уронив сервер: без базы работаем в памяти */
-async function openKvSafe(): Promise<Kv> {
-  if (Deno.env.get('MJ_KV') === 'memory') {
-    kvMode = 'memory';
-    console.warn('[kv] MJ_KV=memory — режим памяти (один изолят, для отладки)');
-    return new MemoryKv();
-  }
-  // 1) SQL-хранилище (Task 39): DATABASE_URL — постоянство и общее
-  //    состояние всех изолятов (Deno KV на Deploy отключён с 2025)
-  const dbUrl = Deno.env.get('DATABASE_URL')?.trim();
-  if (dbUrl) {
-    // Подключение к SQL с ретраями (Task 41): единая ошибка на
-    // старте НЕ должна ронять сервер в память навсегда — база может
-    // моргнуть TCP-рейтлимитом/рестартом; пробуем 5 раз с паузами
-    const SQL_BOOT_ATTEMPTS = 5;
-    for (let attempt = 1; attempt <= SQL_BOOT_ATTEMPTS; attempt++) {
-      try {
-        const { default: postgres } = await import('npm:postgres@3.4.5');
-        let url = dbUrl;
-        // TLS: добавляем sslmode=require только хостам, которые его
-        // поддерживают (Neon/Supabase/Aiven/облака). filess.io и
-        // «голые» хосты оставляем как есть — иначе рукопожатие падает
-        if (
-          !/[?&]sslmode=/.test(url) &&
-          !/localhost|127\.0\.0\.1/.test(url) &&
-          /neon\.tech|supabase|aiven|amazonaws|\.aws\.|azure|render\.com|railway|fly\.io|koyeb|alwaysdata|cr\.dev|cockroach/i.test(url)
-        ) {
-          url += (url.includes('?') ? '&' : '?') + 'sslmode=require';
-        }
-        const sql = postgres(url, {
-          max: 4,
-          idle_timeout: 20,
-          connect_timeout: 8,
-          // подготовленные выражения мешают pg_bouncer-пулам (Neon pooling)
-          prepare: false,
-        }) as unknown as SqlTagged;
-        const sqlKv = new SqlKv(sql);
-        await sqlKv.init();
-        kvMode = 'sql';
-        console.log(
-          `[kv] SQL-хранилище подключено (Postgres, попытка ${attempt}) — друзья, чаты и комнаты постоянны`,
-        );
-        return sqlKv;
-      } catch (err) {
-        const msg = err instanceof Error ? (err.message || String(err)) : String(err);
-        if (attempt < SQL_BOOT_ATTEMPTS) {
-          console.warn(
-            `[kv] SQL попытка ${attempt}/${SQL_BOOT_ATTEMPTS} не вышла (${msg.slice(0, 120)}) — ещё раз через 3 с`,
-          );
-          await new Promise((r) => setTimeout(r, 3000));
-        } else {
-          console.warn(`[kv] SQL не подключился за ${SQL_BOOT_ATTEMPTS} попыток: ${msg.slice(0, 200)}`);
-        }
-      }
+/** открыть KV БЕЗ блокировки старта (Task 42). Сервер слушает
+ * мгновенно с MemoryKv; постоянное хранилище поднимается фоном.
+ *  Приоритеты:
+ *   - на Deploy (DENO_DEPLOYMENT_ID/DENO_REGION): сначала нативный
+ *     Deno.openKv() — коннектится к KV, провиженному через Databases
+ *     (лучшая связка: быстро, бесплатно, без внешних сервисов);
+ *     затем SQL по DATABASE_URL (Env Variables / вшитая строка);
+ *   - локально: сначала SQL (DATABASE_URL / вшитая строка — как в
+ *     Task 41), затем локальный Deno.openKv() (dev-файл), затем память.
+ *  SQL-ретраи — с бэкоффом 3с→6с→12с…≤ 30с, до бесконечности:
+ *  изолят живёт, пока есть трафик. */
+const SQL_RETRY_CAP_MS = 30_000;
+
+/** Строка подключения ЗАШИТА только в download-версии файла (Task 41).
+ *  В репо-версии пуста — приоритет у DATABASE_URL из окружения. */
+const EMBEDDED_DB_URL = '';
+
+const ON_DEPLOY = Boolean(
+  Deno.env.get('DENO_DEPLOYMENT_ID') ?? Deno.env.get('DENO_REGION'),
+);
+
+const sleepBoot = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** одна попытка SQL-подключения (без ретраев) */
+async function tryOpenSql(dbUrl: string): Promise<Kv | null> {
+  try {
+    const { default: postgres } = await import('npm:postgres@3.4.5');
+    let url = dbUrl;
+    // TLS: добавляем sslmode=require только хостам, которые его
+    // поддерживают (Neon/Supabase/Aiven/облака). filess.io и
+    // «голые» хосты оставляем как есть — иначе рукопожатие падает
+    if (
+      !/[?&]sslmode=/.test(url) &&
+      !/localhost|127\.0\.0\.1/.test(url) &&
+      /neon\.tech|supabase|aiven|amazonaws|\.aws\.|azure|render\.com|railway|fly\.io|koyeb|alwaysdata|cr\.dev|cockroach/i.test(url)
+    ) {
+      url += (url.includes('?') ? '&' : '?') + 'sslmode=require';
     }
-    // падаем дальше — попробуем Deno KV и память
+    const sql = postgres(url, {
+      max: 4,
+      idle_timeout: 20,
+      connect_timeout: 8,
+      // подготовленные выражения мешают pg_bouncer-пулам (Neon pooling)
+      prepare: false,
+    }) as unknown as SqlTagged;
+    const sqlKv = new SqlKv(sql);
+    await sqlKv.init();
+    return sqlKv;
+  } catch (err) {
+    const msg = err instanceof Error ? (err.message || String(err)) : String(err);
+    console.warn(`[kv] SQL-попытка не вышла (${msg.slice(0, 120)})`);
+    return null;
   }
+}
+
+/** нативный Deno KV: на Deploy — провиженный через Databases,
+ *  локально — файловая база в каталоге запуска (dev) */
+async function tryOpenDenoKv(): Promise<Kv | null> {
   try {
     const real = await Deno.openKv();
     const wrap = real as unknown as Kv;
@@ -696,26 +716,95 @@ async function openKvSafe(): Promise<Kv> {
       '[kv] Deno.openKv() не смог открыться: ' +
         (err instanceof Error ? err.message : String(err)),
     );
-    if (!dbUrl) {
-      console.warn(
-        '[kv] НЕТ DATABASE_URL — постоянное хранилище недоступно!',
-      );
-      console.warn(
-        '[kv] Друзья/чаты/комнаты будут жить только в памяти одного изолята.',
-      );
-      console.warn(
-        '[kv] Задай DATABASE_URL (бесплатный Neon: neon.tech → Create project → Connection string) в переменных окружения.',
-      );
-    }
-    console.warn(
-      '[kv] Работаем в РЕЖИМЕ ПАМЯТИ — комнаты сбросятся при рестарте изолята.',
-    );
-    kvMode = 'memory';
-    return new MemoryKv();
+    return null;
   }
 }
 
-const kv = await openKvSafe();
+/** миграция памяти на постоянное хранилище + смена биндинга.
+ *  Двойной проход: второй ловит записи, случившиеся во время первого
+ *  (окно в миллисекунды; данные игровых комнат, не банк). */
+async function kvUpgrade(store: Kv, mode: 'deno' | 'sql'): Promise<void> {
+  const mem = kv instanceof MemoryKv ? kv : null;
+  let moved = 0;
+  for (let pass = 0; pass < 2; pass++) {
+    if (!mem || mem.size() === 0) break;
+    let passMoved = 0;
+    for (const e of mem.entries()) {
+      await store.set(e.key, e.value);
+      passMoved++;
+    }
+    moved += passMoved;
+    if (passMoved === 0) break;
+  }
+  kv = store;
+  kvMode = mode;
+  kvBoot = 'ready';
+  console.log(
+    `[kv] постоянное хранилище поднято (kv=${mode})` +
+      (moved > 0 ? ` — перенесено записей из памяти: ${moved}` : ''),
+  );
+}
+
+async function kvBackgroundInit(): Promise<void> {
+  if (Deno.env.get('MJ_KV') === 'memory') {
+    kvMode = 'memory';
+    kvBoot = 'ready';
+    console.warn('[kv] MJ_KV=memory — режим памяти (один изолят, для отладки)');
+    return;
+  }
+  const dbUrl = Deno.env.get('DATABASE_URL')?.trim() || EMBEDDED_DB_URL;
+
+  if (ON_DEPLOY) {
+    const dkv = await tryOpenDenoKv();
+    if (dkv) {
+      await kvUpgrade(dkv, 'deno');
+      return;
+    }
+    console.warn(
+      '[kv] Deno KV не провижен. Рекомендую: консоль → Databases → Provision Database → Deno KV → назначить приложению — тогда Deno.openKv() подключится сам, без внешних баз',
+    );
+  }
+
+  if (dbUrl) {
+    let delay = 3000;
+    for (let attempt = 1; ; attempt++) {
+      const store = await tryOpenSql(dbUrl);
+      if (store) {
+        console.log(
+          `[kv] SQL-хранилище подключено (Postgres, попытка ${attempt}) — друзья, чаты и комнаты постоянны`,
+        );
+        await kvUpgrade(store, 'sql');
+        return;
+      }
+      console.warn(
+        `[kv] SQL попытка ${attempt} не вышла — повтор через ${Math.round(delay / 1000)} с`,
+      );
+      await sleepBoot(delay);
+      delay = Math.min(delay * 2, SQL_RETRY_CAP_MS);
+    }
+  }
+
+  if (!ON_DEPLOY) {
+    const dkv = await tryOpenDenoKv();
+    if (dkv) {
+      await kvUpgrade(dkv, 'deno');
+      return;
+    }
+  }
+
+  kvBoot = 'ready';
+  if (!dbUrl) {
+    console.warn('[kv] НЕТ DATABASE_URL — постоянное хранилище недоступно!');
+    console.warn('[kv] Друзья/чаты/комнаты будут жить только в памяти одного изолята.');
+    console.warn(
+      '[kv] На Deno Deploy: Databases → Provision Database → Deno KV (или задай DATABASE_URL).',
+    );
+  }
+  console.warn('[kv] Работаем в РЕЖИМЕ ПАМЯТИ — комнаты сбросятся при рестарте изолята.');
+}
+
+let kv: Kv = new MemoryKv();
+void kvBackgroundInit();
 
 /* ============================ УТИЛИТЫ ============================ */
 
@@ -2585,10 +2674,11 @@ async function handle(req: Request): Promise<Response> {
       ok: true,
       isolate: ISOLATE,
       kv: kvMode,
-      persistent: kvMode === 'sql',
+      boot: kvBoot,
+      persistent: kvMode !== 'memory',
       sockets: sockets.size,
       rooms,
-      v: 3,
+      v: 4,
     });
   }
   if (url.pathname === '/') {
@@ -2596,7 +2686,7 @@ async function handle(req: Request): Promise<Response> {
       ok: true,
       multiplayer: 'deno',
       ws: `${url.protocol === 'https:' ? 'wss' : 'ws'}://${url.host}/ws`,
-      v: 3,
+      v: 4,
     });
   }
   return new Response('Not Found', { status: 404 });
@@ -2626,5 +2716,5 @@ setInterval(() => {
 
 Deno.serve({ port: PORT }, handle);
 console.log(
-  `[mj-server] изолят ${ISOLATE} слушает :${PORT} · kv=${kvMode} · v2`,
+  `[mj-server] изолят ${ISOLATE} слушает :${PORT} мгновенно · kv=${kvMode}(фон: подключается) · v3`,
 );

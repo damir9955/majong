@@ -1401,14 +1401,26 @@ export const useGame = create<GameState>()(
         const concealed = isConcealed(s, id);
 
         // ЗАКРЫТАЯ кость (Фидбек Task 39: «сам собирает пары»):
-        // НИКОГДА не улетает в лоток «счастливым открытием» и не
-        // составляет пар с авто-раскрытыми рубашками. Единственный
-        // путь в лоток — вторая ТАКАЯ ЖЕ закрытая кость, которую
-        // игрок открыл сам: тап → переворот, тап → обе летят парой
+        // не улетает в лоток «счастливым открытием» вслепую и не
+        // составляет пар с авто-раскрытыми рубашками. В лоток ведут
+        // два честных пути:
+        //  1) тап → переворот, тап по второй такой же закрытой —
+        //     обе летят парой (классика Task 38);
+        //  2) её пара УЖЕ ждёт в лотке: тогда один тап — кость
+        //     разворачивается на месте (3D-флип) и летит к соседу
+        //     (Task 43: «нажимаю на закрытую — не улетает, приходится
+        //     открывать и жать ещё раз»)
         if (concealed) {
           const twin = findPeekTwin(s, matchKey, id);
           if (twin !== null) {
             removePair(set, s, twin, id);
+            return;
+          }
+          const trayTwinIdx = s.tray.findIndex(
+            (tid) => getTileDef(byId(s, tid)!.defId).matchKey === matchKey,
+          );
+          if (trayTwinIdx >= 0) {
+            removePair(set, s, s.tray[trayTwinIdx], id);
             return;
           }
           // переворот-подглядка: тап по закрытой кости открывает её;
@@ -1426,7 +1438,17 @@ export const useGame = create<GameState>()(
         }
 
         // ОТКРЫТАЯ кость (обычная, авто-раскрытая рубашка или
-        // подглядка): житель лотка с той же гранью — пара
+        // подглядка). Игрок уже переворачивал закрытую кость с той
+        // же гранью? Тап по открытой сразу собирает пару — обе
+        // летят вместе (Task 43: раньше открытая улетала в лоток
+        // ОДНА, а перевёрнутая закрытая закрывалась обратно)
+        const peekTwin = findPeekTwin(s, matchKey, id);
+        if (peekTwin !== null) {
+          removePair(set, s, peekTwin, id);
+          return;
+        }
+
+        // житель лотка с той же гранью — пара
         const matchIdx = s.tray.findIndex(
           (tid) => getTileDef(byId(s, tid)!.defId).matchKey === matchKey,
         );
@@ -2170,6 +2192,14 @@ if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
       return moves;
     },
     tap: (id: number) => useGame.getState().tapTile(id),
+    /** тесты: точечно пропатчить сессию (расстановка закрытых костей) */
+    patchSession: (patch: Record<string, unknown>) => {
+      const s = useGame.getState().session;
+      if (!s) return null;
+      const next = { ...s, ...patch } as Session;
+      useGame.setState({ session: next });
+      return next;
+    },
     /** тесты: немедленный финал текущей партии (поражение по лотку) */
     loseNow: () => {
       finish(useGame.setState as unknown as (p: Partial<GameState>) => void, 'tray');
