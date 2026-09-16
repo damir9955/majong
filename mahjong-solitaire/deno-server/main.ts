@@ -121,6 +121,23 @@ const WAITING_HOST_STALE_MS = 45_000;
 const OPEN_LIST_MAX = 30;
 /** тикет матчмейкинга без признаков жизни столько — выпадает */
 const TICKET_TTL_MS = 15_000;
+/** окно «свежести» для СПАРИВАНИЯ тикетов (Task 45). Сердце
+ *  живого клиента в очереди приходит каждые ~4 c — тикет старше
+ *  8 c означает, что его сокет мёртв (изолят убит/обрыв без
+ *  close). Раньше такой тикет-призрак жил до 15 c и мог попасть
+ *  в пару: живому игроку мгновенно «соперник отключился» —
+ *  один из источников «вылетает во время игры по сети». Призраки
+ *  в спаривание не идут; дотянувшие до TTL — удаляются. */
+const TICKET_PAIR_FRESH_MS = 8_000;
+/** сколько watch комнаты живёт БЕЗ единого локального сокета
+ *  (Task 45). Раньше watch брошенной комнаты (оба ушли без leave)
+ *  поллил SQL ДО TTL комнаты (6 часов!) — watch'и накапливались,
+ *  пул соединений забивался, живые запросы падали в таймауты →
+ *  «вылетает во время игры по сети».
+ *  12 c > реконнект-бэкоффа клиента — переподключение успевает;
+ *  финиш «дисконнект» для совсем брошенных комнат досмотрит
+ *  janitor (выметать их некому — вьюхи бросившим не нужны) */
+const WATCH_EMPTY_GRACE_MS = 12_000;
 /** ретраи чтения свежей комнаты (репликация KV между изолятами) */
 const FRESH_ROOM_RETRIES = 4;
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // без I O 0 1
@@ -436,8 +453,8 @@ class MemoryKv implements Kv {
  *  сервера не меняется. Ключи — текст k = parts(encodeURIComponent)
  *  через '/'; versionstamp — монотонная последовательность
  *  mj_kv_vs_seq; CAS — SELECT ... FOR UPDATE в транзакции;
- *  watch — поллинг 1.2 c (потребитель дедупит по versionstamp). */
-const SQL_POLL_MS = 1200;
+ *  watch — поллинг 2 c (потребитель дедупит по versionstamp). */
+const SQL_POLL_MS = 2000;
 
 type SqlTagged = {
   // deno-lint-ignore no-explicit-any
@@ -527,6 +544,125 @@ class SqlKv implements Kv {
       const key = r.k.split('/').map((p) => decodeURIComponent(p));
       yield { key, value: r.v, versionstamp: String(r.vs) };
     }
+  }
+
+  /** лобби-скан (Task 45): проекция на стороне SQL. Полный list()
+   *  гнал ~50-100 КБ JSON ВСЕХ комнат каждый тик лобби — узкое
+   *  место пропускной способности filess.io (tick 2-3 c, пул
+   *  соединений насыщался — join/create по 8 c). Теперь база сама
+   *  фильтрует ждущие открытые комнаты и присылает пару сотен
+   *  байт. Фильтрация по статусу — в SQL (seq-scan локален для
+   *  базы и бесплатен), сорт/лимит — как раньше в JS. */
+  async lobbyWaiting(): Promise<
+    {
+      code: string;
+      level: number;
+      hostName: string;
+      hue: number;
+      createdAt: number;
+      players: number;
+      hostLastSeen: number;
+    }[]
+  > {
+    const rows = await this.#sql<{
+      k: string;
+      level: number | null;
+      hostName: string | null;
+      hue: number | null;
+      createdAt: string | null;
+      players: number | null;
+      hostLastSeen: string | null;
+    }>`
+      SELECT k,
+             COALESCE(v->>'level', '1')::int AS level,
+             COALESCE(v->'players'->0->>'name', '') AS "hostName",
+             COALESCE(v->'players'->0->>'hue', '30')::int AS hue,
+             COALESCE(v->>'createdAt', '0')::bigint AS "createdAt",
+             COALESCE(jsonb_array_length(v->'players'), 0) AS players,
+             COALESCE(v->'players'->0->>'lastSeen', '0')::bigint AS "hostLastSeen"
+      FROM mj.mj_kv
+      WHERE starts_with(k, 'room/')
+        AND v->>'status' = 'waiting'
+        AND v->>'visibility' = 'open'`;
+    return rows.map((r) => ({
+      code: r.k.split('/')[1] ?? '',
+      level: Number(r.level ?? 1),
+      hostName: String(r.hostName ?? ''),
+      hue: Number(r.hue ?? 30),
+      createdAt: Number(r.createdAt ?? 0),
+      players: Number(r.players ?? 0),
+      hostLastSeen: Number(r.hostLastSeen ?? 0),
+    }));
+  }
+
+  /** ГОРЯЧИЕ ПУТИ (Task 45): атомарные JSONB-патчи в ОДИН запрос.
+   *  Раньше каждое присутствие/событие пары шло полной CAS-схемой
+   *  (SELECT → BEGIN → SELECT FOR UPDATE → UPDATE → COMMIT ≈ 5 RTT
+   *  ≈ 1.1 c при RTT 225 мс): во время живого матча очередь на
+   *  две связи росла до 30-50 c, пинги не пробивались — «вылетает
+   *  во время игры по сети». jsonb_set трогает ТОЛЬКО нужные поля
+   *  — гонок с другими записями нет. */
+  async touchPlayerSeen(code: string, pid: string): Promise<void> {
+    const t = Date.now();
+    await this.#sql`
+      UPDATE mj.mj_kv SET v = jsonb_set(
+        v, '{players}',
+        COALESCE((
+          SELECT jsonb_agg(
+            CASE WHEN p.value->>'id' = ${pid}
+              THEN jsonb_set(p.value, '{lastSeen}', to_jsonb(${t}::bigint))
+              ELSE p.value END
+            ORDER BY p.ordinality
+          )
+          FROM jsonb_array_elements(mj.mj_kv.v->'players')
+            WITH ORDINALITY p(value, ordinality)
+        ), '[]'::jsonb)
+      )
+      WHERE mj.mj_kv.k = ${'room/' + code}
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(mj.mj_kv.v->'players') e
+          WHERE e->>'id' = ${pid}
+        )`;
+  }
+
+  /** событие «собрал пару»: lastSeen+очки+пары+lastEvent одним
+   *  UPDATE'ом (1 RTT); комнату для пуши перечитывает вызывающий */
+  async applyMatchEvent(
+    code: string,
+    pid: string,
+    score: number,
+    pairsDone: number,
+    lastEvent: Record<string, unknown>,
+  ): Promise<boolean> {
+    const t = Date.now();
+    const sc = Math.max(0, Math.floor(score));
+    const pr = Math.max(0, Math.floor(pairsDone));
+    const rows = await this.#sql<{ ok: boolean }>`
+      UPDATE mj.mj_kv SET v = jsonb_set(
+        jsonb_set(v, '{lastEvent}', ${this.#sql.json(lastEvent)}::jsonb),
+        '{players}',
+        COALESCE((
+          SELECT jsonb_agg(
+            CASE WHEN p.value->>'id' = ${pid}
+              THEN jsonb_set(jsonb_set(jsonb_set(
+                p.value,
+                '{lastSeen}', to_jsonb(${t}::bigint)),
+                '{score}', to_jsonb(${sc}::int)),
+                '{pairsDone}', to_jsonb(${pr}::int))
+              ELSE p.value END
+            ORDER BY p.ordinality
+          )
+          FROM jsonb_array_elements(mj.mj_kv.v->'players')
+            WITH ORDINALITY p(value, ordinality)
+        ), '[]'::jsonb)
+      )
+      WHERE mj.mj_kv.k = ${'room/' + code}
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(mj.mj_kv.v->'players') e
+          WHERE e->>'id' = ${pid}
+        )
+      RETURNING true AS ok`;
+    return rows.length > 0;
   }
 
   atomic(): KvAtomic {
@@ -680,7 +816,13 @@ async function tryOpenSql(dbUrl: string): Promise<Kv | null> {
       url += (url.includes('?') ? '&' : '?') + 'sslmode=require';
     }
     const sql = postgres(url, {
-      max: 4,
+      // Task 45: filess.io Shared — rolconnlimit = 5 на ВСЮ роль.
+      // Deno Deploy поднимает несколько изолятов, каждый со своим
+      // пулом: 4 соединения на изолят пробивали лимит («too many
+      // connections») — изолят не мог читать базу: друзья «терялись»,
+      // матчи умирали. max:2 → до 2 изолятов в лимите; idle-соединения
+      // закрываются через 20 c (простаивающие изоляты не держат базу).
+      max: 2,
       idle_timeout: 20,
       connect_timeout: 8,
       // подготовленные выражения мешают pg_bouncer-пулам (Neon pooling)
@@ -697,10 +839,25 @@ async function tryOpenSql(dbUrl: string): Promise<Kv | null> {
 }
 
 /** нативный Deno KV: на Deploy — провиженный через Databases,
- *  локально — файловая база в каталоге запуска (dev) */
+ *  локально — файловая база в каталоге запуска (dev).
+ *  Task 45: ГОНЯЕМ ПО ТАЙМАУТУ (10 c) — на Deploy без провиженной
+ *  базы Deno.openKv() может ЗАВИСНУТЬ (не резолвится и не
+ *  отвергается) — наблюдали на проде: boot навечно «booting»,
+ *  SQL-фолбэк не стартовал. Теперь зависание не блокирует
+ *  подключение вшитой SQL-строки. */
+const DENO_KV_TIMEOUT_MS = 10_000;
+
 async function tryOpenDenoKv(): Promise<Kv | null> {
   try {
-    const real = await Deno.openKv();
+    const real = await Promise.race([
+      Deno.openKv(),
+      new Promise<never>((_, rej) =>
+        setTimeout(
+          () => rej(new Error('openKv timeout')),
+          DENO_KV_TIMEOUT_MS,
+        )
+      ),
+    ]);
     const wrap = real as unknown as Kv;
     // sanity: все методы на месте?
     if (
@@ -809,6 +966,7 @@ void kvBackgroundInit();
 /* ============================ УТИЛИТЫ ============================ */
 
 const now = () => Date.now();
+const LOG = (msg: string) => console.log(`${new Date().toISOString().slice(11, 23)} ${msg}`);
 const rndId = () =>
   Array.from({ length: 8 }, () => Math.floor(Math.random() * 36).toString(36))
     .join('');
@@ -919,6 +1077,9 @@ interface RoomWatch {
   lastEventAt: number;
   reader?: ReadableStreamDefaultReader<KvEntry<unknown>[]>;
   refs: number;
+  /** с какого момента в комнате нет НИ ОДНОГО локального сокета
+   *  (Task 45; 0 — сокеты есть). См. WATCH_EMPTY_GRACE_MS. */
+  emptySince: number;
 }
 const roomWatches = new Map<string, RoomWatch>();
 
@@ -946,7 +1107,7 @@ function localRoomSocks(code: string): Sock[] {
 function ensureRoomWatch(code: string): void {
   let w = roomWatches.get(code);
   if (!w) {
-    w = { vs: '', lastEventAt: 0, refs: 0 };
+    w = { vs: '', lastEventAt: 0, refs: 0, emptySince: 0 };
     roomWatches.set(code, w);
   }
   w.refs++;
@@ -1013,6 +1174,21 @@ function releaseRoomWatch(code: string): void {
   if (!w) return;
   w.refs = Math.max(0, w.refs - 1);
   if (w.refs > 0) return;
+  roomWatches.delete(code);
+  try {
+    w.reader?.cancel();
+  } catch {
+    // ignore
+  }
+}
+
+/** погасить watch вне зависимости от refs (Task 45): комнату
+ *  бросили — локальных сокетов нет дольше grace. Создаётся заново
+ *  автоматически при следующем hello/bind — данные не теряем. */
+function hardReleaseRoomWatch(code: string): void {
+  const w = roomWatches.get(code);
+  if (!w) return;
+  w.refs = 0;
   roomWatches.delete(code);
   try {
     w.reader?.cancel();
@@ -1149,6 +1325,7 @@ function finishRoom(
   r.status = 'result';
   r.result = { winnerId, reason };
   r.lastEvent = null;
+  console.log(`[room] finish ${r.code} · ${reason} · победил «${w?.name ?? '?'}»`);
   void t;
   return r;
 }
@@ -1158,9 +1335,29 @@ function finishRoom(
  *  Task 39: чистка тикетов — только когда на изоляте есть живые
  *  сокеты (иначе SQL-база без дела не будится — Neon не тратит
  *  compute-часы на пустых изолятах). */
+let sweepBusy = false;
 async function sweep(): Promise<void> {
+  // Task 45: не запускаем второй свип, пока первый не дошёл — иначе
+  // при долгом SQL они накладываются друг на друга и душат пул
+  if (sweepBusy) return;
+  sweepBusy = true;
+  try {
   const t = now();
   for (const code of [...roomWatches.keys()]) {
+    // Task 45: watch без единого локального сокета — живёт щедрый
+    // grace на реконнекты, затем гаснем (иначе брошенные комнаты
+    // поллят SQL вечно и душат пул соединений — таймауты живых
+    // игроков). Автоправила для комнат без watch досматривает
+    // janitor, вьюхи бросившим игрокам не нужны.
+    const w = roomWatches.get(code);
+    if (w) {
+      if (localRoomSocks(code).length > 0) w.emptySince = 0;
+      else if (w.emptySince === 0) w.emptySince = t;
+      else if (t - w.emptySince > WATCH_EMPTY_GRACE_MS) {
+        hardReleaseRoomWatch(code);
+        continue;
+      }
+    }
     const res = await mutateRoom(code, (r) => autoRules(r, t) ?? 'abort');
     if (!res.ok && res.room === null) {
       // комнаты нет — уведомлять некого, убираем подписку если сокеты ушли
@@ -1171,16 +1368,19 @@ async function sweep(): Promise<void> {
       pushLocal(code, res.room);
     }
   }
-  // тикеты: мёртвые — вон (только при живых сокетах — см. комментарий)
-  if (sockets.size > 0) {
-    try {
-      for await (const e of kv.list<TicketState>({ prefix: ['mm'] })) {
-        const tk = e.value;
-        if (tk && t - tk.lastSeen > TICKET_TTL_MS) await kv.delete(e.key);
+    // тикеты: мёртвые — вон (только при живых сокетах — см. комментарий)
+    if (sockets.size > 0) {
+      try {
+        for await (const e of kv.list<TicketState>({ prefix: ['mm'] })) {
+          const tk = e.value;
+          if (tk && t - tk.lastSeen > TICKET_TTL_MS) await kv.delete(e.key);
+        }
+      } catch {
+        // KV моргнул — в следующий тик
       }
-    } catch {
-      // KV моргнул — в следующий тик
     }
+  } finally {
+    sweepBusy = false;
   }
 }
 
@@ -1196,8 +1396,14 @@ async function janitor(): Promise<void> {
       if (!r) continue;
       const next = autoRules(r, t);
       if (next === 'delete') await kv.delete(e.key);
-      else if (next !== r) {
+      else if (next && next !== r) {
         await kv.atomic().check(e as KvEntry<unknown>).set(e.key, next).commit();
+      } else if (next === null) {
+        // Task 45: РАНЕЕ здесь был set(e.key, null) — janitor
+        // ЗАТИРАЛ ЗДОРОВЫЕ КОМНАТЫ (autoRules(null) ≠ r — и ветка
+        // писала null): живой матч умирал «Комната недоступна» каждые
+        // ~5 минут («вылетает во время игры по сети»). Теперь null —
+        // «без изменений», НЕ пишем ничего.
       }
     }
   } catch {
@@ -1211,20 +1417,38 @@ async function listOpenRooms(): Promise<OpenRoomInfo[]> {
   const t = now();
   const out: OpenRoomInfo[] = [];
   try {
-    for await (const e of kv.list<RoomState>({ prefix: ['room'] })) {
-      const r = e.value;
-      if (!r || r.status !== 'waiting' || r.visibility !== 'open') continue;
-      const host = r.players[0];
-      if (!host || r.players.length >= 2) continue;
-      if (t - host.lastSeen > WAITING_HOST_STALE_MS) continue;
-      out.push({
-        code: r.code,
-        level: r.level,
-        hostName: host.name,
-        hue: host.hue,
-        createdAt: r.createdAt,
-        players: r.players.length,
-      });
+    // SQL-проекция (Task 45): см. SqlKv.lobbyWaiting — качаем только
+    // ждущие открытые комнаты парой сотен байт, а не весь JSON всех
+    // комнат (~50-100 КБ на каждый тик лобби — душило filess.io)
+    if (kv instanceof SqlKv && typeof kv.lobbyWaiting === 'function') {
+      for (const r of await kv.lobbyWaiting()) {
+        if (r.players >= 2) continue;
+        if (t - r.hostLastSeen > WAITING_HOST_STALE_MS) continue;
+        out.push({
+          code: r.code,
+          level: r.level,
+          hostName: r.hostName,
+          hue: r.hue,
+          createdAt: r.createdAt,
+          players: r.players,
+        });
+      }
+    } else {
+      for await (const e of kv.list<RoomState>({ prefix: ['room'] })) {
+        const r = e.value;
+        if (!r || r.status !== 'waiting' || r.visibility !== 'open') continue;
+        const host = r.players[0];
+        if (!host || r.players.length >= 2) continue;
+        if (t - host.lastSeen > WAITING_HOST_STALE_MS) continue;
+        out.push({
+          code: r.code,
+          level: r.level,
+          hostName: host.name,
+          hue: host.hue,
+          createdAt: r.createdAt,
+          players: r.players.length,
+        });
+      }
     }
   } catch {
     // KV моргнул — покажем прошлый список
@@ -1263,7 +1487,7 @@ async function listSearching(): Promise<{
   return out.slice(0, 10);
 }
 
-let lobbyTimer: number | null = null;
+let lobbyTimer: ReturnType<typeof setInterval> | null = null;
 function ensureLobbyLoop(): void {
   const need = [...sockets].some((s) => s.lobby);
   if (!need) {
@@ -1274,18 +1498,31 @@ function ensureLobbyLoop(): void {
     return;
   }
   if (lobbyTimer !== null) return;
+  let busy = false;
   const tick = async () => {
     if (![...sockets].some((s) => s.lobby)) return;
-    const [rooms, searching] = await Promise.all([
-      listOpenRooms(),
-      listSearching(),
-    ]);
-    for (const s of sockets) {
-      if (s.lobby) send(s, { t: 'lobby', rooms, searching });
+    // Task 45: скан лобби на filess.io — до секунд (RTT 225 мс +
+    // перенос JSON всех комнат). Тик каждые 2 c длиной 2-3 c
+    // насыщал пул соединений насмерть — join/create отвечали
+    // по 8 c («вылетает во время игры»). Теперь: реже (5 c), без
+    // наложения (busy-guard) — лобби обновляется чуть ленивее,
+    // зато живые запросы не ждут.
+    if (busy) return;
+    busy = true;
+    try {
+      const [rooms, searching] = await Promise.all([
+        listOpenRooms(),
+        listSearching(),
+      ]);
+      for (const s of sockets) {
+        if (s.lobby) send(s, { t: 'lobby', rooms, searching });
+      }
+    } finally {
+      busy = false;
     }
   };
   void tick();
-  lobbyTimer = setInterval(() => void tick(), 2000);
+  lobbyTimer = setInterval(() => void tick(), 5000);
 }
 
 /* ==================== ДРУЗЬЯ (Task 37) ====================
@@ -1343,8 +1580,10 @@ async function getFr(uid: string): Promise<FrState | null> {
   if (!uid || uid === 'anon') return null;
   const e = await kv.get<FrState>(['fr', uid]);
   if (e?.value) return e.value;
-  // создать: код без коллизий (пара попыток)
-  for (let i = 0; i < 4; i++) {
+  // создать: короткий код без коллизий. Task 45: ОДНА проверка
+  // (пространство 31^6 ≈ 900 млн — повторы практически
+  // невозможны; раньше до 4-x get'ов на каждого нового игрока)
+  for (let i = 0; i < 2; i++) {
     const code = newFrCode();
     const taken = await kv.get(['fc', code]);
     if (taken?.value) continue;
@@ -1662,10 +1901,14 @@ async function tryMatchAll(): Promise<void> {
     for await (const e of kv.list<TicketState>({ prefix: ['mm'] })) {
       const tk = e.value;
       if (!tk || tk.paired) continue;
-      if (t - tk.lastSeen > TICKET_TTL_MS) {
+      const age = t - tk.lastSeen;
+      if (age > TICKET_TTL_MS) {
         await kv.delete(e.key);
         continue;
       }
+      // протухший для спаривания призрак: сердце живого клиента —
+      // каждые ~4 c; старше 8 c без сердца — сокет мёртв
+      if (age > TICKET_PAIR_FRESH_MS) continue;
       fresh.push(tk);
     }
   } catch {
@@ -1749,17 +1992,27 @@ async function joinFirstOpenRoom(tk: TicketState): Promise<boolean> {
   const t = now();
   let target: { code: string; at: number } | null = null;
   try {
-    const cands: { code: string; at: number }[] = [];
-    for await (const e of kv.list<RoomState>({ prefix: ['room'] })) {
-      const r = e.value;
-      if (!r || r.status !== 'waiting' || r.visibility !== 'open') continue;
-      if (r.players.length >= 2) continue;
-      const host = r.players[0];
-      if (!host || t - host.lastSeen > WAITING_HOST_STALE_MS) continue;
-      cands.push({ code: r.code, at: r.createdAt });
+    // SQL-проекция ждущих комнат (Task 45): без полного JSON-скана
+    if (kv instanceof SqlKv && typeof kv.lobbyWaiting === 'function') {
+      const rows = await kv.lobbyWaiting();
+      const cands = rows
+        .filter((r) => r.players < 2 && t - r.hostLastSeen <= WAITING_HOST_STALE_MS)
+        .map((r) => ({ code: r.code, at: r.createdAt }));
+      cands.sort((x, y) => x.at - y.at);
+      target = cands[0] ?? null;
+    } else {
+      const cands: { code: string; at: number }[] = [];
+      for await (const e of kv.list<RoomState>({ prefix: ['room'] })) {
+        const r = e.value;
+        if (!r || r.status !== 'waiting' || r.visibility !== 'open') continue;
+        if (r.players.length >= 2) continue;
+        const host = r.players[0];
+        if (!host || t - host.lastSeen > WAITING_HOST_STALE_MS) continue;
+        cands.push({ code: r.code, at: r.createdAt });
+      }
+      cands.sort((x, y) => x.at - y.at);
+      target = cands[0] ?? null;
     }
-    cands.sort((x, y) => x.at - y.at);
-    target = cands[0] ?? null;
   } catch {
     return false;
   }
@@ -1820,10 +2073,22 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
         s.name = sanitizeName(m.name);
       }
       send(s, { t: 'hello', ok: true, uid: s.uid });
-      // друзья: состояние при каждом приветствии (заявки/чат/инвайты)
+      // друзья: состояние при каждом приветствии (заявки/чат/инвайты).
+      // Task 45: ОДИН проход — раньше getFr + pushFr читали состояние
+      // ДВАЖДЫ (двойные RTT при каждом реконнекте).
+      // БЕЗ СОЗДАНИЯ: у нового игрока состояния ещё нет — создавать
+      // его дорого (4 запроса) и незачем, панель друзей откроется —
+      // f_sync создаст. Так hello нового игрока = 1 чтение вместо 5-6.
       if (s.uid !== 'anon') {
-        await getFr(s.uid).catch(() => {});
-        await pushFr(s.uid).catch(() => {});
+        const e = await kv.get<FrState>(['fr', s.uid]).catch(() => null);
+        if (e?.value) {
+          const v = await frView(s.uid).catch(() => null);
+          if (v) {
+            for (const sock of sockets) {
+              if (sock.uid === s.uid) send(sock, { t: 'friends', state: v });
+            }
+          }
+        }
       }
       const code = normalizeCode(m.code);
       const pid = typeof m.playerId === 'string' ? m.playerId : null;
@@ -1838,12 +2103,21 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
         if (room && room.players.some((p) => p.id === pid)) {
           bindSock(s, room.code, pid);
           ensureRoomWatch(room.code);
-          // прогреваем присутствие — перезагрузка не должна рвать матч
-          await mutateRoom(room.code, (r) => {
-            const p = r.players.find((x) => x.id === pid);
-            if (p) p.lastSeen = now();
-            return autoRules(r, now()) ?? 'abort';
-          }).catch(() => {});
+          // прогреваем присутствие — перезагрузка не должна рвать матч.
+          // Task 45: ОДИН атомарный UPDATE вместо CAS-транзакции
+          try {
+            if (kv instanceof SqlKv && typeof kv.touchPlayerSeen === 'function') {
+              await kv.touchPlayerSeen(room.code, pid);
+            } else {
+              await mutateRoom(room.code, (r) => {
+                const p = r.players.find((x) => x.id === pid);
+                if (p) p.lastSeen = now();
+                return autoRules(r, now()) ?? 'abort';
+              });
+            }
+          } catch {
+            // прогрев не критичен — hb подхватит
+          }
           send(s, { t: 'room', view: view(room) });
         } else {
           bindSock(s, null, null);
@@ -1926,6 +2200,7 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
       s.name = name;
       bindSock(s, code, hostId);
       ensureRoomWatch(code);
+      console.log(`[room] create ${code} · «${name}» · ур.${level}`);
       send(s, { t: 'room', view: view(room), playerId: hostId, rid: m.rid });
       return;
     }
@@ -2008,6 +2283,7 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
       ensureRoomWatch(room.code);
       // обоим локальным: вьюха старта (соперник узнает и через watch)
       pushLocal(room.code, room);
+      console.log(`[room] join ${room.code} · «${name}» · ур.${room.level}`);
       send(s, { t: 'room', view: view(room), playerId: joinerId, rid: m.rid });
       return;
     }
@@ -2019,25 +2295,21 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
         errOf(s, m, 'ROOM_NOT_FOUND');
         return;
       }
-      const score = Number(m.score);
-      const pairs = Number(m.pairsDone);
-      const res = await mutateRoom(code, (r) => {
-        const p = r.players.find((x) => x.id === s.playerId);
-        if (!p) return r; // нас нет (вышли?) — просто вернём что есть
-        p.lastSeen = now();
-        if (r.status === 'playing') {
-          if (Number.isFinite(score)) p.score = clamp(score, 0, 10_000_000);
-          if (Number.isFinite(pairs)) {
-            p.pairsDone = clamp(Math.floor(pairs), 0, 1000);
-          }
-        }
-        return autoRules(r, now()) ?? 'abort';
-      });
-      if (!res.ok && res.room === null) {
+      // ЧИСТОЕ ЧТЕНИЕ (Task 45). Раньше каждый опрос (2 игрока ×
+      // каждые 4 c + лобби каждые 3 c) шёл полной CAS-записью
+      // (SELECT FOR UPDATE + UPDATE ≈ 700 мс блокировки строки при
+      // RTT 225 мс) — строка комнаты была под замком почти всё
+      // время, очередь на пуле росла безгранично, join/view/health
+      // отвечали 10+ c → «вылетает во время игры по сети».
+      // Присутствие и очки пишут ДЕШЁВЫЕ пути: 'ping' (троттлинг
+      // 6 c) и 'event' (момент сбора пары); авт-исходы досматривает
+      // свипер каждые 2.5 c. Здесь — только читаем и отвечаем.
+      const room = await getRoom(code);
+      if (!room) {
         errOf(s, m, 'ROOM_NOT_FOUND');
         return;
       }
-      if (res.room) send(s, { t: 'room', view: view(res.room), rid: m.rid });
+      send(s, { t: 'room', view: view(room), rid: m.rid });
       return;
     }
 
@@ -2049,6 +2321,34 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
       if (!code || !myPid) return;
       const score = Number(m.score);
       const pairs = Number(m.pairsDone);
+      // Task 45: ГОРЯЧИЙ ПУТЬ — один атомарный JSONB-UPDATE
+      // (было: полная CAS-транзакция ≈ 1.1 c — очередь душа пул,
+      // событие пар висело секунды = «соперник не видит мой ход»)
+      const ev = {
+        playerId: myPid,
+        tile1Id: clamp(Math.floor(Number(m.tile1Id) || 0), 0, 999),
+        tile2Id: clamp(Math.floor(Number(m.tile2Id) || 0), 0, 999),
+        score: Number.isFinite(score) ? Math.round(score) : 0,
+        pairsDone: Number.isFinite(pairs) ? Math.floor(pairs) : 0,
+        at: now(),
+      };
+      try {
+        if (kv instanceof SqlKv && typeof kv.applyMatchEvent === 'function') {
+          const ok = await kv.applyMatchEvent(
+            code,
+            myPid,
+            Number.isFinite(score) ? score : 0,
+            Number.isFinite(pairs) ? pairs : 0,
+            ev,
+          );
+          if (!ok) return;
+          const room = await getRoom(code);
+          if (room) pushLocal(code, room); // локальному сопернику сразу
+          return;
+        }
+      } catch {
+        // база моргнула — фолбэк на CAS-путь ниже
+      }
       const res = await mutateRoom(code, (r) => {
         const p = r.players.find((x) => x.id === myPid);
         if (!p) return r;
@@ -2058,14 +2358,7 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
           if (Number.isFinite(pairs)) {
             p.pairsDone = clamp(Math.floor(pairs), 0, 1000);
           }
-          r.lastEvent = {
-            playerId: myPid,
-            tile1Id: clamp(Math.floor(Number(m.tile1Id) || 0), 0, 999),
-            tile2Id: clamp(Math.floor(Number(m.tile2Id) || 0), 0, 999),
-            score: Number.isFinite(score) ? Math.round(score) : 0,
-            pairsDone: Number.isFinite(pairs) ? Math.floor(pairs) : 0,
-            at: now(),
-          };
+          r.lastEvent = ev;
         }
         return r;
       });
@@ -2161,6 +2454,16 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
         // больше не ломается спорадической ROOM_EMPTY)
         errOf(s, m, 'ROOM_EMPTY');
         return;
+      }
+      // старт нового матча — заметно в логах Deploy (Task 45)
+      if (res.changed && res.room.status === 'playing') {
+        console.log(
+          `[room] advance ${code} · ${kind} · старт ур.${res.room.level}`,
+        );
+      } else {
+        console.log(
+          `[room] advance ${code} · ${kind} · голос записан, ждём второго`,
+        );
       }
       pushLocal(code, res.room);
       send(s, { t: 'room', view: view(res.room), rid: m.rid });
@@ -2572,19 +2875,28 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
 
     case 'ping': {
       // фоновая вкладка: таймеры зажаты браузером, но сокет жив и
-      // отвечает на hb — считаем это присутствием (lastSeen)
+      // отвечает на hb — считаем это присутствием (lastSeen).
+      // Троттлинг 6 c (Task 45): присутствие живёт при ≤12 c; сам
+      // тап — ОДИН атомарный UPDATE (jsonb_set), не CAS-транзакция
       const code = s.roomCode;
       const pid = s.playerId;
       if (code && pid) {
-        await mutateRoom(code, (r) => {
-          const p = r.players.find((x) => x.id === pid);
-          // не дублируем свежий поллинг игрока
-          if (p && now() - p.lastSeen > 4000) {
-            p.lastSeen = now();
-            return r;
+        try {
+          if (kv instanceof SqlKv && typeof kv.touchPlayerSeen === 'function') {
+            await kv.touchPlayerSeen(code, pid);
+          } else {
+            await mutateRoom(code, (r) => {
+              const p = r.players.find((x) => x.id === pid);
+              if (p && now() - p.lastSeen > 6000) {
+                p.lastSeen = now();
+                return r;
+              }
+              return 'abort';
+            });
           }
-          return 'abort';
-        }).catch(() => {});
+        } catch {
+          // база моргнула — присутствие подтянется следующим тиком
+        }
       }
       send(s, { t: 'pong', rid: m.rid });
       return;
@@ -2605,12 +2917,21 @@ async function enterPairedRoom(
   s.mmTicket = null;
   bindSock(s, room.code, playerId);
   ensureRoomWatch(room.code);
-  // прогреваем lastSeen — игрок только пришёл
-  await mutateRoom(room.code, (r) => {
-    const p = r.players.find((x) => x.id === playerId);
-    if (p) p.lastSeen = now();
-    return r;
-  }).catch(() => {});
+  // прогреваем lastSeen — игрок только пришёл (Task 45: один
+  // атомарный UPDATE вместо CAS-транзакции)
+  try {
+    if (kv instanceof SqlKv && typeof kv.touchPlayerSeen === 'function') {
+      await kv.touchPlayerSeen(room.code, playerId);
+    } else {
+      await mutateRoom(room.code, (r) => {
+        const p = r.players.find((x) => x.id === playerId);
+        if (p) p.lastSeen = now();
+        return r;
+      });
+    }
+  } catch {
+    // прогрев не критичен
+  }
 }
 
 /* ==================== HTTP / WS СЕРВЕР ==================== */
@@ -2637,9 +2958,23 @@ async function handle(req: Request): Promise<Response> {
       sockets.add(sock);
     };
     socket.onmessage = (ev) => {
-      void onMessage(sock, String(ev.data)).catch((err) => {
-        console.warn('[ws] handler:', err instanceof Error ? err.message : err);
-      });
+      const t0 = Date.now();
+      void onMessage(sock, String(ev.data))
+        .then(() => {
+          // Task 45 (диагностика «вылетает по сети»): любое сообщение,
+          // обработанное дольше 1.5 c, видно в логах Deploy
+          const ms = Date.now() - t0;
+          if (ms > 1500) {
+            let kind = '?';
+            try {
+              kind = String(JSON.parse(String(ev.data)).t ?? '?');
+            } catch { /* ignore */ }
+            console.warn(`[slow] ${kind} ${ms} мс`);
+          }
+        })
+        .catch((err) => {
+          console.warn('[ws] handler:', err instanceof Error ? err.message : err);
+        });
     };
     socket.onclose = () => {
       sock.alive = false;
@@ -2664,21 +2999,21 @@ async function handle(req: Request): Promise<Response> {
 
   const url = new URL(req.url);
   if (url.pathname === '/health') {
-    let rooms = 0;
-    try {
-      for await (const _e of kv.list<RoomState>({ prefix: ['room'] })) rooms++;
-    } catch {
-      rooms = -1;
-    }
+    // Task 45: БЕЗ скана комнат (list тянул весь JSON всех комнат —
+    // каждый health-запрос занимал соединение на сотни мс)
     return Response.json({
       ok: true,
       isolate: ISOLATE,
       kv: kvMode,
       boot: kvBoot,
       persistent: kvMode !== 'memory',
+      // человеческая расшифровка (Task 45): друзья и комнаты
+      // переживают рестарты ТОЛЬКО при persistent=true
+      storage: kvMode === 'memory'
+        ? 'MEMORY: друзья и комнаты НЕ переживают рестарт изолята'
+        : `PERSISTENT (${kvMode})`,
       sockets: sockets.size,
-      rooms,
-      v: 4,
+      v: 5,
     });
   }
   if (url.pathname === '/') {
@@ -2686,14 +3021,16 @@ async function handle(req: Request): Promise<Response> {
       ok: true,
       multiplayer: 'deno',
       ws: `${url.protocol === 'https:' ? 'wss' : 'ws'}://${url.host}/ws`,
-      v: 4,
+      v: 5,
     });
   }
   return new Response('Not Found', { status: 404 });
 }
 
-/* фоновые циклы изолята */
-setInterval(() => void sweep().catch(() => {}), 1500);
+/* фоновые циклы изолята (Task 45: реже — беречь лимит соединений
+ *  filess.io и RTT 225 мс: вьюхи ≤ 2 c (watch), авт-исходы ≤ 5 c
+ *  (тайминги дисконнекта 30 c / тайм-аута терпят запас 5 c) */
+setInterval(() => void sweep().catch(() => {}), 5000);
 // janitor: частый заход — только при живых сокетах; редкий фоновый —
 // раз в 30 минут всем изолятам (пустые тоже чистят забытые комнаты)
 const janitorDelay = 60_000 + Math.floor(Math.random() * 240_000);
@@ -2707,14 +3044,13 @@ setInterval(() => void janitor().catch(() => {}), 2 * 60 * 60_000);
 setTimeout(() => void janitor().catch(() => {}), janitorDelay);
 
 // hb: живость соединений (браузерные WS сами не пингуют).
-// Каждые 3 c — как в рабочем образце: держит NAT/прокси тёплым,
-// а клиент отвечает {t:'ping'} → сервер обновляет lastSeen игрока
-// (присутствие не зависит от поллинга вьюхи).
+// Каждые 5 c: держит NAT/прокси тёплым, клиент отвечает {t:'ping'}
+// → сервер обновляет lastSeen (Task 45: реже — беречь пул SQL).
 setInterval(() => {
   for (const s of sockets) send(s, { t: 'hb' });
-}, 3_000);
+}, 5_000);
 
 Deno.serve({ port: PORT }, handle);
 console.log(
-  `[mj-server] изолят ${ISOLATE} слушает :${PORT} мгновенно · kv=${kvMode}(фон: подключается) · v3`,
+  `[mj-server] изолят ${ISOLATE} слушает :${PORT} мгновенно · kv=${kvMode}(фон: подключается) · v5`,
 );

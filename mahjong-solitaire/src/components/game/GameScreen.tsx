@@ -67,6 +67,8 @@ import {
   X,
 } from 'lucide-react';
 
+import { GAME_VERSION } from '@/lib/pwa/version';
+
 /* ---------- Модальные окна меню ---------- */
 
 /** мини-превью темы (тот же фон, что и на столе) */
@@ -188,6 +190,21 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
               {t('settings.off')}
             </button>
           </div>
+        </div>
+
+        {/* Версия — ОТКРЫТО (Task 45): это метка обновления PWA:
+            по ней телефон понимает, что вышла новая версия, и
+            подкачивает её при следующем запуске. Ничего тайного. */}
+        <div className="mt-6 border-t border-stone-200/70 pt-4 text-center">
+          <p
+            className="text-xs font-bold tabular-nums text-stone-500"
+            data-testid="mj-version"
+          >
+            {t('settings.version')}: {GAME_VERSION}
+          </p>
+          <p className="mt-1 text-[11px] leading-snug text-stone-400">
+            {t('settings.versionHint')}
+          </p>
         </div>
       </div>
     </div>

@@ -218,7 +218,9 @@ export function DuelScreen({ onClose }: { onClose: () => void }) {
     // а пока ЖДЁМ соперника — частый поллинг: старт матча — самый
     // важный момент для честной гонки (якорь startAt в MatchIntro)
     if (phase !== 'waiting') return;
-    const iv = window.setInterval(() => void check(), 1500);
+    // 2.5 c (Task 45): старт матча и так приходит ПУШЕМ по watch —
+    // поллинг лишь страховка; 1.5 c держали базу filess.io в тонусе
+    const iv = window.setInterval(() => void check(), 2500);
     return () => {
       alive = false;
       window.clearInterval(iv);

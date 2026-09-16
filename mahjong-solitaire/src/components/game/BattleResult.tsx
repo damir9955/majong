@@ -4,15 +4,17 @@
  * Итог матча 1v1: победа/поражение, сравнение очков, трофеи,
  * прогресс лиги и кнопки.
  *
- * ОНЛАЙН (Task 25): новый матч — только по согласию ОБоИХ.
- *  — нажал «Реванш» → «Ждём согласия соперника…»;
- *  — соперник нажал раньше → вопрос «соперник предлагает
- *    реванш — согласен?» ([Согласиться] / [Отказаться]);
- *  — оба согласились → сервер стартует матч автоматически.
- * Автоперехода в онлайн больше нет (только в матче с ботом).
+ * ОНЛАЙН: ОДНА главная кнопка «Реванш · уровень N» (Task 45:
+ * раньше были «Реванш» И «Дальше» — пользователь: «для чего
+ * кнопка „дальше“, если реванш делает то же — ничего не влезает
+ * в экран»). Реванш ведёт на СЛЕДУЮЩИЙ уровень: серия с другом
+ * растёт (Task 44: «5 партий — уровень всё 9-й»). По согласию
+ * ОБоИХ: нажал → «Ждём согласия…»; соперник нажал раньше →
+ * «согласен?» — оба согласились → сервер стартует матч сам.
  *
- * Бот: [Реванш] / [Дальше], автопереход на следующий уровень
- * после победы. Если друга в комнате нет — только «В меню».
+ * Бот: победа → «Дальше» (следующий уровень, автопереход 7.5 c),
+ * поражение → «Реванш» (тот же уровень). Плюс «В меню».
+ * Если друга в комнате нет — только «В меню».
  */
 
 import { useEffect, useState } from 'react';
@@ -339,37 +341,29 @@ export function BattleResult() {
           </p>
         )}
 
-        <div className="mt-4 flex items-center justify-center gap-3">
+        {/* ---- кнопки: ОДНА главная + «В меню», столбиком —
+            всё влезает даже на самом узком экране (Task 45) ---- */}
+        <div className="mx-auto mt-5 flex w-full max-w-[320px] flex-col items-stretch gap-2.5">
           {oppGone ? (
             <button className="mj-btn" onClick={exitRoom}>
               {t('res.menu')}
             </button>
           ) : online ? (
             <>
-              {!myAdvance && (
-                <button
-                  className="mj-btn-secondary"
-                  data-testid="mj-btn-rematch"
-                  onClick={() => {
-                    buzz(15);
-                    restartLevel();
-                  }}
-                >
-                  {t('res.rematch')}
-                </button>
-              )}
-              {/* «Дальше» — следующий уровень (Task 44: раньше в онлайн
-                  были только «Реванш»/«Меню» — уровень никогда не рос) */}
+              {/* Реванш = следующий уровень: серия с другом растёт.
+                Уровень написан НА кнопке — видно, что матч новый */}
               {!myAdvance && (
                 <button
                   className="mj-btn"
-                  data-testid="mj-btn-next"
+                  data-testid="mj-btn-rematch"
                   onClick={() => {
                     buzz(15);
                     nextLevel();
                   }}
                 >
-                  {t('res.next')}
+                  {t('res.rematchNext', {
+                    n: (session?.level ?? 1) + 2,
+                  })}
                 </button>
               )}
               <button className="mj-btn mj-btn-ghost" onClick={exitRoom}>
@@ -378,11 +372,28 @@ export function BattleResult() {
             </>
           ) : (
             <>
-              <button className="mj-btn-secondary" onClick={restartLevel}>
-                {t('res.rematch')}
-              </button>
-              <button className="mj-btn" onClick={nextLevel}>
-                {t('res.next')}
+              {won ? (
+                <button
+                  className="mj-btn"
+                  data-testid="mj-btn-next"
+                  onClick={nextLevel}
+                >
+                  {t('res.nextLevel', { n: (session?.level ?? 1) + 1 })}
+                </button>
+              ) : (
+                <button
+                  className="mj-btn"
+                  data-testid="mj-btn-rematch"
+                  onClick={restartLevel}
+                >
+                  {t('res.rematch')}
+                </button>
+              )}
+              <button
+                className="mj-btn mj-btn-ghost"
+                onClick={() => useGame.setState({ session: null, showMenu: true })}
+              >
+                {t('res.menu')}
               </button>
             </>
           )}

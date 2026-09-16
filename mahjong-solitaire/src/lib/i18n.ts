@@ -53,6 +53,9 @@ const RU: Record<string, string> = {
   'settings.sound': 'Звук',
   'settings.on': 'Вкл',
   'settings.off': 'Выкл',
+  'settings.version': 'Версия игры',
+  'settings.versionHint':
+    'Обновления подкачиваются сами при запуске — версия лишь метка обновления',
 
   // выбор темы стола (Task 25: 6 тем «от реалистичной до простой»)
   'settings.theme': 'Тема стола',
@@ -242,6 +245,8 @@ const RU: Record<string, string> = {
   'res.lose': 'Поражение',
   'res.match': 'матч · уровень {n}',
   'res.rematch': 'Реванш',
+  'res.rematchNext': 'Реванш · уровень {n}',
+  'res.nextLevel': 'Дальше · уровень {n}',
   'res.reason.cleared': 'Доска собрана',
   'res.reason.opponent': 'Соперник собрал первым',
   'res.reason.timeout': 'Время вышло',
@@ -423,6 +428,9 @@ const EN: Record<string, string> = {
   'settings.sound': 'Sound',
   'settings.on': 'On',
   'settings.off': 'Off',
+  'settings.version': 'Game version',
+  'settings.versionHint':
+    'Updates download themselves on launch — the version is just an update marker',
 
   // table themes (Task 25)
   'settings.theme': 'Table theme',
@@ -606,6 +614,8 @@ const EN: Record<string, string> = {
   'res.lose': 'Defeat',
   'res.match': 'match · level {n}',
   'res.rematch': 'Rematch',
+  'res.rematchNext': 'Rematch · level {n}',
+  'res.nextLevel': 'Next · level {n}',
   'res.reason.cleared': 'Board cleared',
   'res.reason.opponent': 'Opponent cleared first',
   'res.reason.timeout': "Time's up",

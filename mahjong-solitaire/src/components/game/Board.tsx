@@ -400,7 +400,10 @@ export function Board() {
     return blocked;
   }, []);
 
-  /** пересадить одиночку, занимающую ячейку пары, на свободное место */
+  /** пересадить одиночку, занимающую ячейку пары, на свободное место.
+   *  Слот ВСЕГДА в видимом ряду (0..3): фантомных ячеек ниже ряда
+   *  нет — «второго ряда» под лотком не бывает (Фидбек Task 46:
+   *  «некоторые кости со сдвигом вниз, будто они на уровень выше») */
   const makeRoomFor = useCallback(
     (base: number, a: number, b: number) => {
       const F = fl.current;
@@ -417,7 +420,7 @@ export function Board() {
         const pos = F.posOf.get(id);
         if (F.state.get(id) === 'tray' && (pos === base || pos === base + 1)) {
           let np = 0;
-          while (used.has(np)) np++;
+          while (used.has(np) && np < TRAY_CAP - 1) np++;
           flyToTray(id, np, true, TRAY_MS);
           used.add(np);
         }
@@ -446,9 +449,12 @@ export function Board() {
           flyToTray(id, free, true, FLIGHT_MS);
           return;
         }
-        // страховка: совсем без свободных — летим сверху (редкий случай)
-        if (performance.now() - started > 800) {
-          flyToTray(id, firstFreePos(), true, FLIGHT_MS);
+        // страховка: ячейки заняты взрывами дольше секунды — летим
+        // в ПОСЛЕДНЮЮ ячейку ряда (поверх, z выше), а НЕ в фантомную
+        // ячейку «ниже ряда» — второго ряда под лотком не бывает
+        // (Фидбек Task 46: кости «со сдвигом вниз»)
+        if (performance.now() - started > 2000) {
+          flyToTray(id, TRAY_CAP - 1, true, FLIGHT_MS);
           return;
         }
         window.setTimeout(tick, 60);
@@ -474,8 +480,12 @@ export function Board() {
     });
     let next = 0;
     const takePos = () => {
-      while (used.has(next)) next++;
-      return next++;
+      // слот всегда в видимом ряду (0..3): ниже ряда никто
+      // не садится — «второго ряда» под лотком не бывает
+      while (used.has(next) && next < TRAY_CAP) next++;
+      const pos = Math.min(next, TRAY_CAP - 1);
+      next = pos + 1;
+      return pos;
     };
     s.tray.forEach((id) => {
       if (F.state.get(id) !== 'tray') return;
@@ -717,8 +727,11 @@ export function Board() {
             const tick = () => {
               if (fl.current.sid !== sid0) return;
               const b = pickBase();
-              if (baseOk(b) || performance.now() - t0 > 800) {
-                beginPair(baseOk(b) ? b : Math.max(0, firstFreePos() - 1));
+              if (baseOk(b) || performance.now() - t0 > 1600) {
+                // фолбэк — строго ВНУТРИ ряда: житель и прилетевшая
+                // встают в последние ячейки, фантомного ряда ниже нет
+                const fb = Math.max(0, Math.min(b, TRAY_CAP - 2));
+                beginPair(baseOk(b) ? b : fb);
               } else {
                 window.setTimeout(tick, 60);
               }
@@ -846,6 +859,33 @@ export function Board() {
     });
   }, [size]);
 
+  // ВОЗВРАТ ИЗ ФОНОВОЙ ВКЛАДКИ (Фидбек Task 46: «смещение костей»):
+  // таймеры в скрытой вкладке тормозятся — полёт мог «замёрзнуть» в
+  // воздухе, взрыв — не добраться до display:none. Здесь доска
+  // мгновенно приводится в согласованное состояние: лоток встаёт
+  // по своим ячейкам, давно взорвавшиеся плитки скрываются.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      const F = fl.current;
+      const s = useGame.getState().session;
+      if (!s) return;
+      s.tray.forEach((id) => {
+        if (F.state.get(id) === 'tray') {
+          flyRef.current(id, F.posOf.get(id) ?? 0, false);
+        }
+      });
+      F.state.forEach((st, id) => {
+        if (st === 'gone') {
+          const el = els.current.get(id);
+          if (el && el.style.display !== 'none') el.style.display = 'none';
+        }
+      });
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
+
   /* ------------------ жесты ------------------ */
 
   const gs = useRef({
@@ -935,9 +975,12 @@ export function Board() {
     const dx = e.clientX - g.x0;
     const dy = e.clientY - g.y0;
     g.moved = Math.max(g.moved, Math.hypot(dx, dy));
+    // СВАЙП НЕ ПОДНИМАЕТ ПЛИТКУ (Фидбек Task 46: «кости смещаются»):
+    // поднять пальцем можно только после УДЕРЖАНИЯ (PEEK_HOLD_MS) —
+    // движение раньше удержания отменяет и тап, и подъём
     if (!g.peek && g.moved > 14) {
       window.clearTimeout(g.timer);
-      beginPeek();
+      return;
     }
     if (g.peek) {
       const px = clamp(dx, -PEEK_MAX_X, PEEK_MAX_X);
@@ -952,10 +995,16 @@ export function Board() {
       const g = gs.current;
       if (!g.active || e.pointerId !== g.pid) return;
       window.clearTimeout(g.timer);
-      const quick = performance.now() - g.t0 < 360 && g.moved < 14;
+      // МЕДЛЕННЫЙ ТАП — ТОЖЕ ТАП (Фидбек Task 46: «нажимаю — ничего,
+      // приходится нажимать повторно»): раньше нажатие дольше 360 мс
+      // вообще не срабатывало. Теперь: поднятое удержанием без увода —
+      // тап на отпускании; уведённое пальцем — просто возврат на место
       if (g.peek) {
         endPeek();
-      } else if (quick && !cancelled && g.id >= 0) {
+        if (!cancelled && g.moved < 14 && g.id >= 0) tapTile(g.id);
+      } else if (!cancelled && g.moved < 14 && g.id >= 0) {
+        // тап = касание БЕЗ увода — любой длительности; свайп
+        // (движение до удержания) не тапает и не поднимает плитку
         tapTile(g.id);
       }
       g.active = false;
