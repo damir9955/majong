@@ -885,9 +885,19 @@ async function tryOpenDenoKv(): Promise<Kv | null> {
   }
 }
 
+/** Task 48: ключи друзей/кодов. При переносе памяти в SQL их НЕ
+ *  затираем записями из памяти — SQL-версия важнее (в памяти за
+ *  окно бута могла успеть появиться пустышка с новым кодом). */
+function isFriendKey(key: KvKey): boolean {
+  const k0 = typeof key[0] === 'string' ? key[0] : '';
+  return k0 === 'fr' || k0 === 'fc';
+}
+
 /** миграция памяти на постоянное хранилище + смена биндинга.
  *  Двойной проход: второй ловит записи, случившиеся во время первого
- *  (окно в миллисекунды; данные игровых комнат, не банк). */
+ *  (окно в миллисекунды; данные игровых комнат, не банк).
+ *  Task 48: fr/fc переносятся ТОЛЬКО если в хранилище их ещё нет —
+ *  живые друзья/коды из SQL больше никогда не затираются. */
 async function kvUpgrade(store: Kv, mode: 'deno' | 'sql'): Promise<void> {
   const mem = kv instanceof MemoryKv ? kv : null;
   let moved = 0;
@@ -895,6 +905,12 @@ async function kvUpgrade(store: Kv, mode: 'deno' | 'sql'): Promise<void> {
     if (!mem || mem.size() === 0) break;
     let passMoved = 0;
     for (const e of mem.entries()) {
+      if (isFriendKey(e.key)) {
+        const existing = await store.get(e.key).catch(() => null);
+        if (existing && existing.value !== null && existing.value !== undefined) {
+          continue; // в SQL уже есть живая запись — память её не трёт
+        }
+      }
       await store.set(e.key, e.value);
       passMoved++;
     }
@@ -970,6 +986,30 @@ async function kvBackgroundInit(): Promise<void> {
 
 let kv: Kv = new MemoryKv();
 void kvBackgroundInit();
+
+/** Task 48: пока база поднимается (холодный старт изолята), нельзя
+ *  обслуживать игроков из ПАМЯТИ. Раньше первый же hello/f_sync
+ *  успевал создать в памяти «пустышку» с НОВЫМ коротким кодом и
+ *  пустым списком друзей, а kvUpgrade переносил её ПОВЕРХ живой
+ *  SQL-записи — «Мой ID» менялся, друзья пропадали. Теперь операции
+ *  с игроками ждут готовности хранилища (обычно 2-6 c на холодном
+ *  старте; на тёплом изоляте — ноль задержки: готово сразу).
+ *  Если база так и не поднялась за 12 c (внешний сбой) — работаем
+ *  как раньше: защита от затирания остаётся в kvUpgrade. */
+const KV_READY_WAIT_MS = 12_000;
+
+function kvReady(): Promise<void> {
+  if (kvBoot === 'ready') return Promise.resolve();
+  const started = now();
+  return new Promise((resolve) => {
+    const iv = setInterval(() => {
+      if (kvBoot === 'ready' || now() - started >= KV_READY_WAIT_MS) {
+        clearInterval(iv);
+        resolve();
+      }
+    }, 150);
+  });
+}
 
 /* ============================ УТИЛИТЫ ============================ */
 
@@ -1582,15 +1622,17 @@ function newFrCode(): string {
   ).join('');
 }
 
-/** состояние игрока (создаётся при первом касании): короткий код
- *  регистрируется в ['fc', code] → uid */
-async function getFr(uid: string): Promise<FrState | null> {
-  if (!uid || uid === 'anon') return null;
-  const e = await kv.get<FrState>(['fr', uid]);
-  if (e?.value) return e.value;
-  // создать: короткий код без коллизий. Task 45: ОДНА проверка
-  // (пространство 31^6 ≈ 900 млн — повторы практически
-  // невозможны; раньше до 4-x get'ов на каждого нового игрока)
+/** Task 48: создание записи игрока — строго ОДНО на uid.
+ *  Раньше hello (propagateName) и f_sync обрабатывались сервером
+ *  ПАРАЛЛЕЛЬНО при каждой загрузке страницы: оба видели «записи
+ *  нет», оба генерировали СВОЙ короткий код, побеждал последний
+ *  set — «Мой ID» плавал при каждом заходе. Теперь параллельные
+ *  вызовы ждут один и тот же промис, а после записи делаем
+ *  контрольную перечитку — победить может и другой изолят
+ *  (кросс-изоляты Deno Deploy); висячий fc-индекс убираем. */
+const frCreates = new Map<string, Promise<FrState | null>>();
+
+async function createFr(uid: string): Promise<FrState | null> {
   for (let i = 0; i < 2; i++) {
     const code = newFrCode();
     const taken = await kv.get(['fc', code]);
@@ -1605,9 +1647,35 @@ async function getFr(uid: string): Promise<FrState | null> {
     };
     await kv.set(['fr', uid], st);
     await kv.set(['fc', code], uid);
-    return st;
+    // контрольная перечитка: если параллельный изолят успел
+    // записать СВОЙ код — источник истины база, а не наша st
+    const final = await kv.get<FrState>(['fr', uid]);
+    if (final?.value && final.value.code !== code) {
+      await kv.delete(['fc', code]).catch(() => {});
+      return final.value;
+    }
+    return final?.value ?? st;
   }
   return null;
+}
+
+/** состояние игрока (создаётся при первом касании): короткий код
+ *  регистрируется в ['fc', code] → uid.
+ *  Task 48: (1) ждём готовности хранилища — не создаём пустышку
+ *  в памяти, пока поднимается SQL (иначе kvUpgrade затирал живых
+ *  друзей); (2) параллельные создания схлопываются в одно — код
+ *  «Мой ID» стабилен. */
+async function getFr(uid: string): Promise<FrState | null> {
+  if (!uid || uid === 'anon') return null;
+  await kvReady();
+  const e = await kv.get<FrState>(['fr', uid]);
+  if (e?.value) return e.value;
+  let p = frCreates.get(uid);
+  if (!p) {
+    p = createFr(uid).finally(() => frCreates.delete(uid));
+    frCreates.set(uid, p);
+  }
+  return p;
 }
 
 async function putFr(uid: string, st: FrState): Promise<void> {
@@ -2123,9 +2191,18 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
   switch (t) {
     /* ---------- представиться/вернуться в комнату ---------- */
     case 'hello': {
+      // Task 48: uid/имя — НЕМЕДЛЕННО, до ожидания хранилища.
+      // Сообщения сокета обрабатываются параллельно (void onMessage):
+      // f_sync, прилетевший следом за hello на холодном старте, раньше
+      // видел s.uid='anon' (hello ещё ждал базу) и отвечал пустое 'ok'
+      // вместо состояния друзей — панель оставалась пустой. Теперь
+      // параллельные обработчики видят правильного игрока сразу.
+      // Затем — дождаться хранилища: иначе игрок привязался бы к
+      // «пустышке» из памяти, а комната не нашлась бы в SQL.
       if (typeof m.uid === 'string' && m.uid.length > 0) s.uid = m.uid;
-      if (typeof m.name === 'string' && m.name.trim()) {
-        s.name = sanitizeName(m.name);
+      if (typeof m.name === 'string' && m.name.trim()) s.name = sanitizeName(m.name);
+      await kvReady();
+      if (s.name) {
         // Task 47: если имя новое — разослать его друзьям (гвард
         // внутри: без изменений — одно чтение и выход)
         void propagateName(s.uid, s.name);

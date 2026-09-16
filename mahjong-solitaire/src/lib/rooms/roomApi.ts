@@ -24,10 +24,10 @@ import {
   type RoomView,
   type SearchingInfo,
 } from './types';
+import { adoptUid, ensureUid, generateUid, getUidSync } from './uid';
 
 const CREDS_KEY = 'mahjong-room';
 const NAME_KEY = 'mahjong-name';
-const UID_KEY = 'mahjong-uid';
 
 export interface RoomCreds {
   code: string;
@@ -225,13 +225,16 @@ class WsClient {
     this.opening = true;
     this.setStatus('connecting');
     // localhost: сначала убеждаемся, что Deno-сервер жив (Task 47),
-    // потом открываем сокет — исходящие сообщения копятся в outbox
-    void ensureLocalServer()
-      .catch(() => {})
-      .finally(() => {
-        this.opening = false;
-        this.openSocket();
-      });
+    // и восстанавливаем uid из каскада хранилищ (Task 48) — hello
+    // уйдёт уже с постоянным идентификатором; исходящие сообщения
+    // копятся в outbox
+    void Promise.all([
+      ensureLocalServer().catch(() => {}),
+      ensureUid().catch(() => {}),
+    ]).finally(() => {
+      this.opening = false;
+      this.openSocket();
+    });
   }
 
   private openSocket(): void {
@@ -594,19 +597,14 @@ function savedRoomHint(): { code: string; playerId: string } | null {
 }
 
 function getUid(): string {
-  try {
-    let uid = localStorage.getItem(UID_KEY);
-    if (!uid || uid.length < 8) {
-      uid =
-        (crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)) +
-        '-' +
-        String(Date.now());
-      localStorage.setItem(UID_KEY, uid);
-    }
-    return uid;
-  } catch {
-    return 'tmp-' + Math.random().toString(36).slice(2);
-  }
+  // Task 48: каскад localStorage → cookie → IndexedDB — uid
+  // переживает чистки хранилищ (молча, без UI). Восстановление
+  // успевает до hello: connect() ждёт ensureUid().
+  const uid = getUidSync();
+  if (uid) return uid;
+  const fresh = generateUid();
+  adoptUid(fresh);
+  return fresh;
 }
 
 export function getSavedCreds(): RoomCreds | null {
