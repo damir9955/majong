@@ -148,6 +148,36 @@ function ensurePresenceWorker(): void {
   }
 }
 
+/* ============ оживитель локального Deno-сервера (Task 47) ============
+ * Песочница превью убивает фоновые процессы между вызовами —
+ * Deno-сервер (:8080) приходится поднимать заново. Роут
+ * /api/ws-ensure запускает его как потомка next-dev (его дети
+ * выживают) и ждёт /health. Вызываем его только когда цель —
+ * localhost; не чаще раза в 10 c, чтобы не долбить зря. */
+let wsEnsureLast = 0;
+let wsEnsurePromise: Promise<void> | null = null;
+
+function localWsTarget(): boolean {
+  const u = wsUrl();
+  return /^ws:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?\//.test(u);
+}
+
+function ensureLocalServer(): Promise<void> {
+  if (!localWsTarget()) return Promise.resolve();
+  if (Date.now() - wsEnsureLast < 10_000 && wsEnsurePromise) {
+    return wsEnsurePromise;
+  }
+  wsEnsureLast = Date.now();
+  wsEnsurePromise = (async () => {
+    try {
+      await fetch('/api/ws-ensure', { signal: AbortSignal.timeout(25_000) });
+    } catch {
+      // роут недоступен/таймаут — просто пробуем подключиться как есть
+    }
+  })();
+  return wsEnsurePromise;
+}
+
 /* ============================ сокет-клиент ============================ */
 
 class WsClient {
@@ -161,6 +191,8 @@ class WsClient {
   private outbox: string[] = [];
   private retryNo = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** фаза «оживляем локальный сервер» — чтобы не плодить сокеты */
+  private opening = false;
   private room: { code: string; playerId: string } | null = null;
   private myName = '';
   private lobbyWant = false;
@@ -185,11 +217,31 @@ class WsClient {
     ) {
       return;
     }
+    if (this.opening) return;
     if (this.retryTimer) {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
     }
+    this.opening = true;
     this.setStatus('connecting');
+    // localhost: сначала убеждаемся, что Deno-сервер жив (Task 47),
+    // потом открываем сокет — исходящие сообщения копятся в outbox
+    void ensureLocalServer()
+      .catch(() => {})
+      .finally(() => {
+        this.opening = false;
+        this.openSocket();
+      });
+  }
+
+  private openSocket(): void {
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.OPEN ||
+        this.ws.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
     const ws = new WebSocket(wsUrl());
     this.ws = ws;
     ws.onopen = () => {
@@ -283,6 +335,9 @@ class WsClient {
 
   setName(name: string): void {
     this.myName = name;
+    // Task 47: сервер узнаёт новое имя сразу (друзья увидят
+    // актуальный ник, а не «Игрок» с момента заявки)
+    this.rawSend({ t: 'name', name });
   }
 
   /* ---------- подписки ---------- */
@@ -411,22 +466,6 @@ class WsClient {
         // ignore
       }
       return;
-    }
-    // друзья: состояние приходит и ответом на запрос (с rid), и
-    // живым пушем (без). Подписчики стора должны видеть ОБА случая,
-    // поэтому диспетчеризуем ДО разбора rid (rid-запрос ниже всё
-    // равно получит свой ответ)
-    if (t === 'friends') {
-      const st = m.state as FriendsStateView | undefined;
-      if (st && Array.isArray(st.friends)) {
-        for (const cb of [...this.friendsSubs]) {
-          try {
-            cb(st);
-          } catch {
-            // ignore
-          }
-        }
-      }
     }
     // друзья: состояние приходит и ответом на запрос (с rid), и
     // живым пушем (без). Подписчики стора должны видеть ОБА случая,

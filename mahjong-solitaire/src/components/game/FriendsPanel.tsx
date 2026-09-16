@@ -372,6 +372,10 @@ export function FriendsPanel({ onClose }: { onClose: () => void }) {
     } catch (e) {
       if (e instanceof RoomError && e.code === 'ALREADY_FRIENDS') {
         setErr(t('fr.already'));
+      } else if (e instanceof RoomError && e.code === 'NETWORK') {
+        // сервер недоступен — это НЕ «код не найден»: раньше вводило
+        // в заблуждение («по коду не ищет», хотя связи просто нет)
+        setErr(t('room.network'));
       } else {
         setErr(t('fr.notFound'));
       }

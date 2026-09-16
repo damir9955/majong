@@ -839,7 +839,11 @@ async function tryOpenSql(dbUrl: string): Promise<Kv | null> {
 }
 
 /** нативный Deno KV: на Deploy — провиженный через Databases,
- *  локально — файловая база в каталоге запуска (dev).
+ *  локально — файловая база. ВАЖНО (Task 47): Deno.openKv() БЕЗ
+ *  пути живёт в ПАМЯТИ — данные умирали при каждом рестарте
+ *  dev-сервера («друзья не сохраняются» в превью). Явный путь
+ *  через MJ_KV_PATH даёт файл, пережидающий рестарты. На Deploy
+ *  переменная не задана — поведение прежнее.
  *  Task 45: ГОНЯЕМ ПО ТАЙМАУТУ (10 c) — на Deploy без провиженной
  *  базы Deno.openKv() может ЗАВИСНУТЬ (не резолвится и не
  *  отвергается) — наблюдали на проде: boot навечно «booting»,
@@ -849,8 +853,9 @@ const DENO_KV_TIMEOUT_MS = 10_000;
 
 async function tryOpenDenoKv(): Promise<Kv | null> {
   try {
+    const kvPath = Deno.env.get('MJ_KV_PATH')?.trim() || '';
     const real = await Promise.race([
-      Deno.openKv(),
+      kvPath ? Deno.openKv(kvPath) : Deno.openKv(),
       new Promise<never>((_, rej) =>
         setTimeout(
           () => rej(new Error('openKv timeout')),
@@ -866,6 +871,9 @@ async function tryOpenDenoKv(): Promise<Kv | null> {
       typeof wrap.watch !== 'function'
     ) {
       throw new Error('kv api mismatch');
+    }
+    if (kvPath) {
+      console.log(`[kv] локальный Deno KV по пути ${kvPath} (переживает рестарты)`);
     }
     return wrap;
   } catch (err) {
@@ -1703,6 +1711,53 @@ function touchOnline(s: Sock): void {
   kv.set(['on', s.uid], t).catch(() => {});
 }
 
+/** Task 47: игрок переименовался — обновить его имя в списках
+ *  друзей/заявок/инвайтах у ВСЕХ его друзей и друзей-пушем.
+ *  Раньше имя попадало к другу один раз (в момент заявки) и
+ *  навсегда зависало: «Игрок» вместо актуального ника.
+ *  Гвард ['nm', uid]: пишем только при реальном изменении —
+ *  hello с тем же именем ничего не стоит (одно чтение). */
+async function propagateName(uid: string, name: string): Promise<void> {
+  if (!uid || uid === 'anon' || !name) return;
+  try {
+    const last = await kv.get<string>(['nm', uid]);
+    if (last?.value === name) return;
+    await kv.set(['nm', uid], name);
+    const mine = await getFr(uid);
+    if (!mine) return;
+    await Promise.all(
+      mine.friends.map(async (f) => {
+        const st = await getFr(f.uid);
+        if (!st) return;
+        let changed = false;
+        for (const fr of st.friends) {
+          if (fr.uid === uid && fr.name !== name) {
+            fr.name = name;
+            changed = true;
+          }
+        }
+        for (const r of st.reqs) {
+          if (r.uid === uid && r.name !== name) {
+            r.name = name;
+            changed = true;
+          }
+        }
+        for (const iv of st.invites) {
+          if (iv.from === uid && iv.fromName !== name) {
+            iv.fromName = name;
+            changed = true;
+          }
+        }
+        if (!changed) return;
+        await putFr(f.uid, st);
+        await pushFr(f.uid);
+      }),
+    );
+  } catch {
+    // переименование не критично — не роняем поток
+  }
+}
+
 /** разобрать « кому»: uid или короткий код → uid (или null) */
 async function resolveTarget(
   m: Record<string, unknown>,
@@ -2071,6 +2126,9 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
       if (typeof m.uid === 'string' && m.uid.length > 0) s.uid = m.uid;
       if (typeof m.name === 'string' && m.name.trim()) {
         s.name = sanitizeName(m.name);
+        // Task 47: если имя новое — разослать его друзьям (гвард
+        // внутри: без изменений — одно чтение и выход)
+        void propagateName(s.uid, s.name);
       }
       send(s, { t: 'hello', ok: true, uid: s.uid });
       // друзья: состояние при каждом приветствии (заявки/чат/инвайты).
@@ -2617,6 +2675,15 @@ async function onMessage(s: Sock, raw: string): Promise<void> {
     }
 
     /* ---------- ДРУЗЬЯ (Task 37) ---------- */
+    case 'name': {
+      // Task 47: клиент сообщил новое имя (диалог переименования)
+      if (typeof m.name === 'string' && m.name.trim()) {
+        s.name = sanitizeName(m.name);
+        await propagateName(s.uid, s.name);
+      }
+      send(s, { t: 'ok', rid: m.rid });
+      return;
+    }
     case 'f_sync': {
       const v = await frView(s.uid);
       if (v) send(s, { t: 'friends', state: v, rid: m.rid });
