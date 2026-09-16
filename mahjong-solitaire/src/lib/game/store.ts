@@ -31,6 +31,7 @@ import {
 import { getLayoutForLevel } from '@/lib/mahjong/layouts';
 import { getTileDef } from '@/lib/mahjong/tiles';
 import { showToast, floatScore } from './fx';
+import { createDebouncedLocalStorage, flushAllPersistedNow } from './persistStorage';
 import { makeOpponent, leagueIndexForPoints, type Opponent } from './league';
 import {
   apiAdvance,
@@ -2048,6 +2049,12 @@ export const useGame = create<GameState>()(
       },
     }),
     {
+      // Task 49 («вылет при долгой игре»): дебаунс-хранилище — важные
+      // изменения (ходы/счёт/итог) пишутся сразу, «шум» тикера боя
+      // коалесится (раньше persist писал localStorage на КАЖДЫЙ set,
+      // в бою — 5–10 записей/сек, сотни МБ I/O за матч → OS убивала
+      // вкладку; исключения квоты летели сквозь set() → error boundary)
+      storage: createDebouncedLocalStorage(),
       name: 'mahjong-relax-save',
       version: 8,
       partialize: (state) => ({
@@ -2176,6 +2183,8 @@ if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
   (window as unknown as Record<string, unknown>).__mjDebug = {
     getState: () => useGame.getState(),
     menu: () => useGame.setState({ session: null }),
+    /** немедленно записать сейв на диск (дебаунс-хранилище Task 49) */
+    flushSave: () => flushAllPersistedNow(),
     /** тесты: сразу партия классики на заданном уровне */
     setLevel: (n: number) => {
       useGame.setState({ level: n, session: null, showMenu: false });
